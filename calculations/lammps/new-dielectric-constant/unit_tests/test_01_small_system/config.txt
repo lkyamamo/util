@@ -1,0 +1,7 @@
+Test Name: test_01_small_system
+Number of Molecules: 3
+Box Size: 10.0
+Timesteps: [0, 10, 20, 30, 40, 50]
+Start: 0
+End: 60
+Increment: 10
