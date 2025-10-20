@@ -1,0 +1,7 @@
+Test Name: test_05_large_box
+Number of Molecules: 7
+Box Size: 50.0
+Timesteps: [0, 5, 10, 15, 20, 25, 30]
+Start: 0
+End: 35
+Increment: 5

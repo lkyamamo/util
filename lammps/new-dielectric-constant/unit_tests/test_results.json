@@ -1,0 +1,10 @@
+{
+  "test_01_small_system": true,
+  "test_02_medium_system": true,
+  "test_03_large_system": true,
+  "test_04_small_box": true,
+  "test_05_large_box": true,
+  "test_06_few_timesteps": true,
+  "test_07_many_timesteps": true,
+  "test_08_single_molecule": true
+}

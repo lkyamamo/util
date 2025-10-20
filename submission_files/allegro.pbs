@@ -1,0 +1,17 @@
+#!/bin/bash
+#PBS -A MoireStructures
+#PBS -q by-gpu
+#PBS -l select=8
+#PBS -l walltime=24:00:00
+#PBS -l filesystems=home:eagle
+
+# Change to the directory from which the job was submitted
+cd $PBS_O_WORKDIR
+
+# Load required modules (adjust module names as necessary)
+export MPICH_GPU_SUPPORT_ENABLED=0
+export OMP_NUM_THRADS=1
+source /eagle/MoireStructures/aaditya/conda_venvs/allegro_0.7/bin/activate
+
+nequip-train -cn BTO_training.yaml
+

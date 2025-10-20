@@ -1,0 +1,6 @@
+1020-rxmd-algo
+allegro-ymno3
+CIPS_runs
+codeForGr
+md-ymno3
+rxmd_rl

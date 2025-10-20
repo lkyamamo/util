@@ -1,0 +1,7 @@
+Test Name: test_04_small_box
+Number of Molecules: 2
+Box Size: 5.0
+Timesteps: [0, 10, 20, 30, 40]
+Start: 0
+End: 50
+Increment: 10

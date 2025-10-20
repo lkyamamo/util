@@ -1,0 +1,11 @@
+# Large Directory List
+# One directory name per line
+# Lines starting with # are comments and will be ignored
+# Directory names should be relative to REMOTE_BASE
+
+1020-rxmd-algo
+allegro-ymno3
+CIPS_runs
+codeForGr
+md-ymno3
+rxmd_rl
