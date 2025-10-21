@@ -1,5 +1,4 @@
 import sys
-import math
 import csv
 from collections import deque
 
@@ -389,7 +388,7 @@ with open(file1,"r") as f1:
 """
 
 # units of K A^3/(e^2 m^2)
-prefactor = (4*math.pi*2.56*(10**7))/(3*1.38*8.85*T*la*lb*lc)
+prefactor = (2.56*(10**7))/(1.38*8.85*T*la*lb*lc)
 
 # Write timestep data to CSV
 output_filename = file1.replace('.txt', f'_timestep_data_{AVERAGING_METHOD}.csv')
