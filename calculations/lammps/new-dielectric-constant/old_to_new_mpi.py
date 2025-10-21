@@ -413,6 +413,20 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
     - Periodic combination: combines results periodically during processing
     - Final combination: master process combines all results at the end
     """
+    # Get the absolute path to the dumps directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    dumps_dir = os.path.join(script_dir, "..", "dumps")
+    dumps_dir = os.path.abspath(dumps_dir)
+    
+    # Debug: Print path information (only rank 0)
+    if rank == 0:
+        print(f"Script directory: {script_dir}")
+        print(f"Dumps directory: {dumps_dir}")
+        print(f"Dumps directory exists: {os.path.exists(dumps_dir)}")
+        if os.path.exists(dumps_dir):
+            sample_files = [f for f in os.listdir(dumps_dir) if f.startswith(template_prefix)][:3]
+            print(f"Sample dump files: {sample_files}")
+        print()
     # Create per-process output files for incremental writing
     proc_output_file = f"{output_file}.proc{rank}"
     
@@ -439,7 +453,7 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
         print("=" * 70)
         print(f"Timesteps: {start} to {end} (step {increment})")
         print(f"Template prefix: {template_prefix}")
-        print(f"Input files: ../dumps/{template_prefix}.{start}, ../dumps/{template_prefix}.{start+increment}, ...")
+        print(f"Input files: {dumps_dir}/{template_prefix}.{start}, {dumps_dir}/{template_prefix}.{start+increment}, ...")
         print(f"Output file: {output_file}")
         print(f"Per-process files: {output_file}.proc*")
         print(f"MPI processes: {size}")
@@ -500,7 +514,7 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
                 timestep_index = timestep_to_index[i]
                 if timestep_index % size == rank:
                     try:
-                        filename = f"../dumps/{template_prefix}.{i}"
+                        filename = os.path.join(dumps_dir, f"{template_prefix}.{i}")
                         xyz_content = process_lammps_file(filename, output_file)
                         
                         if xyz_content is not None:
