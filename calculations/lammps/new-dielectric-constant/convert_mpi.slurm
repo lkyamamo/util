@@ -14,10 +14,14 @@
 START=350000
 END=10350000
 INCREMENT=100
-TEMPLATE="../dumps/303"
+TEMPLATE="303"
 
-# Output file
-OUTPUT_FILE="../all_lammps.xyz"
+# Output file (use absolute path to avoid working directory issues)
+OUTPUT_FILE="all_lammps.xyz"
+
+# Change to script directory to ensure proper path resolution
+cd "$(dirname "$0")"
+echo "Working directory: $(pwd)"
 
 # Log job start
 echo "=========================================="
@@ -40,6 +44,14 @@ srun --mpi=pmix -n $SLURM_NTASKS python -c "from mpi4py import MPI; print(f'MPI 
 
 # Run the MPI script
 echo "Starting MPI execution..."
+echo "Template prefix: ${TEMPLATE}"
+echo "Output file: ${OUTPUT_FILE}"
+echo "Timestep range: ${START} to ${END} (step ${INCREMENT})"
+echo "Dumps directory should be: $(dirname "$(pwd)")/dumps"
+echo "Checking if dumps directory exists:"
+ls -la ../dumps/ | head -5 || echo "Dumps directory not found or empty"
+echo "=========================================="
+
 srun --mpi=pmix -n $SLURM_NTASKS python old_to_new_mpi.py \
     ${START} \
     ${END} \
