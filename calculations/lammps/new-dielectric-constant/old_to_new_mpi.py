@@ -43,7 +43,7 @@ def process_lammps_file(filename, output_file):
         return None
     print(f"[Proc {rank}] Processing file: {filename}")
     
-
+    try:
         with open(filename, "r") as f:
             # Read header information
             # line 1: ITEM: TIMESTEP
@@ -60,8 +60,8 @@ def process_lammps_file(filename, output_file):
             line = f.readline()        
 
             # line 4: ITEM: NUMBER OF ATOMS
-            line = f.readline().strip()
-            num_atoms = int(line[4])
+            line = f.readline().strip(' ')
+            num_atoms = int(line[0])
 
             # Build XYZ content
             xyz_content = f"{num_atoms}\n"
