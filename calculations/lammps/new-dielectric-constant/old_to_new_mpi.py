@@ -439,7 +439,7 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
         print("=" * 70)
         print(f"Timesteps: {start} to {end} (step {increment})")
         print(f"Template prefix: {template_prefix}")
-        print(f"Input files: {template_prefix}.{start}, {template_prefix}.{start+increment}, ...")
+        print(f"Input files: ../dumps/{template_prefix}.{start}, ../dumps/{template_prefix}.{start+increment}, ...")
         print(f"Output file: {output_file}")
         print(f"Per-process files: {output_file}.proc*")
         print(f"MPI processes: {size}")
@@ -500,7 +500,7 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
                 timestep_index = timestep_to_index[i]
                 if timestep_index % size == rank:
                     try:
-                        filename = f"{template_prefix}.{i}"
+                        filename = f"../dumps/{template_prefix}.{i}"
                         xyz_content = process_lammps_file(filename, output_file)
                         
                         if xyz_content is not None:
@@ -572,7 +572,7 @@ if __name__ == "__main__":
             print("  mpirun -np 64 python old_to_new_mpi.py 0 10000001 10 all_lammps_new.xyz 273.15")
             print("\nNote:")
             print("  - Requires mpi4py: pip install mpi4py")
-            print("  - Processes LAMMPS dump files named '{template_prefix}.{timestep}'")
+            print("  - Processes LAMMPS dump files named '../dumps/{template_prefix}.{timestep}'")
             print("  - Converts LAMMPS dump format to XYZ format")
             print("  - Each process writes to its own .proc* file for incremental saving")
         sys.exit(1)
