@@ -1,7 +1,0 @@
-Test Name: test_02_medium_system
-Number of Molecules: 5
-Box Size: 15.0
-Timesteps: [0, 5, 10, 15, 20]
-Start: 0
-End: 25
-Increment: 5

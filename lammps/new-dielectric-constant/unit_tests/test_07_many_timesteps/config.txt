@@ -1,7 +1,0 @@
-Test Name: test_07_many_timesteps
-Number of Molecules: 3
-Box Size: 10.0
-Timesteps: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
-Start: 0
-End: 55
-Increment: 5
