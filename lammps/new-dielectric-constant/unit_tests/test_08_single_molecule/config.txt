@@ -1,7 +1,0 @@
-Test Name: test_08_single_molecule
-Number of Molecules: 1
-Box Size: 5.0
-Timesteps: [0, 10, 20, 30, 40, 50]
-Start: 0
-End: 60
-Increment: 10
