@@ -117,6 +117,7 @@ def load_processed_timesteps(output_file):
     Returns set of timesteps that have been completed.
     
     For XYZ format, we extract timestep numbers from the comment lines.
+    Only called by rank 0 process.
     """
     processed = set()
     
@@ -134,23 +135,10 @@ def load_processed_timesteps(output_file):
                         except (ValueError, IndexError):
                             pass
         except Exception as e:
-            print(f"[Proc {rank}] Warning: Could not read main output file: {e}")
+            print(f"[Rank 0] Warning: Could not read main output file: {e}")
     
-    # Check per-process files (for MPI restart)
-    proc_file = f"{output_file}.proc{rank}"
-    if os.path.exists(proc_file):
-        try:
-            with open(proc_file, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("Atoms. Timestep:"):
-                        try:
-                            timestep = int(line.split(":")[1].strip())
-                            processed.add(timestep)
-                        except (ValueError, IndexError):
-                            pass
-        except Exception as e:
-            print(f"[Proc {rank}] Warning: Could not read per-process file: {e}")
+    # Note: Per-process files are handled during combination process
+    # Only rank 0 calls this function, so we don't need to check per-process files here
     
     return processed
 
@@ -433,10 +421,16 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
         os.remove(proc_output_file)
         print(f"[Proc {rank}] Removed old per-process file to avoid duplicates", flush=True)
     
-    # Calculate combination interval based on expected workload
-    total_timesteps_expected = len(range(start, end, increment))
-    timesteps_per_process = max(1, total_timesteps_expected // size)
-    combination_interval = max(100, timesteps_per_process // 20)  # Every 5% or 100 timesteps
+    # Calculate combination interval based on expected workload (only rank 0)
+    if rank == 0:
+        total_timesteps_expected = len(range(start, end, increment))
+        timesteps_per_process = max(1, total_timesteps_expected // size)
+        combination_interval = max(100, timesteps_per_process // 20)  # Every 5% or 100 timesteps
+    else:
+        combination_interval = 0
+    
+    # Broadcast combination interval to all processes
+    combination_interval = comm.bcast(combination_interval, root=0)
     
     # All processes: Determine which timesteps need processing
     if rank == 0:
@@ -452,15 +446,33 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
         print("=" * 70)
         print()
     
-    print("Determining which timesteps need processing...", flush=True)
-    timesteps_to_process, already_processed = get_timesteps_to_process(
-        start, end, increment, output_file
-    )
+    # Only rank 0 determines which timesteps need processing
+    if rank == 0:
+        print("Determining which timesteps need processing...", flush=True)
+        timesteps_to_process, already_processed = get_timesteps_to_process(
+            start, end, increment, output_file
+        )
+        
+        total_timesteps = len(range(start, end, increment))
+        print(f"  Total timesteps in range: {total_timesteps}")
+        print(f"  Already processed: {len(already_processed)}")
+        print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
+    else:
+        # Other processes initialize empty lists
+        timesteps_to_process = []
+        already_processed = set()
+        total_timesteps = 0
     
-    total_timesteps = len(range(start, end, increment))
-    print(f"  Total timesteps in range: {total_timesteps}")
-    print(f"  Already processed: {len(already_processed)}")
-    print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
+    # Broadcast the results to all processes
+    timesteps_to_process = comm.bcast(timesteps_to_process, root=0)
+    already_processed = comm.bcast(already_processed, root=0)
+    total_timesteps = comm.bcast(total_timesteps, root=0)
+    
+    # All processes now have the same information
+    if rank != 0:
+        print(f"  Total timesteps in range: {total_timesteps}")
+        print(f"  Already processed: {len(already_processed)}")
+        print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
     
     if len(timesteps_to_process) == 0:
         if rank == 0:
