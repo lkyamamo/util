@@ -19,9 +19,8 @@ TEMPLATE="303"
 # Output file (use absolute path to avoid working directory issues)
 OUTPUT_FILE="all_lammps.xyz"
 
-# Change to script directory to ensure proper path resolution
-cd "$(dirname "$0")"
-echo "Working directory: $(pwd)"
+# Note: Let the Python script handle its own path resolution
+echo "SLURM working directory: $(pwd)"
 
 # Log job start
 echo "=========================================="
