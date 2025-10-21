@@ -60,8 +60,8 @@ def process_lammps_file(filename, output_file):
             line = f.readline()        
 
             # line 4: ITEM: NUMBER OF ATOMS
-            line = f.readline().strip(' ')
-            num_atoms = int(line[0])
+            line = f.readline().strip()
+            num_atoms = int(line)
 
             # Build XYZ content
             xyz_content = f"{num_atoms}\n"
