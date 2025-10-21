@@ -49,7 +49,19 @@ echo "Output file: ${OUTPUT_FILE}"
 echo "Timestep range: ${START} to ${END} (step ${INCREMENT})"
 echo "Dumps directory should be: $(dirname "$(pwd)")/dumps"
 echo "Checking if dumps directory exists:"
-ls -la ../dumps/ | head -5 || echo "Dumps directory not found or empty"
+if [ -d "../dumps" ]; then
+    echo "✓ Dumps directory exists"
+    echo "Checking for sample 303.* files:"
+    # Use find with -maxdepth 1 and limit results to avoid performance issues
+    find ../dumps -maxdepth 1 -name "303.*" -type f | head -3 | while read file; do
+        echo "  Found: $(basename "$file")"
+    done
+    # Count total 303.* files efficiently
+    file_count=$(find ../dumps -maxdepth 1 -name "303.*" -type f | wc -l)
+    echo "  Total 303.* files found: $file_count"
+else
+    echo "✗ Dumps directory not found"
+fi
 echo "=========================================="
 
 srun --mpi=pmix -n $SLURM_NTASKS python old_to_new_mpi.py \
