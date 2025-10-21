@@ -142,6 +142,7 @@ def TotalMoment(atoms, bonds, la, lb, lc):
 def get_timesteps_to_process(start, end, increment, output_file):
     """
     Calculate which timesteps should be processed and which are already done.
+    This should only be called by rank 0.
     
     For the original format, we track by line number since timesteps are processed sequentially.
     
@@ -152,8 +153,8 @@ def get_timesteps_to_process(start, end, increment, output_file):
     # Calculate all timesteps that SHOULD be processed
     all_timesteps = list(range(start, end, increment))
     
-    # Load already processed line numbers from output file
-    already_processed_lines = load_processed_timesteps(output_file)
+    # Load already processed line numbers from main output file (only rank 0)
+    already_processed_lines = load_processed_timesteps_main_file(output_file)
     
     # For the original format, we need to check if we have enough lines
     # If we have fewer lines than expected timesteps, we need to process more
@@ -171,10 +172,10 @@ def get_timesteps_to_process(start, end, increment, output_file):
     
     return timesteps_to_process, already_processed_lines
 
-def load_processed_timesteps(output_file):
+def load_processed_timesteps_main_file(output_file):
     """
-    Load already processed timesteps from output file.
-    Returns set of timesteps that have been completed.
+    Load already processed timesteps from main output file.
+    This should only be called by rank 0.
     
     For the original format, we track by line number since timesteps are processed sequentially.
     """
@@ -199,6 +200,15 @@ def load_processed_timesteps(output_file):
                                 pass
         except Exception as e:
             print(f"[Proc {rank}] Warning: Could not read main output file: {e}")
+    
+    return processed
+
+def load_processed_timesteps_per_process(output_file):
+    """
+    Load already processed timesteps from per-process file.
+    Each process reads its own per-process file.
+    """
+    processed = set()
     
     # Check per-process files (for MPI restart)
     proc_file = f"{output_file}.proc{rank}"
@@ -515,15 +525,33 @@ def process_timesteps_mpi(start, end, increment, output_file, file_prefix="298")
         print("=" * 70)
         print()
     
-    print("Determining which timesteps need processing...", flush=True)
-    timesteps_to_process, already_processed = get_timesteps_to_process(
-        start, end, increment, output_file
-    )
+    # Only rank 0 determines which timesteps need processing
+    if rank == 0:
+        print("Determining which timesteps need processing...", flush=True)
+        timesteps_to_process, already_processed = get_timesteps_to_process(
+            start, end, increment, output_file
+        )
+        
+        total_timesteps = len(range(start, end, increment))
+        print(f"  Total timesteps in range: {total_timesteps}")
+        print(f"  Already processed: {len(already_processed)}")
+        print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
+    else:
+        # Other processes initialize empty variables
+        timesteps_to_process = []
+        already_processed = set()
+        total_timesteps = 0
     
-    total_timesteps = len(range(start, end, increment))
-    print(f"  Total timesteps in range: {total_timesteps}")
-    print(f"  Already processed: {len(already_processed)}")
-    print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
+    # Broadcast the results from rank 0 to all processes
+    timesteps_to_process = comm.bcast(timesteps_to_process, root=0)
+    already_processed = comm.bcast(already_processed, root=0)
+    total_timesteps = comm.bcast(total_timesteps, root=0)
+    
+    # All processes now have the same information
+    if rank != 0:
+        print(f"  Total timesteps in range: {total_timesteps}")
+        print(f"  Already processed: {len(already_processed)}")
+        print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
     
     if len(timesteps_to_process) == 0:
         if rank == 0:

@@ -11,7 +11,7 @@ def LoadXYZ(xyz):
                 lines = file1.readline()        #1
                 lines = file1.readline()        #2
                 lines = file1.readline()        #3
-                natoms = int(lines.strip().split()[0])
+                natoms = int(lines.strip().split(sep=' ')[0])
                 lines = file1.readline()        #4
                 lines = file1.readline()        #5
                 la = float(lines.strip().split()[1]) - float(lines.strip().split()[0])
