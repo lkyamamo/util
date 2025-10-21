@@ -79,9 +79,18 @@ IFS=$'\t' read -r _i _n _t _s <&3
 processed=0
 ok=0
 failed=0
+skipped=0
 
 while IFS=$'\t' read -r idx name type status <&3; do
   [[ -z "${idx:-}" ]] && continue
+  
+  # Skip items that are already uploaded
+  if [[ "$status" == "UPLOADED" ]]; then
+    echo "  [SKIP] $name  -> already uploaded"
+    ((skipped++)) || true
+    continue
+  fi
+  
   ((processed++)) || true
 
   if [[ "$type" == "d" ]]; then
@@ -89,25 +98,33 @@ while IFS=$'\t' read -r idx name type status <&3; do
     echo "  [DIR]  $name  -> tar on HPC, then rsync"
     
     if [[ "$DRY_RUN" == "true" ]]; then
-      echo "    DRY RUN: Would create tarball $tarname and rsync to $NAS_DEST/"
+      echo "    DRY RUN: Would check for existing tarball $tarname and rsync to $NAS_DEST/"
       ((ok++)) || true
       continue
     fi
     
-    if robust_ssh "cd '$REMOTE_DIR' && tar -czf '$tarname' '$name'" 2>/dev/null; then
-      if rsync -a -e "$(get_rsync_ssh)" --timeout="${RSYNC_TIMEOUT:-600}" -- "$HPC:$REMOTE_DIR/$tarname" "$NAS_DEST/" 2>/dev/null; then
-        # Cleanup remote tarball
-        robust_ssh "rm -f '$REMOTE_DIR/$tarname'" >/dev/null 2>&1 || true
-        update_status "$idx" "UPLOADED"
-        ((ok++)) || true
-        echo "    ✓ Success"
-      else
-        echo "    ✗ Failed: rsync error"
+    # Check if tarball already exists on remote
+    if robust_ssh "test -f '$REMOTE_DIR/$tarname'" 2>/dev/null; then
+      echo "    Using existing tarball: $tarname"
+    else
+      echo "    Creating tarball: $tarname"
+      if ! robust_ssh "cd '$REMOTE_DIR' && tar -czf '$tarname' '$name'" 2>/dev/null; then
+        echo "    ✗ Failed: tar creation error"
         update_status "$idx" "FAILED"
         ((failed++)) || true
+        continue
       fi
+    fi
+    
+    # Now rsync the tarball (whether existing or newly created)
+    if rsync -a -e "$(get_rsync_ssh)" --timeout="${RSYNC_TIMEOUT:-600}" -- "$HPC:$REMOTE_DIR/$tarname" "$NAS_DEST/" 2>/dev/null; then
+      # Cleanup remote tarball
+      robust_ssh "rm -f '$REMOTE_DIR/$tarname'" >/dev/null 2>&1 || true
+      update_status "$idx" "UPLOADED"
+      ((ok++)) || true
+      echo "    ✓ Success"
     else
-      echo "    ✗ Failed: tar creation error"
+      echo "    ✗ Failed: rsync error"
       update_status "$idx" "FAILED"
       ((failed++)) || true
     fi
@@ -138,5 +155,6 @@ echo "--- Summary ---"
 echo "Processed: $processed"
 echo "OK:        $ok"
 echo "Failed:    $failed"
+echo "Skipped:   $skipped"
 echo ""
 echo "[3/3] Done. See $MANIFEST for statuses."

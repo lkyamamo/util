@@ -21,6 +21,32 @@ log() {
   echo "[$timestamp] $*"
 }
 
+# Function to check if all items in manifest are uploaded
+check_manifest_status() {
+  local manifest_file="$1"
+  
+  if [[ ! -f "$manifest_file" ]]; then
+    return 1  # No manifest file exists
+  fi
+  
+  # Check if all non-header lines have status "UPLOADED"
+  local total_items=0
+  local uploaded_items=0
+  
+  while IFS=$'\t' read -r idx name type status; do
+    [[ "$idx" == "idx" ]] && continue  # Skip header
+    [[ -z "${idx:-}" ]] && continue    # Skip empty lines
+    
+    ((total_items++)) || true
+    if [[ "$status" == "UPLOADED" ]]; then
+      ((uploaded_items++)) || true
+    fi
+  done < "$manifest_file"
+  
+  # Return 0 if all items are uploaded, 1 otherwise
+  [[ $total_items -gt 0 && $uploaded_items -eq $total_items ]]
+}
+
 # Function to process a single directory
 process_directory() {
   local remote_dir="$1"
@@ -32,7 +58,20 @@ process_directory() {
   # Create local directory
   mkdir -p "$local_dir"
   
-  # Create manifest for this directory
+  # Check if manifest already exists and all items are uploaded
+  if [[ -f "$manifest_file" ]]; then
+    log "Found existing manifest: $manifest_file"
+    if check_manifest_status "$manifest_file"; then
+      log "All items in manifest are already UPLOADED - skipping directory"
+      return 0
+    else
+      log "Manifest exists but has incomplete uploads - will retry"
+    fi
+  else
+    log "No existing manifest found - creating new one"
+  fi
+  
+  # Create or update manifest for this directory
   if ! "$SCRIPT_DIR/create_manifest.sh" "$remote_dir" "$manifest_file"; then
     log "ERROR: Failed to create manifest for $remote_dir"
     return 1
