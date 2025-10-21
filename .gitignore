@@ -1,1 +1,8 @@
 *POTCAR*
+calculations/lammps/dumps/
+calculations/lammps/new-dielectric-constant/README_MPI.md
+calculations/lammps/new-dielectric-constant/README_old_to_new_mpi.md
+calculations/lammps/new-dielectric-constant/__pycache__/old_to_new_mpi.cpython-313.pyc
+calculations/lammps/new-dielectric-constant/__pycache__/verify_output_format.cpython-313.pyc
+calculations/lammps/new-dielectric-constant/run_dipole_mpi.sh
+calculations/lammps/new-dielectric-constant/verify_output_format.py

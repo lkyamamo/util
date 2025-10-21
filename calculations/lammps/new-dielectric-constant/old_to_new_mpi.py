@@ -186,14 +186,14 @@ def verify_output_file_sorted(filename):
 
 def streaming_merge_files(temp_combined_file, output_file, existing_timesteps=None):
     """
-    Merge a sorted temporary file with the existing sorted output file using simple line-by-line comparison.
-    Only adds new timesteps to the output file, preserving all existing data.
+    Merge a sorted temporary file with the existing sorted output file using proper merge algorithm.
+    Only adds new timesteps to the output file, preserving all existing data and maintaining sort order.
     
     Process:
-    1. Compare current line from output file with current line from temp file
-    2. If temp timestep is smaller, write temp line and move to next temp line
-    3. If temp timestep is larger, write output line and move to next output line
-    4. Repeat until all lines are processed
+    1. Read both files line by line, comparing timesteps
+    2. Write the smaller timestep first, maintaining chronological order
+    3. Skip duplicate timesteps (already in existing file)
+    4. Continue until both files are fully processed
     
     Args:
         temp_combined_file: Path to temporary file with new sorted data (must be chronologically sorted)
@@ -221,40 +221,112 @@ def streaming_merge_files(temp_combined_file, output_file, existing_timesteps=No
                         except (ValueError, IndexError):
                             continue
     
-    # Simple line-by-line merge approach
     merged_file = f"{output_file}.merged"
     new_timesteps_added = 0
     
     try:
         # Handle case where output file doesn't exist yet
-        if os.path.exists(output_file):
-            # For existing output file, we need to append new data
-            with open(output_file, 'r') as f_output, open(temp_combined_file, 'r') as f_temp, open(merged_file, 'w') as f_out:
-                # Copy all existing output lines
-                for line in f_output:
-                    f_out.write(line)
-                
-                # Append new temp lines
-                for line in f_temp:
-                    line_clean = line.strip()
-                    if line_clean.startswith("Atoms. Timestep:"):
-                        try:
-                            timestep = int(line_clean.split(":")[1].strip())
-                            if timestep not in existing_timesteps:
-                                f_out.write(line)
-                                new_timesteps_added += 1
-                        except (ValueError, IndexError):
-                            pass
-                    else:
-                        # This is part of an XYZ block, write it if we're adding this timestep
-                        f_out.write(line)
-        else:
+        if not os.path.exists(output_file):
             # Output file doesn't exist - just copy temp file to output file
             with open(temp_combined_file, 'r') as f_temp, open(merged_file, 'w') as f_out:
                 for line in f_temp:
                     f_out.write(line)
                     if line.strip().startswith("Atoms. Timestep:"):
                         new_timesteps_added += 1
+        else:
+            # Both files exist - perform proper merge
+            with open(output_file, 'r') as f_output, open(temp_combined_file, 'r') as f_temp, open(merged_file, 'w') as f_out:
+                # Read first lines from both files
+                output_line = f_output.readline()
+                temp_line = f_temp.readline()
+                
+                while output_line or temp_line:
+                    # Determine which line to write next based on timestep comparison
+                    if output_line and temp_line:
+                        # Both files have data - compare timesteps
+                        if output_line.strip().startswith("Atoms. Timestep:"):
+                            output_timestep = int(output_line.split(":")[1].strip())
+                        else:
+                            # This is part of an XYZ block, write it and continue
+                            f_out.write(output_line)
+                            output_line = f_output.readline()
+                            continue
+                            
+                        if temp_line.strip().startswith("Atoms. Timestep:"):
+                            temp_timestep = int(temp_line.split(":")[1].strip())
+                        else:
+                            # This is part of an XYZ block, write it and continue
+                            f_out.write(temp_line)
+                            temp_line = f_temp.readline()
+                            continue
+                        
+                        # Compare timesteps and write the smaller one
+                        if output_timestep < temp_timestep:
+                            # Write output file data
+                            f_out.write(output_line)
+                            # Read complete XYZ block from output file
+                            while True:
+                                output_line = f_output.readline()
+                                if not output_line or output_line.strip().startswith("Atoms. Timestep:"):
+                                    break
+                                f_out.write(output_line)
+                        elif output_timestep > temp_timestep:
+                            # Write temp file data (if not duplicate)
+                            if temp_timestep not in existing_timesteps:
+                                f_out.write(temp_line)
+                                new_timesteps_added += 1
+                                # Read complete XYZ block from temp file
+                                while True:
+                                    temp_line = f_temp.readline()
+                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
+                                        break
+                                    f_out.write(temp_line)
+                            else:
+                                # Skip duplicate timestep from temp file
+                                while True:
+                                    temp_line = f_temp.readline()
+                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
+                                        break
+                        else:
+                            # Same timestep - write output file data (existing takes precedence)
+                            f_out.write(output_line)
+                            # Skip temp file data (duplicate)
+                            while True:
+                                temp_line = f_temp.readline()
+                                if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
+                                    break
+                            # Read complete XYZ block from output file
+                            while True:
+                                output_line = f_output.readline()
+                                if not output_line or output_line.strip().startswith("Atoms. Timestep:"):
+                                    break
+                                f_out.write(output_line)
+                    elif output_line:
+                        # Only output file has data - write remaining output data
+                        f_out.write(output_line)
+                        output_line = f_output.readline()
+                    elif temp_line:
+                        # Only temp file has data - write temp data (if not duplicate)
+                        if temp_line.strip().startswith("Atoms. Timestep:"):
+                            temp_timestep = int(temp_line.split(":")[1].strip())
+                            if temp_timestep not in existing_timesteps:
+                                f_out.write(temp_line)
+                                new_timesteps_added += 1
+                                # Read complete XYZ block
+                                while True:
+                                    temp_line = f_temp.readline()
+                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
+                                        break
+                                    f_out.write(temp_line)
+                            else:
+                                # Skip duplicate
+                                while True:
+                                    temp_line = f_temp.readline()
+                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
+                                        break
+                        else:
+                            f_out.write(temp_line)
+                            temp_line = f_temp.readline()
         
         # Replace original file with merged file
         os.replace(merged_file, output_file)
@@ -358,6 +430,7 @@ def combine_per_process_files(output_file, size):
     sorted_proc_results = sorted(intermediate_results.items())
     
     print(f"  Creating temporary combined file with {len(sorted_proc_results)} timesteps")
+    print(f"  Timestep range: {sorted_proc_results[0][0]} to {sorted_proc_results[-1][0]}")
     with open(temp_combined_file, 'w') as f_temp:
         for timestep, xyz_block in sorted_proc_results:
             for line in xyz_block:
