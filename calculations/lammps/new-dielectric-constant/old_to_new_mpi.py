@@ -39,9 +39,11 @@ def process_lammps_file(filename, output_file):
     Returns the XYZ content as a string, or None if file doesn't exist or has errors.
     """
     if not os.path.exists(filename):
+        print(f"[Proc {rank}] File not found: {filename}")
         return None
+    print(f"[Proc {rank}] Processing file: {filename}")
     
-    try:
+
         with open(filename, "r") as f:
             # Read header information
             # line 1: ITEM: TIMESTEP
@@ -424,8 +426,19 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
         print(f"Dumps directory: {dumps_dir}")
         print(f"Dumps directory exists: {os.path.exists(dumps_dir)}")
         if os.path.exists(dumps_dir):
-            sample_files = [f for f in os.listdir(dumps_dir) if f.startswith(template_prefix)][:3]
-            print(f"Sample dump files: {sample_files}")
+            # Use find command to efficiently get sample files (avoid os.listdir with 1M files)
+            import subprocess
+            try:
+                result = subprocess.run(['find', dumps_dir, '-maxdepth', '1', '-name', f'{template_prefix}.*', '-type', 'f'], 
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    sample_files = result.stdout.strip().split('\n')[:3]
+                    sample_files = [os.path.basename(f) for f in sample_files if f]
+                    print(f"Sample dump files: {sample_files}")
+                else:
+                    print(f"Could not list sample files: {result.stderr}")
+            except Exception as e:
+                print(f"Error listing sample files: {e}")
         print()
     # Create per-process output files for incremental writing
     proc_output_file = f"{output_file}.proc{rank}"
@@ -515,6 +528,34 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
                 if timestep_index % size == rank:
                     try:
                         filename = os.path.join(dumps_dir, f"{template_prefix}.{i}")
+                        
+                        # Debug: Check if file exists before processing
+                        if not os.path.exists(filename):
+                            print(f"[Proc {rank}] ERROR: File not found: {filename}")
+                            print(f"[Proc {rank}] Dumps directory: {dumps_dir}")
+                            print(f"[Proc {rank}] Template prefix: {template_prefix}")
+                            print(f"[Proc {rank}] Timestep: {i}")
+                            
+                            # Additional debugging: check if dumps directory has any files
+                            if os.path.exists(dumps_dir):
+                                try:
+                                    import subprocess
+                                    result = subprocess.run(['find', dumps_dir, '-maxdepth', '1', '-name', f'{template_prefix}.*', '-type', 'f'], 
+                                                          capture_output=True, text=True, timeout=5)
+                                    if result.returncode == 0:
+                                        files = result.stdout.strip().split('\n')
+                                        files = [f for f in files if f]
+                                        print(f"[Proc {rank}] Found {len(files)} {template_prefix}.* files in dumps directory")
+                                        if files:
+                                            print(f"[Proc {rank}] Sample files: {[os.path.basename(f) for f in files[:3]]}")
+                                    else:
+                                        print(f"[Proc {rank}] Could not list files in dumps directory")
+                                except Exception as e:
+                                    print(f"[Proc {rank}] Error checking dumps directory: {e}")
+                            else:
+                                print(f"[Proc {rank}] Dumps directory does not exist!")
+                            continue
+                        
                         xyz_content = process_lammps_file(filename, output_file)
                         
                         if xyz_content is not None:
@@ -540,10 +581,11 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
                                 last_combination_counter = counter
                                 comm.Barrier()  # Synchronize after combining
                         else:
-                            print(f"[Proc {rank}] Warning: File {filename} not found or invalid, skipping timestep {i}")
+                            print(f"[Proc {rank}] Warning: File {filename} exists but could not be processed, skipping timestep {i}")
                             
                     except Exception as e:
                         print(f"[Proc {rank}] Error processing timestep {i}: {e}")
+                        print(f"[Proc {rank}] Filename attempted: {filename}")
                         import traceback
                         traceback.print_exc()
         
