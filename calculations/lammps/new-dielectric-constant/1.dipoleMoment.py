@@ -125,15 +125,38 @@ def TotalMoment(atoms, bonds, la, lb, lc):
 
         return totalMoment
 
+if len(sys.argv) < 5:
+    print("Usage: python 1.dipoleMoment.py <start> <end> <increment> <output_file> [file_prefix]")
+    print("  start: starting timestep")
+    print("  end: ending timestep")
+    print("  increment: timestep increment")
+    print("  output_file: output file name")
+    print("  file_prefix: optional file prefix (default: '298')")
+    print("")
+    print("Examples:")
+    print("  python 1.dipoleMoment.py 0 1000 10 output.txt")
+    print("  python 1.dipoleMoment.py 0 1000 10 output.txt 303")
+    print("  python 1.dipoleMoment.py 0 1000 10 output.txt 273.15")
+    sys.exit(1)
+
 start = int(sys.argv[1])
 end = int(sys.argv[2])
 incr = int(sys.argv[3])
+output_file = sys.argv[4]
+
+# Optional 5th argument for file format (default: "298")
+if len(sys.argv) > 5:
+    file_prefix = sys.argv[5]
+else:
+    print("Error: file prefix is not provided")
+    sys.exit(1)
+
 counter = 0
 
-file10 = open(sys.argv[4],"w")
+file10 = open(output_file,"w")
 
 for i in range(start,end,incr):
-        xyz = "298.%d" %i
+        xyz = "%s.%d" % (file_prefix, i)
         moment = []
 
         natoms, atoms, bonds, la, lb, lc = LoadXYZ(xyz)
