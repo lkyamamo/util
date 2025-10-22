@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 MPI-parallel version of process_bonds_inline_3atom.py for multi-node HPC clusters.
-OPTIMIZED FOR 1 MILLION FRAMES - High Performance Version
 
 This version uses MPI to distribute frame processing across multiple nodes.
 Each MPI process handles a subset of frames independently.
@@ -20,33 +19,8 @@ Key Features:
 - Separate statistics file: saves bond formation statistics to {output_file}.statistics (merges with existing)
 - Optimized statistics tracking: O(1) memory usage with periodic progress reporting
 
-OPTIMIZATIONS FOR 1M FRAMES × 5184 ATOMS:
-- Vectorized bond calculation using numpy arrays (10-50x faster)
-- Early termination when exactly 2 atoms found within cutoff
-- Optimized for 5184 atoms: ~26M distance calculations per frame → vectorized
-- Buffered file I/O (100-frame batches) to reduce disk writes
-- Reduced combination frequency (every 2% vs 5% of work)
-- Reduced progress reporting frequency (every 2% vs 1% of work)
-- Optimized memory usage with pre-allocated data structures
-- Reduced verbose output (every 1000th frame vs every frame)
-- Larger file buffers (8KB) for better I/O performance
-- Memory-efficient data types for 5184-atom systems
-
-Performance Improvements for 1M Frames × 5184 Atoms:
-- Bond calculation: O(N²) → O(N) with early termination and cutoff optimization
-- Distance calculations: ~26M per frame → vectorized numpy operations
-- File I/O: 1M individual writes → 10K batched writes
-- Memory usage: ~50% reduction through float32/int32 precision and cleanup
-- Progress reporting: 100K reports → 1K reports for 1M frames
-- Cutoff optimization: Skip sorting when multiple atoms within cutoff
-- Memory management: Explicit cleanup prevents memory leaks in large systems
-
-Scale: 1,000,000 frames × 5,184 atoms = 5,184,000,000 total atom positions
-Expected runtime: 10-50x speedup over original implementation
-
 Requirements:
     mpi4py (pip install mpi4py)
-    numpy (for vectorized operations)
 
 Usage:
     mpirun -np 64 python process_bonds_inline_3atom_mpi.py <input_file> <start> <end> <increment> 
@@ -61,8 +35,8 @@ from mpi4py import MPI
 
 # Type-to-charge mapping (hardcoded)
 TYPE_TO_CHARGE = {
-    2: -0.65966,  # Central atoms (e.g., oxygen)
-    1: 0.32983,   # Terminal atoms (e.g., hydrogen)
+    1: -0.65966,  # Central atoms (e.g., oxygen)
+    2: 0.32983,   # Terminal atoms (e.g., hydrogen)
 }
 
 # Initialize MPI
@@ -71,7 +45,7 @@ rank = comm.Get_rank()
 size = comm.Get_size()
 
 def read_frame(f):
-    """Read a single frame from file handle - OPTIMIZED VERSION. Returns (atoms, num_atoms, timestep) or (None, None, None) at EOF."""
+    """Read a single frame from file handle. Returns (atoms, num_atoms, timestep) or (None, None, None) at EOF."""
     atoms = {}
     
     line = f.readline()
@@ -82,9 +56,6 @@ def read_frame(f):
     timestep_line = f.readline().strip()
     timestep = int(timestep_line.split(':')[1].strip())
     
-    # Pre-allocate atoms dictionary for better performance
-    atoms = {i: None for i in range(1, num_atoms + 1)}
-    
     for i in range(1, num_atoms + 1):
         line = f.readline()
         if not line:
@@ -94,6 +65,64 @@ def read_frame(f):
         atoms[i] = [int(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])]
     
     return atoms, num_atoms, timestep
+
+
+def validate_inputs(filename, start, end, increment, type_A, type_B, cutoff, la, lb, lc, output_file):
+    """
+    Validate input parameters and check for common issues.
+    
+    Args:
+        filename: Input trajectory file path
+        start, end, increment: Timestep range parameters
+        type_A, type_B: Atom types for bond formation
+        cutoff: Distance cutoff for bond formation
+        la, lb, lc: Box dimensions
+        output_file: Output file path
+    
+    Raises:
+        ValueError: If any parameter is invalid
+        FileNotFoundError: If input file doesn't exist
+    """
+    # Check if input file exists
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"Input file '{filename}' does not exist")
+    
+    # Validate timestep parameters
+    if start < 0:
+        raise ValueError(f"Start timestep must be non-negative, got {start}")
+    if end <= start:
+        raise ValueError(f"End timestep ({end}) must be greater than start timestep ({start})")
+    if increment <= 0:
+        raise ValueError(f"Increment must be positive, got {increment}")
+    
+    # Validate atom types
+    if type_A <= 0:
+        raise ValueError(f"Type_A must be positive, got {type_A}")
+    if type_B <= 0:
+        raise ValueError(f"Type_B must be positive, got {type_B}")
+    if type_A == type_B:
+        raise ValueError(f"Type_A and Type_B must be different, both are {type_A}")
+    
+    # Validate cutoff
+    if cutoff <= 0:
+        raise ValueError(f"Cutoff must be positive, got {cutoff}")
+    
+    # Validate box dimensions
+    if la <= 0 or lb <= 0 or lc <= 0:
+        raise ValueError(f"Box dimensions must be positive, got la={la}, lb={lb}, lc={lc}")
+    
+    # Check if cutoff is reasonable compared to box size
+    max_box_dim = max(la, lb, lc)
+    if cutoff > max_box_dim / 2:
+        print(f"Warning: Cutoff ({cutoff}) is larger than half the maximum box dimension ({max_box_dim/2})")
+        print("This may cause issues with periodic boundary conditions")
+    
+    # Validate output file path
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        raise ValueError(f"Output directory '{output_dir}' does not exist")
+    
+    print(f"✓ Input validation passed")
 
 
 def apply_periodic_boundary_conditions(dx, dy, dz, la, lb, lc):
@@ -117,41 +146,14 @@ def apply_periodic_boundary_conditions(dx, dy, dz, la, lb, lc):
     return dx, dy, dz
 
 
-def apply_periodic_boundary_conditions_vectorized(dx, dy, dz, la, lb, lc):
-    """
-    Apply periodic boundary conditions to distance components - VECTORIZED VERSION.
-    Optimized for numpy arrays to handle multiple distances at once.
-    
-    Args:
-        dx, dy, dz: numpy arrays of distance components
-        la, lb, lc: Box dimensions
-    
-    Returns:
-        Corrected distance components with periodic boundary conditions applied
-    """
-    # Vectorized periodic boundary conditions - CORRECTED VERSION
-    # Use np.select to match the elif logic of the original function
-    dx = np.select([dx >= la/2.0, dx <= -la/2.0], [dx - la, dx + la], default=dx)
-    dy = np.select([dy >= lb/2.0, dy <= -lb/2.0], [dy - lb, dy + lb], default=dy)
-    dz = np.select([dz >= lc/2.0, dz <= -lc/2.0], [dz - lc, dz + lc], default=dz)
-    
-    return dx, dy, dz
-
-
 def create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims):
     """
-    Create 3-atom molecular bonds (like water molecules) - OPTIMIZED FOR 5184 ATOMS.
+    Create 3-atom molecular bonds (like water molecules).
     
     Algorithm:
     1. Find all type_A atoms (e.g., oxygen)
-    2. For each type_A, find closest 2 type_B atoms (e.g., hydrogens) using vectorized operations
+    2. For each type_A, find closest 2 type_B atoms (e.g., hydrogens)
     3. Create a bond with these 3 atoms
-    
-    Optimizations for 5184 atoms:
-    - Vectorized distance calculations using numpy arrays (10-50x faster)
-    - Early termination when exactly 2 atoms found within cutoff
-    - Pre-allocated arrays for better memory efficiency
-    - Reduced warning frequency for better performance
     
     Returns:
     --------
@@ -180,113 +182,66 @@ def create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims):
     atom_ids = list(atoms.keys())
     la, lb, lc = box_dims
     
-    # Group atoms by type - use numpy arrays for better performance
+    # Group atoms by type
     type_A_atoms = []
     type_B_atoms = []
-    type_B_positions = []  # Pre-allocate for numpy operations
     
-    for atom_id, (atom_type, x, y, z) in atoms.items():
+    for atom_id in atom_ids:
+        atom_type, _, _, _ = atoms[atom_id]
         if atom_type == type_A:
-            type_A_atoms.append((atom_id, x, y, z))
+            type_A_atoms.append(atom_id)
             type_A_count += 1
         elif atom_type == type_B:
             type_B_atoms.append(atom_id)
-            type_B_positions.append([x, y, z])
             type_B_count += 1
     
-    # Convert to numpy arrays for vectorized operations - OPTIMIZED FOR 5184 ATOMS
-    if type_B_positions:
-        type_B_positions = np.array(type_B_positions, dtype=np.float32)  # Use float32 for memory efficiency
-        type_B_atoms = np.array(type_B_atoms, dtype=np.int32)  # Use int32 for atom IDs
-    
     # For each type_A atom, find closest 2 type_B atoms
-    for atom_id1, x1, y1, z1 in type_A_atoms:
-        # Vectorized distance calculation using numpy
-        if len(type_B_positions) > 0:
-            # Calculate all distances at once
-            dx = type_B_positions[:, 0] - x1
-            dy = type_B_positions[:, 1] - y1
-            dz = type_B_positions[:, 2] - z1
+    for atom_id1 in type_A_atoms:
+        _, x1, y1, z1 = atoms[atom_id1]
+        
+        # Find distances to all type_B atoms
+        distances = []
+        type_B_within_cutoff_count = 0  # Count for this specific type_A atom
+        
+        for atom_id2 in type_B_atoms:
+            _, x2, y2, z2 = atoms[atom_id2]
             
-            # Apply periodic boundary conditions
-            dx, dy, dz = apply_periodic_boundary_conditions_vectorized(dx, dy, dz, la, lb, lc)
+            # Calculate distance with periodic boundary conditions
+            dx, dy, dz = apply_periodic_boundary_conditions(x2 - x1, y2 - y1, z2 - z1, la, lb, lc)
             
-            # Calculate squared distances
             dist_sq = dx*dx + dy*dy + dz*dz
+            distances.append((dist_sq, atom_id2))
+        
+        # Sort by distance and take closest 2
+        distances.sort()
+        
+        # Count atoms within cutoff first
+        for dist, atom_id in distances:
+            if dist <= cutoff_sq:
+                type_B_within_cutoff_count += 1
+        
+        # Only warn if number of atoms within cutoff is not exactly 2
+        if type_B_within_cutoff_count != 2:
+            print(f"Warning: Atom {atom_id1} has {type_B_within_cutoff_count} atoms within cutoff (expected 2)")
+        
+        # Check if we have at least 2 atoms and if closest 2 are within cutoff
+        if len(distances) >= 2:
+            dist1, atom_id2 = distances[0]
+            dist2, atom_id3 = distances[1]
             
-            # Find atoms within cutoff
-            within_cutoff_mask = dist_sq <= cutoff_sq
-            type_B_within_cutoff_count = np.sum(within_cutoff_mask)
-            
-            # Early termination optimization: if we have exactly 2 atoms within cutoff,
-            # we don't need to sort all distances
-            if type_B_within_cutoff_count == 2:
-                # Get the two atoms within cutoff
-                within_cutoff_indices = np.where(within_cutoff_mask)[0]
-                atom_id2 = type_B_atoms[within_cutoff_indices[0]]
-                atom_id3 = type_B_atoms[within_cutoff_indices[1]]
-                
+            if dist1 <= cutoff_sq and dist2 <= cutoff_sq:
                 # Create 3-atom bond: [type_A, type_B1, type_B2]
                 bonds[bond_id] = [atom_id1, atom_id2, atom_id3]
                 bond_id += 1
                 bonds_created += 1
-                atoms_within_cutoff += 2
-                continue
-            
-            # Additional optimization for 5184 atoms: if we have more than 2 atoms within cutoff,
-            # find the closest 2 without sorting all distances
-            elif type_B_within_cutoff_count > 2:
-                # Get only the atoms within cutoff and their distances
-                within_cutoff_distances = dist_sq[within_cutoff_mask]
-                within_cutoff_indices = np.where(within_cutoff_mask)[0]
-                
-                # Find 2 smallest distances among those within cutoff
-                closest_two_indices = np.argpartition(within_cutoff_distances, 2)[:2]
-                atom_id2 = type_B_atoms[within_cutoff_indices[closest_two_indices[0]]]
-                atom_id3 = type_B_atoms[within_cutoff_indices[closest_two_indices[1]]]
-                
-                # Create 3-atom bond: [type_A, type_B1, type_B2]
-                bonds[bond_id] = [atom_id1, atom_id2, atom_id3]
-                bond_id += 1
-                bonds_created += 1
-                atoms_within_cutoff += type_B_within_cutoff_count
-                continue
-            
-            # If not exactly 2, find closest 2 atoms
-            if len(type_B_atoms) >= 2:
-                # Get indices sorted by distance
-                sorted_indices = np.argsort(dist_sq)
-                closest_indices = sorted_indices[:2]
-                
-                dist1 = dist_sq[closest_indices[0]]
-                dist2 = dist_sq[closest_indices[1]]
-                atom_id2 = type_B_atoms[closest_indices[0]]
-                atom_id3 = type_B_atoms[closest_indices[1]]
-                
-                if dist1 <= cutoff_sq and dist2 <= cutoff_sq:
-                    # Create 3-atom bond: [type_A, type_B1, type_B2]
-                    bonds[bond_id] = [atom_id1, atom_id2, atom_id3]
-                    bond_id += 1
-                    bonds_created += 1
-                else:
-                    bonds_missing += 1
-                    # Reduce warning frequency for performance
-                    if bonds_missing <= 10:  # Only warn for first 10 failures
-                        print(f"Warning: Bond {bond_id} not created for atom {atom_id1}: closest atoms outside cutoff")
             else:
                 bonds_missing += 1
-                if bonds_missing <= 10:  # Only warn for first 10 failures
-                    print(f"Warning: Atom {atom_id1} has fewer than 2 type_B atoms available")
-            
-            atoms_within_cutoff += type_B_within_cutoff_count
+                print(f"Warning: Bond {bond_id} not created for atom {atom_id1}: closest atoms outside cutoff (dist_sq1 = {dist1:.6f}, dist_sq2 = {dist2:.6f})")
         else:
             bonds_missing += 1
-    
-    # Memory cleanup for 5184-atom systems - free large arrays
-    if 'type_B_positions' in locals():
-        del type_B_positions
-    if 'type_B_atoms' in locals():
-        del type_B_atoms
+            print(f"Warning: Atom {atom_id1} has fewer than 2 type_B atoms available ({len(distances)} found)")
+        
+        atoms_within_cutoff += type_B_within_cutoff_count
     
     # Calculate average type B atoms within cutoff per type A atom (molecule)
     avg_type_B_within_cutoff = atoms_within_cutoff / type_A_count if type_A_count > 0 else 0.0
@@ -818,18 +773,16 @@ def combine_per_process_files(output_file, size):
     else:
         print(f"  No existing output file found - will create new one")
     
-    # Step 2: Read all .proc* files into intermediate data - OPTIMIZED FOR LARGE DATASETS
+    # Step 2: Read all .proc* files into intermediate data
     intermediate_results = {}
     seen_timesteps = {}  # Track duplicates within .proc* files
     proc_file_sources = {}  # Track which .proc* file each timestep came from
     
-    # Process files in parallel to reduce I/O bottleneck
     for proc_id in range(size):
         proc_file = f"{output_file}.proc{proc_id}"
         if os.path.exists(proc_file):
             try:
-                # Use larger buffer for reading large files
-                with open(proc_file, 'r', buffering=8192) as f:
+                with open(proc_file, 'r') as f:
                     for line in f:
                         line = line.strip()
                         if line and not line.startswith('#'):
@@ -840,12 +793,11 @@ def combine_per_process_files(output_file, size):
                                 intermediate_results[timestep] = dipole  # Last write wins
                                 proc_file_sources[timestep] = proc_file  # Track source
                                 
-                                # Track duplicates (only for first 1000 to avoid memory overhead)
-                                if len(seen_timesteps) < 1000:
-                                    if timestep in seen_timesteps:
-                                        seen_timesteps[timestep] += 1
-                                    else:
-                                        seen_timesteps[timestep] = 1
+                                # Track duplicates
+                                if timestep in seen_timesteps:
+                                    seen_timesteps[timestep] += 1
+                                else:
+                                    seen_timesteps[timestep] = 1
             except Exception as e:
                 print(f"Warning: Could not read {proc_file}: {e}")
     
@@ -858,20 +810,14 @@ def combine_per_process_files(output_file, size):
         print("  No new data found in per-process files")
         return 0, 0, 0
     
-    # Step 3: Create temporary combined file with sorted per-process results - OPTIMIZED
+    # Step 3: Create temporary combined file with sorted per-process results
     temp_combined_file = f"{output_file}.temp_combined"
     sorted_proc_results = sorted(intermediate_results.items())
     
     print(f"  Creating temporary combined file with {len(sorted_proc_results)} timesteps")
-    # Use buffered writing for large files
-    with open(temp_combined_file, 'w', buffering=8192) as f_temp:
-        # Write in batches to reduce I/O overhead
-        batch_size = 1000
-        for i in range(0, len(sorted_proc_results), batch_size):
-            batch = sorted_proc_results[i:i+batch_size]
-            batch_lines = [f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n" 
-                          for timestep, dipole in batch]
-            f_temp.writelines(batch_lines)
+    with open(temp_combined_file, 'w') as f_temp:
+        for timestep, dipole in sorted_proc_results:
+            f_temp.write(f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n")
     
     # Step 4: Use streaming merge to combine with existing output file
     print(f"  Performing streaming merge with existing output file...")
@@ -936,25 +882,20 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         os.remove(proc_output_file)
         print(f"[Proc {rank}] Removed old per-process file to avoid duplicates", flush=True)
     
-    # Calculate combination interval based on expected workload - OPTIMIZED FOR 1M FRAMES
+    # Calculate combination interval based on expected workload
     # For 1M frames with 64 processes: ~15,625 frames per process
-    # Combine every 2% of expected work or every 5000 frames, whichever is larger
-    # This reduces I/O overhead significantly for large datasets
+    # Combine every 5% of expected work or every 1000 frames, whichever is larger
     total_frames_expected = len(range(start, end, increment))
     frames_per_process = max(1, total_frames_expected // size)
-    combination_interval = max(5000, frames_per_process // 50)  # Every 2% or 5000 frames
+    combination_interval = max(1000, frames_per_process // 20)  # Every 5% or 1000 frames
     
-    # Statistics reporting interval (show progress during long runs) - REDUCED FREQUENCY
-    stats_report_interval = max(1000, frames_per_process // 50)  # Every 2% or 1000 frames
-    
-    # Buffer size for writing - reduce flush frequency
-    write_buffer_size = 100  # Write in batches of 100 frames
+    # Statistics reporting interval (show progress during long runs)
+    stats_report_interval = max(100, frames_per_process // 100)  # Every 1% or 100 frames
     
     # All processes: Determine which timesteps need processing
     if rank == 0:
         print("=" * 70)
         print("MPI Parallel Bond Processing - 3-Atom Molecular Bonds")
-        print("OPTIMIZED FOR 1 MILLION FRAMES × 5184 ATOMS")
         print("=" * 70)
         print(f"Input file: {filename}")
         print(f"Timesteps: {start} to {end} (step {increment})")
@@ -968,8 +909,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print(f"Per-process files: {output_file}.proc*")
         print(f"MPI processes: {size}")
         print(f"Statistics reporting: Every {stats_report_interval} frames per process")
-        print(f"Combination interval: Every {combination_interval} frames per process")
-        print(f"Write buffer size: {write_buffer_size} frames")
         print("=" * 70)
         print()
     
@@ -1004,9 +943,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     # Open per-process output file in write mode for incremental writing
     f_out = open(proc_output_file, 'w')
     
-    # Initialize write buffer for batch writing
-    write_buffer = []
-    
     try:
         # Each process reads through the file and processes its assigned timesteps
         counter = 0
@@ -1033,32 +969,25 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                             if result is not None:
                                 timestep, dipole, num_bonds, mean_mag, bond_stats = result
                                 
-                                # Reduced verbose output for performance - only show every 1000th frame
-                                if counter % 1000 == 0:
-                                    print(f"[Proc {rank}] Timestep {timestep}: {num_bonds} bonds, "
-                                          f"dipole = [{dipole[0]:14.6f}, {dipole[1]:14.6f}, {dipole[2]:14.6f}], "
-                                          f"mean_mag = {mean_mag:.6f}")
-                                    print(f"[Proc {rank}] Bond stats: {bond_stats['bonds_created']} created, "
-                                          f"{bond_stats['bonds_missing']} missing, "
-                                          f"{bond_stats['avg_type_B_within_cutoff']:.2f} avg type_B within cutoff, "
-                                          f"type_A: {bond_stats['type_A_count']}, type_B: {bond_stats['type_B_count']}")
+                                print(f"[Proc {rank}] Timestep {timestep}: {num_bonds} bonds, "
+                                      f"dipole = [{dipole[0]:14.6f}, {dipole[1]:14.6f}, {dipole[2]:14.6f}], "
+                                      f"mean_mag = {mean_mag:.6f}")
+                                print(f"[Proc {rank}] Bond stats: {bond_stats['bonds_created']} created, "
+                                      f"{bond_stats['bonds_missing']} missing, "
+                                      f"{bond_stats['avg_type_B_within_cutoff']:.2f} avg type_B within cutoff, "
+                                      f"type_A: {bond_stats['type_A_count']}, type_B: {bond_stats['type_B_count']}")
                                 
                                 # Accumulate bond statistics
                                 running_stats['bonds_created'].add_value(bond_stats['bonds_created'])
                                 running_stats['bonds_missing'].add_value(bond_stats['bonds_missing'])
                                 running_stats['avg_type_B_within_cutoff'].add_value(bond_stats['avg_type_B_within_cutoff'])
                                 
-                                # Add to write buffer for batch writing
-                                write_buffer.append(f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n")
+                                # Write immediately with timestep for restart capability
+                                f_out.write(f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n")
+                                f_out.flush()  # Ensure data is written to disk
                                 counter += 1
                                 
-                                # Flush buffer when it reaches the buffer size
-                                if len(write_buffer) >= write_buffer_size:
-                                    f_out.writelines(write_buffer)
-                                    f_out.flush()
-                                    write_buffer.clear()
-                                
-                                # Periodic statistics reporting (show progress) - REDUCED FREQUENCY
+                                # Periodic statistics reporting (show progress)
                                 if counter - last_stats_report_counter >= stats_report_interval:
                                     print(f"[Proc {rank}] Progress: {counter} frames processed, "
                                           f"avg created: {running_stats['bonds_created'].get_mean():.2f}, "
@@ -1089,10 +1018,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print(f"[Proc {rank}] Processed {counter} frames")
     
     finally:
-        # Flush any remaining data in the buffer
-        if write_buffer:
-            f_out.writelines(write_buffer)
-            f_out.flush()
         f_out.close()
     
     # Synchronize all processes before final combination
@@ -1186,6 +1111,18 @@ if __name__ == "__main__":
     lc = float(sys.argv[10])
     output_file = sys.argv[11]
     
+    # Validate inputs before processing
+    if rank == 0:
+        try:
+            validate_inputs(filename, start, end, increment, type_A, type_B, cutoff, la, lb, lc, output_file)
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Input validation failed: {e}")
+            sys.exit(1)
+    
+    # Broadcast validation result to all processes
+    validation_passed = comm.bcast(rank == 0, root=0)
+    if not validation_passed:
+        sys.exit(1)
     
     process_concatenated_file_mpi(filename, start, end, increment, type_A, type_B,
                                    cutoff, [la, lb, lc], TYPE_TO_CHARGE, output_file)
