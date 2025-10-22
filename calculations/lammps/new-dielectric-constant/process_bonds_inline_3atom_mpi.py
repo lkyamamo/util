@@ -945,7 +945,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     combination_interval = max(5000, frames_per_process // 50)  # Every 2% or 5000 frames
     
     # Statistics reporting interval (show progress during long runs) - REDUCED FREQUENCY
-    stats_report_interval = max(1000, frames_per_process // 50)  # Every 2% or 1000 frames
+    stats_report_interval = max(100, frames_per_process // 100)  # Every 1% or 100 frames
     
     # Buffer size for writing - reduce flush frequency
     write_buffer_size = 100  # Write in batches of 100 frames
@@ -974,9 +974,11 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print()
     
     print("Determining which timesteps need processing...", flush=True)
+    print(f"[Proc {rank}] DEBUG: About to call get_timesteps_to_process", flush=True)
     timesteps_to_process, already_processed = get_timesteps_to_process(
         start, end, increment, output_file
     )
+    print(f"[Proc {rank}] DEBUG: get_timesteps_to_process completed", flush=True)
     
     total_timesteps = len(range(start, end, increment))
     print(f"  Total timesteps in range: {total_timesteps}")
@@ -1014,10 +1016,13 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         last_combination_counter = 0
         last_stats_report_counter = 0
         
+        print(f"[Proc {rank}] DEBUG: About to open input file: {filename}", flush=True)
         with open(filename, 'r') as f_in:
+            print(f"[Proc {rank}] DEBUG: Input file opened successfully", flush=True)
             while True:
                 atoms, num_atoms, timestep = read_frame(f_in)
                 if atoms is None:
+                    print(f"[Proc {rank}] DEBUG: Reached end of file", flush=True)
                     break
                 
                 frame_count += 1
@@ -1033,8 +1038,8 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                             if result is not None:
                                 timestep, dipole, num_bonds, mean_mag, bond_stats = result
                                 
-                                # Reduced verbose output for performance - only show every 1000th frame
-                                if counter % 1000 == 0:
+                                # Reduced verbose output for performance - only show every 100th frame
+                                if counter % 100 == 0:
                                     print(f"[Proc {rank}] Timestep {timestep}: {num_bonds} bonds, "
                                           f"dipole = [{dipole[0]:14.6f}, {dipole[1]:14.6f}, {dipole[2]:14.6f}], "
                                           f"mean_mag = {mean_mag:.6f}")
