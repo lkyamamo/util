@@ -184,14 +184,52 @@ def verify_output_file_sorted(filename):
         print(f"Error verifying sort order of {filename}: {e}")
         return False, last_timestep, existing_timesteps
 
+def read_xyz_frame(f):
+    """
+    Read a complete XYZ frame from file handle.
+    Returns (num_atoms, timestep, frame_lines) or (None, None, None) at EOF.
+    """
+    # Read number of atoms
+    line = f.readline()
+    if not line or not line.strip():
+        return None, None, None
+    
+    try:
+        num_atoms = int(line.strip())
+    except ValueError:
+        return None, None, None
+    
+    # Read comment line with timestep
+    comment_line = f.readline()
+    if not comment_line:
+        return None, None, None
+    
+    # Extract timestep from comment line
+    timestep = None
+    if comment_line.strip().startswith("Atoms. Timestep:"):
+        try:
+            timestep = int(comment_line.split(":")[1].strip())
+        except (ValueError, IndexError):
+            return None, None, None
+    
+    # Read atom data lines
+    frame_lines = [line, comment_line]  # Include num_atoms and comment lines
+    for i in range(num_atoms):
+        atom_line = f.readline()
+        if not atom_line:
+            return None, None, None
+        frame_lines.append(atom_line)
+    
+    return num_atoms, timestep, frame_lines
+
 def streaming_merge_files(temp_combined_file, output_file, existing_timesteps=None):
     """
-    Merge a sorted temporary file with the existing sorted output file using proper merge algorithm.
+    Merge a sorted temporary file with the existing sorted output file using XYZ-aware merge algorithm.
     Only adds new timesteps to the output file, preserving all existing data and maintaining sort order.
     
     Process:
-    1. Read both files line by line, comparing timesteps
-    2. Write the smaller timestep first, maintaining chronological order
+    1. Read complete XYZ frames from both files
+    2. Compare timesteps and write the smaller frame first
     3. Skip duplicate timesteps (already in existing file)
     4. Continue until both files are fully processed
     
@@ -229,104 +267,58 @@ def streaming_merge_files(temp_combined_file, output_file, existing_timesteps=No
         if not os.path.exists(output_file):
             # Output file doesn't exist - just copy temp file to output file
             with open(temp_combined_file, 'r') as f_temp, open(merged_file, 'w') as f_out:
-                for line in f_temp:
-                    f_out.write(line)
-                    if line.strip().startswith("Atoms. Timestep:"):
-                        new_timesteps_added += 1
+                while True:
+                    num_atoms, timestep, frame_lines = read_xyz_frame(f_temp)
+                    if num_atoms is None:
+                        break
+                    for line in frame_lines:
+                        f_out.write(line)
+                    new_timesteps_added += 1
         else:
-            # Both files exist - perform proper merge
+            # Both files exist - perform proper XYZ-aware merge
             with open(output_file, 'r') as f_output, open(temp_combined_file, 'r') as f_temp, open(merged_file, 'w') as f_out:
-                # Read first lines from both files
-                output_line = f_output.readline()
-                temp_line = f_temp.readline()
+                # Read first frame from each file
+                output_num_atoms, output_timestep, output_frame_lines = read_xyz_frame(f_output)
+                temp_num_atoms, temp_timestep, temp_frame_lines = read_xyz_frame(f_temp)
                 
-                while output_line or temp_line:
-                    # Determine which line to write next based on timestep comparison
-                    if output_line and temp_line:
-                        # Both files have data - compare timesteps
-                        if output_line.strip().startswith("Atoms. Timestep:"):
-                            output_timestep = int(output_line.split(":")[1].strip())
-                        else:
-                            # This is part of an XYZ block, write it and continue
-                            f_out.write(output_line)
-                            output_line = f_output.readline()
-                            continue
-                            
-                        if temp_line.strip().startswith("Atoms. Timestep:"):
-                            temp_timestep = int(temp_line.split(":")[1].strip())
-                        else:
-                            # This is part of an XYZ block, write it and continue
-                            f_out.write(temp_line)
-                            temp_line = f_temp.readline()
-                            continue
-                        
-                        # Compare timesteps and write the smaller one
+                while output_num_atoms is not None or temp_num_atoms is not None:
+                    # Determine which frame to write next based on timestep comparison
+                    if output_num_atoms is not None and temp_num_atoms is not None:
+                        # Both files have frames - compare timesteps
                         if output_timestep < temp_timestep:
-                            # Write output file data
-                            f_out.write(output_line)
-                            # Read complete XYZ block from output file
-                            while True:
-                                output_line = f_output.readline()
-                                if not output_line or output_line.strip().startswith("Atoms. Timestep:"):
-                                    break
-                                f_out.write(output_line)
+                            # Write output frame (it comes first)
+                            for line in output_frame_lines:
+                                f_out.write(line)
+                            # Read next output frame
+                            output_num_atoms, output_timestep, output_frame_lines = read_xyz_frame(f_output)
                         elif output_timestep > temp_timestep:
-                            # Write temp file data (if not duplicate)
+                            # Write temp frame (if not duplicate)
                             if temp_timestep not in existing_timesteps:
-                                f_out.write(temp_line)
+                                for line in temp_frame_lines:
+                                    f_out.write(line)
                                 new_timesteps_added += 1
-                                # Read complete XYZ block from temp file
-                                while True:
-                                    temp_line = f_temp.readline()
-                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
-                                        break
-                                    f_out.write(temp_line)
-                            else:
-                                # Skip duplicate timestep from temp file
-                                while True:
-                                    temp_line = f_temp.readline()
-                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
-                                        break
+                            # Read next temp frame
+                            temp_num_atoms, temp_timestep, temp_frame_lines = read_xyz_frame(f_temp)
                         else:
-                            # Same timestep - write output file data (existing takes precedence)
-                            f_out.write(output_line)
-                            # Skip temp file data (duplicate)
-                            while True:
-                                temp_line = f_temp.readline()
-                                if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
-                                    break
-                            # Read complete XYZ block from output file
-                            while True:
-                                output_line = f_output.readline()
-                                if not output_line or output_line.strip().startswith("Atoms. Timestep:"):
-                                    break
-                                f_out.write(output_line)
-                    elif output_line:
-                        # Only output file has data - write remaining output data
-                        f_out.write(output_line)
-                        output_line = f_output.readline()
-                    elif temp_line:
-                        # Only temp file has data - write temp data (if not duplicate)
-                        if temp_line.strip().startswith("Atoms. Timestep:"):
-                            temp_timestep = int(temp_line.split(":")[1].strip())
-                            if temp_timestep not in existing_timesteps:
-                                f_out.write(temp_line)
-                                new_timesteps_added += 1
-                                # Read complete XYZ block
-                                while True:
-                                    temp_line = f_temp.readline()
-                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
-                                        break
-                                    f_out.write(temp_line)
-                            else:
-                                # Skip duplicate
-                                while True:
-                                    temp_line = f_temp.readline()
-                                    if not temp_line or temp_line.strip().startswith("Atoms. Timestep:"):
-                                        break
-                        else:
-                            f_out.write(temp_line)
-                            temp_line = f_temp.readline()
+                            # Same timestep - write output frame (existing takes precedence)
+                            for line in output_frame_lines:
+                                f_out.write(line)
+                            # Skip temp frame (duplicate)
+                            temp_num_atoms, temp_timestep, temp_frame_lines = read_xyz_frame(f_temp)
+                            # Read next output frame
+                            output_num_atoms, output_timestep, output_frame_lines = read_xyz_frame(f_output)
+                    elif output_num_atoms is not None:
+                        # Only output file has frames - write remaining output frames
+                        for line in output_frame_lines:
+                            f_out.write(line)
+                        output_num_atoms, output_timestep, output_frame_lines = read_xyz_frame(f_output)
+                    elif temp_num_atoms is not None:
+                        # Only temp file has frames - write temp frames (if not duplicate)
+                        if temp_timestep not in existing_timesteps:
+                            for line in temp_frame_lines:
+                                f_out.write(line)
+                            new_timesteps_added += 1
+                        temp_num_atoms, temp_timestep, temp_frame_lines = read_xyz_frame(f_temp)
         
         # Replace original file with merged file
         os.replace(merged_file, output_file)
@@ -378,40 +370,20 @@ def combine_per_process_files(output_file, size):
         if os.path.exists(proc_file):
             try:
                 with open(proc_file, 'r') as f:
-                    current_timestep = None
-                    xyz_block = []
-                    
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith("Atoms. Timestep:"):
-                            # Save previous timestep if exists
-                            if current_timestep is not None and xyz_block:
-                                intermediate_results[current_timestep] = xyz_block.copy()
-                                proc_file_sources[current_timestep] = proc_file
-                                
-                                # Track duplicates
-                                if current_timestep in seen_timesteps:
-                                    seen_timesteps[current_timestep] += 1
-                                else:
-                                    seen_timesteps[current_timestep] = 1
-                            
-                            # Start new timestep
-                            current_timestep = int(line.split(":")[1].strip())
-                            xyz_block = [line + "\n"]
-                        else:
-                            # Add to current XYZ block
-                            xyz_block.append(line + "\n")
-                    
-                    # Don't forget the last timestep
-                    if current_timestep is not None and xyz_block:
-                        intermediate_results[current_timestep] = xyz_block.copy()
-                        proc_file_sources[current_timestep] = proc_file
+                    while True:
+                        num_atoms, timestep, frame_lines = read_xyz_frame(f)
+                        if num_atoms is None:
+                            break
                         
-                        # Track duplicates
-                        if current_timestep in seen_timesteps:
-                            seen_timesteps[current_timestep] += 1
-                        else:
-                            seen_timesteps[current_timestep] = 1
+                        if timestep is not None:
+                            intermediate_results[timestep] = frame_lines.copy()
+                            proc_file_sources[timestep] = proc_file
+                            
+                            # Track duplicates
+                            if timestep in seen_timesteps:
+                                seen_timesteps[timestep] += 1
+                            else:
+                                seen_timesteps[timestep] = 1
                             
             except Exception as e:
                 print(f"Warning: Could not read {proc_file}: {e}")
