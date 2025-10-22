@@ -71,6 +71,19 @@ comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 size = comm.Get_size()
 
+def read_timestep_only(f):
+    """Read only timestep information from file handle - OPTIMIZED VERSION. Returns (num_atoms, timestep) or (None, None) at EOF."""
+    line = f.readline()
+    if not line or not line.strip():
+        return None, None
+    
+    num_atoms = int(line.strip())
+    timestep_line = f.readline().strip()
+    timestep = int(timestep_line.split(':')[1].strip())
+    
+    return num_atoms, timestep
+
+
 def read_frame(f):
     """Read a single frame from file handle - OPTIMIZED VERSION. Returns (atoms, num_atoms, timestep) or (None, None, None) at EOF."""
     atoms = {}
@@ -95,6 +108,21 @@ def read_frame(f):
         atoms[i] = [int(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])]
     
     return atoms, num_atoms, timestep
+
+
+def read_frame_from_position(f, num_atoms):
+    """Read frame data starting from current position, given the number of atoms. Returns atoms dictionary."""
+    atoms = {i: None for i in range(1, num_atoms + 1)}
+    
+    for i in range(1, num_atoms + 1):
+        line = f.readline()
+        if not line:
+            raise ValueError(f"Unexpected end of file while reading atom {i}")
+        
+        parts = line.strip().split()
+        atoms[i] = [int(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])]
+    
+    return atoms
 
 
 def apply_periodic_boundary_conditions(dx, dy, dz, la, lb, lc):
@@ -1033,8 +1061,9 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         with open(filename, 'r') as f_in:
             print(f"[Proc {rank}] DEBUG: Input file opened successfully", flush=True)
             while True:
-                atoms, num_atoms, timestep = read_frame(f_in)
-                if atoms is None:
+                # First, read only timestep information to decide if we need to process this frame
+                num_atoms, timestep = read_timestep_only(f_in)
+                if timestep is None:
                     print(f"[Proc {rank}] DEBUG: Reached end of file", flush=True)
                     break
                 
@@ -1045,6 +1074,8 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                     # Assign timesteps to processes using round-robin
                     timestep_index = timestep_to_index[timestep]
                     if timestep_index % size == rank:
+                        # Only now read the full frame data since we need to process it
+                        atoms = read_frame_from_position(f_in, num_atoms)
                         try:
                             result = process_frame(atoms, num_atoms, timestep, type_A, type_B,
                                                   cutoff, box_dims, type_to_charge)
@@ -1129,6 +1160,16 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                             print(f"[Proc {rank}] Error processing timestep {timestep}: {e}")
                             import traceback
                             traceback.print_exc()
+                    else:
+                        # Skip reading frame data for timesteps assigned to other processes
+                        # Skip num_atoms lines of atom data
+                        for _ in range(num_atoms):
+                            f_in.readline()
+                else:
+                    # Skip reading frame data for timesteps that don't need processing
+                    # Skip num_atoms lines of atom data
+                    for _ in range(num_atoms):
+                        f_in.readline()
         
         print(f"[Proc {rank}] Processed {counter} frames")
     
