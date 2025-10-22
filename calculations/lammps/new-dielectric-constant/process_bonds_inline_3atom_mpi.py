@@ -1006,11 +1006,24 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     
     print("Determining which timesteps need processing...", flush=True)
     print(f"[Proc {rank}] DEBUG: About to call get_timesteps_to_process", flush=True)
-    timesteps_to_process, already_processed = get_timesteps_to_process(
-        start, end, increment, output_file
-    )
-    print(f"[Proc {rank}] DEBUG: get_timesteps_to_process completed", flush=True)
-    print(f"[Proc {rank}] DEBUG: Found {len(timesteps_to_process)} timesteps to process", flush=True)
+    
+    # Synchronize before reading existing output file to avoid I/O contention
+    comm.Barrier()
+    
+    try:
+        timesteps_to_process, already_processed = get_timesteps_to_process(
+            start, end, increment, output_file
+        )
+        print(f"[Proc {rank}] DEBUG: get_timesteps_to_process completed", flush=True)
+        print(f"[Proc {rank}] DEBUG: Found {len(timesteps_to_process)} timesteps to process", flush=True)
+    except Exception as e:
+        print(f"[Proc {rank}] ERROR: Failed to read existing output file: {e}", flush=True)
+        # Set empty values to prevent further issues
+        timesteps_to_process = []
+        already_processed = set()
+    
+    # Synchronize after reading to ensure all processes have completed file I/O
+    comm.Barrier()
     
     total_timesteps = len(range(start, end+1, increment))
     print(f"  Total timesteps in range: {total_timesteps}")
@@ -1129,6 +1142,10 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                 
                                 # Proceed if ALL ranks are ready OR if timeout has been reached
                                 if ready_sum == size or timeout_sum > 0:
+                                    # Flush write buffer to ensure all data is written to per-process file
+                                    if write_buffer:
+                                        f_out.writelines(write_buffer)
+                                        write_buffer.clear()
                                     # Flush output to ensure data is on disk before combining
                                     f_out.flush()
                                     
@@ -1137,12 +1154,22 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                     
                                     # Master process combines files
                                     if rank == 0:
-                                        total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
-                                        if total_frames == 0 and new_timesteps == 0 and overlapping_timesteps == 0:
+                                        try:
+                                            total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
+                                        except Exception as e:
+                                            print(f"[Proc {rank}] ERROR: Combination failed: {e}", flush=True)
+                                            # Set error values that will be broadcast to all processes
+                                            total_frames, new_timesteps, overlapping_timesteps = -1, -1, -1
+                                        if total_frames == -1 and new_timesteps == -1 and overlapping_timesteps == -1:
+                                            # Combination failed, abort all processes
+                                            print(f"\n[Combination] ERROR: Combination failed, aborting all processes", flush=True)
+                                            comm.Abort(1)
+                                        elif total_frames == 0 and new_timesteps == 0 and overlapping_timesteps == 0:
                                             # File sorting error occurred, abort all processes
                                             print(f"\n[Combination] ERROR: Output file sorting issue detected, aborting all processes", flush=True)
                                             comm.Abort(1)
-                                        print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
+                                        else:
+                                            print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
                                         if new_timesteps > 0 or overlapping_timesteps > 0:
                                             print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
                                     
