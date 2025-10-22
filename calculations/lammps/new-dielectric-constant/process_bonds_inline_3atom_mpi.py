@@ -982,6 +982,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         start, end, increment, output_file
     )
     print(f"[Proc {rank}] DEBUG: get_timesteps_to_process completed", flush=True)
+    print(f"[Proc {rank}] DEBUG: Found {len(timesteps_to_process)} timesteps to process", flush=True)
     
     total_timesteps = len(range(start, end+1, increment))
     print(f"  Total timesteps in range: {total_timesteps}")
@@ -991,11 +992,15 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     if len(timesteps_to_process) == 0:
         if rank == 0:
             print("\n✓ All timesteps already processed! Nothing to do.", flush=True)
+        # Synchronize all processes before exiting
+        comm.Barrier()
+        return
     else:
         print(f"\nProcessing {len(timesteps_to_process)} timesteps...", flush=True)
         if rank == 0:
             print(f"Combining results every {combination_interval} frames per process", flush=True)
     
+    print(f"[Proc {rank}] DEBUG: About to create timestep lookup dictionary", flush=True)
     # Create a dictionary for fast timestep lookup (optimization)
     timestep_to_index = {ts: idx for idx, ts in enumerate(timesteps_to_process)}
     
@@ -1024,6 +1029,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         last_stats_report_counter = 0
         
         print(f"[Proc {rank}] DEBUG: About to open input file: {filename}", flush=True)
+        print(f"[Proc {rank}] DEBUG: timestep_to_index has {len(timestep_to_index)} entries", flush=True)
         with open(filename, 'r') as f_in:
             print(f"[Proc {rank}] DEBUG: Input file opened successfully", flush=True)
             while True:
