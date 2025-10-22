@@ -67,6 +67,85 @@ def read_frame(f):
     return atoms, num_atoms, timestep
 
 
+def validate_inputs(filename, start, end, increment, type_A, type_B, cutoff, la, lb, lc, output_file):
+    """
+    Validate input parameters and check for common issues.
+    
+    Args:
+        filename: Input trajectory file path
+        start, end, increment: Timestep range parameters
+        type_A, type_B: Atom types for bond formation
+        cutoff: Distance cutoff for bond formation
+        la, lb, lc: Box dimensions
+        output_file: Output file path
+    
+    Raises:
+        ValueError: If any parameter is invalid
+        FileNotFoundError: If input file doesn't exist
+    """
+    # Check if input file exists
+    if not os.path.exists(filename):
+        raise FileNotFoundError(f"Input file '{filename}' does not exist")
+    
+    # Validate timestep parameters
+    if start < 0:
+        raise ValueError(f"Start timestep must be non-negative, got {start}")
+    if end <= start:
+        raise ValueError(f"End timestep ({end}) must be greater than start timestep ({start})")
+    if increment <= 0:
+        raise ValueError(f"Increment must be positive, got {increment}")
+    
+    # Validate atom types
+    if type_A <= 0:
+        raise ValueError(f"Type_A must be positive, got {type_A}")
+    if type_B <= 0:
+        raise ValueError(f"Type_B must be positive, got {type_B}")
+    if type_A == type_B:
+        raise ValueError(f"Type_A and Type_B must be different, both are {type_A}")
+    
+    # Validate cutoff
+    if cutoff <= 0:
+        raise ValueError(f"Cutoff must be positive, got {cutoff}")
+    
+    # Validate box dimensions
+    if la <= 0 or lb <= 0 or lc <= 0:
+        raise ValueError(f"Box dimensions must be positive, got la={la}, lb={lb}, lc={lc}")
+    
+    # Check if cutoff is reasonable compared to box size
+    max_box_dim = max(la, lb, lc)
+    if cutoff > max_box_dim / 2:
+        print(f"Warning: Cutoff ({cutoff}) is larger than half the maximum box dimension ({max_box_dim/2})")
+        print("This may cause issues with periodic boundary conditions")
+    
+    # Validate output file path
+    output_dir = os.path.dirname(output_file)
+    if output_dir and not os.path.exists(output_dir):
+        raise ValueError(f"Output directory '{output_dir}' does not exist")
+    
+    print(f"✓ Input validation passed")
+
+
+def apply_periodic_boundary_conditions(dx, dy, dz, la, lb, lc):
+    """
+    Apply periodic boundary conditions to distance components.
+    
+    Args:
+        dx, dy, dz: Distance components
+        la, lb, lc: Box dimensions
+    
+    Returns:
+        Corrected distance components with periodic boundary conditions applied
+    """
+    if dx >= la/2.0: dx -= la
+    elif dx <= -la/2.0: dx += la
+    if dy >= lb/2.0: dy -= lb
+    elif dy <= -lb/2.0: dy += lb
+    if dz >= lc/2.0: dz -= lc
+    elif dz <= -lc/2.0: dz += lc
+    
+    return dx, dy, dz
+
+
 def create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims):
     """
     Create 3-atom molecular bonds (like water molecules).
@@ -85,7 +164,7 @@ def create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims):
         Statistics about bond formation including:
         - 'bonds_created': number of bonds successfully created
         - 'bonds_missing': number of type_A atoms that couldn't form bonds
-        - 'atoms_within_cutoff': total count of type_B atoms within cutoff of any type_A
+        - 'avg_type_B_within_cutoff': average number of type_B atoms within cutoff per type_A atom
         - 'type_A_count': total number of type_A atoms
         - 'type_B_count': total number of type_B atoms
     """
@@ -128,16 +207,7 @@ def create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims):
             _, x2, y2, z2 = atoms[atom_id2]
             
             # Calculate distance with periodic boundary conditions
-            dx = x2 - x1
-            dy = y2 - y1
-            dz = z2 - z1
-            
-            if dx >= la/2.0: dx -= la
-            elif dx <= -la/2.0: dx += la
-            if dy >= lb/2.0: dy -= lb
-            elif dy <= -lb/2.0: dy += lb
-            if dz >= lc/2.0: dz -= lc
-            elif dz <= -lc/2.0: dz += lc
+            dx, dy, dz = apply_periodic_boundary_conditions(x2 - x1, y2 - y1, z2 - z1, la, lb, lc)
             
             dist_sq = dx*dx + dy*dy + dz*dz
             distances.append((dist_sq, atom_id2))
@@ -145,35 +215,33 @@ def create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims):
         # Sort by distance and take closest 2
         distances.sort()
         
-        # Check if closest 2 are within cutoff
-        #if len(distances) >= 2:
-        dist1, atom_id2 = distances[0]
-        dist2, atom_id3 = distances[1]
-        
-        if dist1 <= cutoff_sq and dist2 <= cutoff_sq:
-            # Create 3-atom bond: [type_A, type_B1, type_B2]
-            bonds[bond_id] = [atom_id1, atom_id2, atom_id3]
-            bond_id += 1
-            bonds_created += 1
-        else:
-            bonds_missing += 1
-            print(f"Warning: Bond {bond_id} not created: dist_sq1 = {dist1}, dist_sq2 = {dist2}")
-        
-        # Count atoms within cutoff
+        # Count atoms within cutoff first
         for dist, atom_id in distances:
             if dist <= cutoff_sq:
                 type_B_within_cutoff_count += 1
+        
+        # Only warn if number of atoms within cutoff is not exactly 2
+        if type_B_within_cutoff_count != 2:
+            print(f"Warning: Atom {atom_id1} has {type_B_within_cutoff_count} atoms within cutoff (expected 2)")
+        
+        # Check if we have at least 2 atoms and if closest 2 are within cutoff
+        if len(distances) >= 2:
+            dist1, atom_id2 = distances[0]
+            dist2, atom_id3 = distances[1]
+            
+            if dist1 <= cutoff_sq and dist2 <= cutoff_sq:
+                # Create 3-atom bond: [type_A, type_B1, type_B2]
+                bonds[bond_id] = [atom_id1, atom_id2, atom_id3]
+                bond_id += 1
+                bonds_created += 1
             else:
-                print(f"Warning: {type_B_within_cutoff_count} atoms within cutoff for atom {atom_id1}")
-                break
-                
-
+                bonds_missing += 1
+                print(f"Warning: Bond {bond_id} not created for atom {atom_id1}: closest atoms outside cutoff (dist_sq1 = {dist1:.6f}, dist_sq2 = {dist2:.6f})")
+        else:
+            bonds_missing += 1
+            print(f"Warning: Atom {atom_id1} has fewer than 2 type_B atoms available ({len(distances)} found)")
+        
         atoms_within_cutoff += type_B_within_cutoff_count
-
-
-        #else:
-        #    bonds_missing += 1
-        #    print(f"No 2 closest atoms found for atom {atom_id1}")
     
     # Calculate average type B atoms within cutoff per type A atom (molecule)
     avg_type_B_within_cutoff = atoms_within_cutoff / type_A_count if type_A_count > 0 else 0.0
@@ -182,7 +250,7 @@ def create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims):
     bond_stats = {
         'bonds_created': bonds_created,
         'bonds_missing': bonds_missing,
-        'atoms_within_cutoff': avg_type_B_within_cutoff,  # Now average per molecule
+        'avg_type_B_within_cutoff': avg_type_B_within_cutoff,  # Average per molecule
         'type_A_count': type_A_count,
         'type_B_count': type_B_count
     }
@@ -222,28 +290,10 @@ def calculate_molecular_dipole(atoms, bonds, box_dims, type_to_charge):
         
         # Calculate dx12 (atom1 to atom2) with periodic boundary conditions
         # Note: old script uses atom1 - atom2 (not atom2 - atom1)
-        dx12 = x1 - x2
-        dy12 = y1 - y2
-        dz12 = z1 - z2
-        
-        if dx12 >= la/2.0: dx12 -= la
-        elif dx12 <= -la/2.0: dx12 += la
-        if dy12 >= lb/2.0: dy12 -= lb
-        elif dy12 <= -lb/2.0: dy12 += lb
-        if dz12 >= lc/2.0: dz12 -= lc
-        elif dz12 <= -lc/2.0: dz12 += lc
+        dx12, dy12, dz12 = apply_periodic_boundary_conditions(x1 - x2, y1 - y2, z1 - z2, la, lb, lc)
         
         # Calculate dx31 (atom3 to atom1) with periodic boundary conditions
-        dx31 = x3 - x1
-        dy31 = y3 - y1
-        dz31 = z3 - z1
-        
-        if dx31 >= la/2.0: dx31 -= la
-        elif dx31 <= -la/2.0: dx31 += la
-        if dy31 >= lb/2.0: dy31 -= lb
-        elif dy31 <= -lb/2.0: dy31 += lb
-        if dz31 >= lc/2.0: dz31 -= lc
-        elif dz31 <= -lc/2.0: dz31 += lc
+        dx31, dy31, dz31 = apply_periodic_boundary_conditions(x3 - x1, y3 - y1, z3 - z1, la, lb, lc)
         
         # Calculate dipole moment using old script's formula with type-specific charges
         dipole_moment = [
@@ -648,7 +698,7 @@ def gather_simple_statistics(local_stats, comm, rank, size):
     """
     # Prepare summary data for each statistic
     summary_data = {}
-    for key in ['bonds_created', 'bonds_missing', 'atoms_within_cutoff']:
+    for key in ['bonds_created', 'bonds_missing', 'avg_type_B_within_cutoff']:
         stats = local_stats[key]
         summary_data[key] = {
             'count': stats.get_count(),
@@ -661,7 +711,7 @@ def gather_simple_statistics(local_stats, comm, rank, size):
     if rank == 0 and all_summaries:
         # Combine statistics from all processes
         combined_stats = {}
-        for key in ['bonds_created', 'bonds_missing', 'atoms_within_cutoff']:
+        for key in ['bonds_created', 'bonds_missing', 'avg_type_B_within_cutoff']:
             total_count = 0
             total_sum = 0.0
             
@@ -686,7 +736,7 @@ def gather_simple_statistics(local_stats, comm, rank, size):
         failed_percentage = (total_missing / total_possible * 100) if total_possible > 0 else 0.0
         
         return {
-            'avg_type_b_neighbors': combined_stats['atoms_within_cutoff']['mean'],
+            'avg_type_b_neighbors': combined_stats['avg_type_B_within_cutoff']['mean'],
             'avg_failed_bonds': combined_stats['bonds_missing']['mean'],
             'avg_created_bonds': combined_stats['bonds_created']['mean'],
             'failed_bond_percentage': failed_percentage,
@@ -887,7 +937,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     running_stats = {
         'bonds_created': SimpleAverage(),
         'bonds_missing': SimpleAverage(),
-        'atoms_within_cutoff': SimpleAverage()
+        'avg_type_B_within_cutoff': SimpleAverage()
     }
     
     # Open per-process output file in write mode for incremental writing
@@ -930,7 +980,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                 # Accumulate bond statistics
                                 running_stats['bonds_created'].add_value(bond_stats['bonds_created'])
                                 running_stats['bonds_missing'].add_value(bond_stats['bonds_missing'])
-                                running_stats['atoms_within_cutoff'].add_value(bond_stats['atoms_within_cutoff'])
+                                running_stats['avg_type_B_within_cutoff'].add_value(bond_stats['avg_type_B_within_cutoff'])
                                 
                                 # Write immediately with timestep for restart capability
                                 f_out.write(f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n")
@@ -942,7 +992,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                     print(f"[Proc {rank}] Progress: {counter} frames processed, "
                                           f"avg created: {running_stats['bonds_created'].get_mean():.2f}, "
                                           f"avg failed: {running_stats['bonds_missing'].get_mean():.2f}, "
-                                          f"avg type_B_per_mol: {running_stats['atoms_within_cutoff'].get_mean():.2f}")
+                                          f"avg type_B_per_mol: {running_stats['avg_type_B_within_cutoff'].get_mean():.2f}")
                                     last_stats_report_counter = counter
                                 
                                 # Periodic combination check
@@ -1060,6 +1110,19 @@ if __name__ == "__main__":
     lb = float(sys.argv[9])
     lc = float(sys.argv[10])
     output_file = sys.argv[11]
+    
+    # Validate inputs before processing
+    if rank == 0:
+        try:
+            validate_inputs(filename, start, end, increment, type_A, type_B, cutoff, la, lb, lc, output_file)
+        except (ValueError, FileNotFoundError) as e:
+            print(f"Input validation failed: {e}")
+            sys.exit(1)
+    
+    # Broadcast validation result to all processes
+    validation_passed = comm.bcast(rank == 0, root=0)
+    if not validation_passed:
+        sys.exit(1)
     
     process_concatenated_file_mpi(filename, start, end, increment, type_A, type_B,
                                    cutoff, [la, lb, lc], TYPE_TO_CHARGE, output_file)
