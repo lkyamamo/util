@@ -57,6 +57,7 @@ import sys
 import numpy as np
 import os
 import datetime
+import time
 from mpi4py import MPI
 
 # Type-to-charge mapping (hardcoded)
@@ -366,7 +367,7 @@ def get_timesteps_to_process(start, end, increment, output_file):
     - already_processed: set of timesteps already in output file
     """
     # Calculate all timesteps that SHOULD be processed
-    all_timesteps = set(range(start, end+increment, increment))
+    all_timesteps = set(range(start, end+1, increment))
     
     # Load already processed timesteps from output file
     already_processed = load_processed_timesteps(output_file)
@@ -808,12 +809,14 @@ def combine_per_process_files(output_file, size):
     
     # Step 1: Verify existing output file is sorted (critical requirement)
     existing_timesteps = set()
+    is_sorted = True
+    last_timestep = None
     if os.path.exists(output_file):
         is_sorted, last_timestep, existing_timesteps = verify_output_file_sorted(output_file)
         if not is_sorted:
             print(f"ERROR: Cannot proceed - output file {output_file} is not chronologically sorted!")
             print("Please manually sort the output file or remove it and restart.")
-            sys.exit(1)
+            return 0, 0, 0  # Return early instead of sys.exit(1)
         print(f"  Existing output file has timestep range up to {last_timestep} ({len(existing_timesteps)} timesteps)")
     else:
         print(f"  No existing output file found - will create new one")
@@ -940,7 +943,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     # For 1M frames with 64 processes: ~15,625 frames per process
     # Combine every 2% of expected work or every 5000 frames, whichever is larger
     # This reduces I/O overhead significantly for large datasets
-    total_frames_expected = len(range(start, end, increment))
+    total_frames_expected = len(range(start, end+1, increment))
     frames_per_process = max(1, total_frames_expected // size)
     combination_interval = max(5000, frames_per_process // 50)  # Every 2% or 5000 frames
     
@@ -980,7 +983,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     )
     print(f"[Proc {rank}] DEBUG: get_timesteps_to_process completed", flush=True)
     
-    total_timesteps = len(range(start, end, increment))
+    total_timesteps = len(range(start, end+1, increment))
     print(f"  Total timesteps in range: {total_timesteps}")
     print(f"  Already processed: {len(already_processed)}")
     print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
@@ -1008,6 +1011,10 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     
     # Initialize write buffer for batch writing
     write_buffer = []
+    
+    # Timeout-based combination (fallback for ranks with zero timesteps)
+    combination_timeout = 300  # 5 minutes timeout for combination
+    last_combination_time = time.time()
     
     try:
         # Each process reads through the file and processes its assigned timesteps
@@ -1071,20 +1078,46 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                           f"avg type_B_per_mol: {running_stats['avg_type_B_within_cutoff'].get_mean():.2f}")
                                     last_stats_report_counter = counter
                                 
-                                # Periodic combination check
-                                if counter - last_combination_counter >= combination_interval:
+                                # Periodic combination check - DEADLOCK-SAFE VERSION
+                                # Check if this rank is ready for combination
+                                ready_local = 1 if (counter - last_combination_counter) >= combination_interval else 0
+                                
+                                # Also check timeout for ranks with zero timesteps
+                                current_time = time.time()
+                                timeout_ready = 1 if (current_time - last_combination_time) >= combination_timeout else 0
+                                
+                                # Use allreduce to check both conditions
+                                ready_sum = comm.allreduce(ready_local, op=MPI.SUM)
+                                timeout_sum = comm.allreduce(timeout_ready, op=MPI.SUM)
+                                
+                                # Proceed if ALL ranks are ready OR if timeout has been reached
+                                if ready_sum == size or timeout_sum > 0:
+                                    # Flush output to ensure data is on disk before combining
+                                    f_out.flush()
+                                    
                                     # Synchronize before combining
                                     comm.Barrier()
                                     
                                     # Master process combines files
                                     if rank == 0:
                                         total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
+                                        if total_frames == 0 and new_timesteps == 0 and overlapping_timesteps == 0:
+                                            # File sorting error occurred, abort all processes
+                                            print(f"\n[Combination] ERROR: Output file sorting issue detected, aborting all processes", flush=True)
+                                            comm.Abort(1)
                                         print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
                                         if new_timesteps > 0 or overlapping_timesteps > 0:
                                             print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
                                     
-                                    last_combination_counter = counter
-                                    comm.Barrier()  # Synchronize after combining
+                                    # Broadcast the counter value to all processes to keep them synchronized
+                                    last_combined_global = comm.bcast(counter, root=0)
+                                    last_combination_counter = last_combined_global
+                                    
+                                    # Update timeout timer
+                                    last_combination_time = time.time()
+                                    
+                                    # Synchronize after combining
+                                    comm.Barrier()
                                 
                         except Exception as e:
                             print(f"[Proc {rank}] Error processing timestep {timestep}: {e}")
@@ -1099,6 +1132,10 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
             f_out.writelines(write_buffer)
             f_out.flush()
         f_out.close()
+    
+    # Handle ranks with zero assigned timesteps - ensure they participate in final combination
+    if counter == 0:
+        print(f"[Proc {rank}] No timesteps assigned to this process - participating in final combination only")
     
     # Synchronize all processes before final combination
     comm.Barrier()
