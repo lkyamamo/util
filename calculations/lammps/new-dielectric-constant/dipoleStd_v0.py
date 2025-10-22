@@ -18,7 +18,7 @@ with open(file1,"r") as f1:
 
 		line = line.strip().split()
 		
-		m1,m2,m3 = float(line[0]), float(line[1]), float(line[2])
+		step,m1,m2,m3 = int(line[0]), float(line[1]), float(line[2]), float(line[3])
 		if counter == 0:
 			minitial[0], minitial[1], minitial[2] = m1, m2, m3
 		#m1,m2,m2 = m1 - minitial[0], m2 - minitial[1], m3 - minitial[2]

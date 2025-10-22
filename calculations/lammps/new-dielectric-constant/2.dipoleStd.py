@@ -23,7 +23,7 @@ DEBYE_CONVERSION_FACTOR = 4.8032**2  # Pre-compute the conversion factor
 # 'cumulative': Calculate averages over all frames up to current point
 # 'hybrid': Use cumulative averaging until window is full, then switch to windowed
 # 'binned': Use standalone binned averaging (every 100 frames)
-AVERAGING_METHOD = 'windowed'  # Change to 'cumulative', 'hybrid', or 'binned' if desired
+AVERAGING_METHOD = 'binned'  # Change to 'cumulative', 'hybrid', or 'binned' if desired
 
 # Timing configuration for large datasets
 TIMING_CHECKPOINT_INTERVAL = 50000  # Progress updates every N frames (adjust for dataset size)
