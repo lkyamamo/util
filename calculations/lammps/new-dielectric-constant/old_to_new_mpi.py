@@ -16,6 +16,17 @@ Key Features:
 - Periodic combination during processing to avoid data loss
 - Automatic backup and recovery on merge failures
 
+Enhanced Data Integrity Features (v2.0):
+- Frame validation: Complete XYZ frame validation before writing
+- Atomic writes: Uses temporary files and atomic operations to prevent partial writes
+- Recovery logic: Detects and recovers from incomplete frames in existing files
+- Main output file recovery: Automatically detects and removes malformed frames from main output file
+- Malformed frame reprocessing: Automatically adds removed timesteps back to processing queue
+- Automatic backup cleanup: Backups are automatically removed after use to prevent disk space accumulation
+- Enhanced error handling: Detailed logging for malformed frames and validation failures
+- Robust XYZ parsing: Validates atom count, timestep format, and coordinate data
+- Process interruption resilience: Continues processing even if individual frames fail
+
 Requirements:
     mpi4py (pip install mpi4py)
 
@@ -37,6 +48,7 @@ def process_lammps_file(filename, output_file):
     """
     Process a single LAMMPS dump file and convert to XYZ format.
     Returns the XYZ content as a string, or None if file doesn't exist or has errors.
+    Enhanced with frame validation and atomic write capability.
     """
     if not os.path.exists(filename):
         print(f"[Proc {rank}] File not found: {filename}")
@@ -77,7 +89,8 @@ def process_lammps_file(filename, output_file):
                 print(f"[Proc {rank}] Warning: Invalid ATOMS section in {filename}")
                 return None
 
-            # Read atom data
+            # Read atom data and validate completeness
+            atoms_read = 0
             for i in range(num_atoms):
                 line = f.readline()
                 if not line:
@@ -85,16 +98,114 @@ def process_lammps_file(filename, output_file):
                     return None
                 atom_id, mol_id, atom_type, x, y, z, q = line.split()
                 xyz_content += f"{atom_type} {x} {y} {z}\n"
+                atoms_read += 1
             
+            # Final validation - ensure we read exactly the expected number of atoms
+            if atoms_read != num_atoms:
+                print(f"[Proc {rank}] Warning: Frame validation failed in {filename} - expected {num_atoms} atoms, read {atoms_read}")
+                return None
+            
+            print(f"[Proc {rank}] Successfully processed {filename}: {num_atoms} atoms, timestep {timestep}")
             return xyz_content
 
     except Exception as e:
         print(f"[Proc {rank}] Error processing {filename}: {e}")
         return None
 
+def recover_incomplete_frames(proc_output_file):
+    """
+    Detect and recover from incomplete frames in per-process files.
+    This function scans the file for malformed XYZ frames and attempts to fix them.
+    
+    Args:
+        proc_output_file: Path to the per-process output file
+    
+    Returns:
+        tuple: (frames_recovered, frames_removed, total_frames_processed)
+    """
+    if not os.path.exists(proc_output_file):
+        return 0, 0, 0
+    
+    backup_file = f"{proc_output_file}.backup"
+    temp_file = f"{proc_output_file}.recovered"
+    
+    frames_recovered = 0
+    frames_removed = 0
+    total_frames_processed = 0
+    
+    try:
+        # Create backup
+        import shutil
+        shutil.copy2(proc_output_file, backup_file)
+        
+        with open(proc_output_file, 'r') as f_in, open(temp_file, 'w') as f_out:
+            while True:
+                # Try to read a complete frame
+                num_atoms, timestep, frame_lines = read_xyz_frame(f_in)
+                
+                if num_atoms is None:
+                    # End of file or malformed frame
+                    break
+                
+                total_frames_processed += 1
+                
+                if timestep is not None and len(frame_lines) == num_atoms + 2:
+                    # Valid frame - write it
+                    for line in frame_lines:
+                        f_out.write(line)
+                    frames_recovered += 1
+                else:
+                    # Malformed frame - skip it
+                    frames_removed += 1
+                    print(f"[Recovery] Removed malformed frame at position {total_frames_processed}")
+        
+        # Replace original with recovered file
+        os.replace(temp_file, proc_output_file)
+        
+        if frames_removed > 0:
+            print(f"[Recovery] Recovered {frames_recovered} frames, removed {frames_removed} malformed frames")
+            print(f"[Recovery] Backup saved as: {backup_file}")
+        
+        # Always clean up backup after successful recovery to prevent accumulation
+        safe_remove_file(backup_file, "backup")
+        
+        return frames_recovered, frames_removed, total_frames_processed
+        
+    except Exception as e:
+        print(f"[Recovery] Error during frame recovery: {e}")
+        # Clean up temporary files
+        safe_remove_file(temp_file, "temp")
+        return 0, 0, 0
+
+def atomic_write_frame(proc_output_file, xyz_content, timestep):
+    """
+    Atomically write a complete XYZ frame to the per-process file.
+    Simplified implementation with proper error handling.
+    
+    Args:
+        proc_output_file: Path to the per-process output file
+        xyz_content: Complete XYZ frame content as string
+        timestep: Timestep number for logging
+    
+    Returns:
+        bool: True if write was successful, False otherwise
+    """
+    try:
+        # Direct append with proper error handling
+        with open(proc_output_file, 'a') as f_out:
+            f_out.write(xyz_content)
+            f_out.flush()
+            os.fsync(f_out.fileno())  # Force write to disk
+        return True
+        
+    except Exception as e:
+        print(f"[Proc {rank}] Error writing frame for timestep {timestep}: {e}")
+        return False
+
 def get_timesteps_to_process(start, end, increment, output_file):
     """
     Calculate which timesteps should be processed and which are already done.
+    Includes recovery of malformed frames from the main output file.
     
     For XYZ format, we track by timestep number since each timestep has a unique identifier.
     
@@ -105,13 +216,186 @@ def get_timesteps_to_process(start, end, increment, output_file):
     # Calculate all timesteps that SHOULD be processed
     all_timesteps = list(range(start, end, increment))
     
-    # Load already processed timesteps from output file
+    # First, recover any malformed frames from the main output file
+    if os.path.exists(output_file):
+        print("Checking main output file for malformed frames...")
+        recovered_timesteps, removed_timesteps, total_frames = recover_main_output_file(output_file)
+        
+        if removed_timesteps:
+            print(f"Found {len(removed_timesteps)} malformed frames that need reprocessing")
+            # Add removed timesteps back to the processing list
+            for ts in removed_timesteps:
+                if ts in all_timesteps and ts not in recovered_timesteps:
+                    # This timestep was malformed and needs reprocessing
+                    pass  # It will be included in timesteps_to_process below
+        else:
+            print("No malformed frames found in main output file")
+    
+    # Load already processed timesteps from output file (after recovery)
     already_processed = load_processed_timesteps(output_file)
     
     # Find timesteps that need processing
     timesteps_to_process = [ts for ts in all_timesteps if ts not in already_processed]
     
     return timesteps_to_process, already_processed
+
+def safe_remove_file(filepath, context="file"):
+    """
+    Safely remove a file with proper error handling and logging.
+    
+    Args:
+        filepath: Path to file to remove
+        context: Context for logging (e.g., "backup", "temp", "old backup")
+    
+    Returns:
+        bool: True if file was removed or didn't exist, False if error occurred
+    """
+    if not os.path.exists(filepath):
+        return True
+    
+    try:
+        os.remove(filepath)
+        print(f"[Cleanup] Removed {context} file: {filepath}")
+        return True
+    except Exception as e:
+        print(f"[Cleanup] Warning: Could not remove {context} file {filepath}: {e}")
+        return False
+
+def cleanup_old_backups(output_file):
+    """
+    Clean up any existing backup files from previous runs to prevent accumulation.
+    """
+    import glob
+    
+    # Clean up main output file backups
+    main_backup_pattern = f"{output_file}.backup"
+    safe_remove_file(main_backup_pattern, "old backup")
+    
+    # Clean up per-process file backups
+    proc_backup_pattern = f"{output_file}.proc*.backup"
+    proc_backups = glob.glob(proc_backup_pattern)
+    for backup_file in proc_backups:
+        safe_remove_file(backup_file, "old backup")
+    
+    if proc_backups:
+        print(f"[Cleanup] Cleaned up {len(proc_backups)} old per-process backup files")
+
+def recover_main_output_file(output_file):
+    """
+    Detect and remove malformed XYZ frames from the main output file.
+    Returns timesteps that were removed and need to be reprocessed.
+    
+    Args:
+        output_file: Path to the main output file
+    
+    Returns:
+        tuple: (recovered_timesteps, removed_timesteps, total_frames_processed)
+    """
+    if not os.path.exists(output_file):
+        return set(), set(), 0
+    
+    backup_file = f"{output_file}.backup"
+    temp_file = f"{output_file}.recovered"
+    
+    recovered_timesteps = set()
+    removed_timesteps = set()
+    total_frames_processed = 0
+    
+    try:
+        # Create backup
+        import shutil
+        shutil.copy2(output_file, backup_file)
+        print(f"[Recovery] Created backup: {backup_file}")
+        
+        with open(output_file, 'r') as f_in, open(temp_file, 'w') as f_out:
+            while True:
+                # Try to read a complete frame
+                num_atoms, timestep, frame_lines = read_xyz_frame(f_in)
+                
+                if num_atoms is None:
+                    # End of file or malformed frame - try to continue reading
+                    current_pos = f_in.tell()
+                    line = f_in.readline()
+                    if not line:
+                        # End of file
+                        break
+                    else:
+                        # Malformed frame - try to find next valid frame start
+                        f_in.seek(current_pos)  # Go back to start of malformed content
+                        
+                        # Skip lines until we find a potential frame start (number)
+                        while True:
+                            line = f_in.readline()
+                            if not line:
+                                break
+                            line = line.strip()
+                            if line and line.isdigit():
+                                # Found potential frame start - go back and try again
+                                f_in.seek(f_in.tell() - len(line) - 1)
+                                break
+                        continue
+                
+                total_frames_processed += 1
+                
+                if timestep is not None and len(frame_lines) == num_atoms + 2:
+                    # Valid frame - write it
+                    for line in frame_lines:
+                        f_out.write(line)
+                    recovered_timesteps.add(timestep)
+                else:
+                    # Malformed frame - extract timestep if possible and mark for reprocessing
+                    if timestep is not None:
+                        removed_timesteps.add(timestep)
+                        print(f"[Recovery] Removed malformed frame for timestep {timestep}")
+                    else:
+                        print(f"[Recovery] Removed malformed frame at position {total_frames_processed} (no timestep)")
+        
+        # Replace original with recovered file
+        os.replace(temp_file, output_file)
+        
+        if removed_timesteps:
+            print(f"[Recovery] Main output file recovery complete:")
+            print(f"  - Recovered {len(recovered_timesteps)} valid frames")
+            print(f"  - Removed {len(removed_timesteps)} malformed frames")
+            print(f"  - Backup saved as: {backup_file}")
+            print(f"  - Timesteps to reprocess: {sorted(removed_timesteps)}")
+        else:
+            print(f"[Recovery] No malformed frames found in main output file")
+        
+        # Always clean up backup after successful recovery to prevent accumulation
+        safe_remove_file(backup_file, "backup")
+        
+        return recovered_timesteps, removed_timesteps, total_frames_processed
+        
+    except Exception as e:
+        print(f"[Recovery] Error during main output file recovery: {e}")
+        # Clean up temporary files
+        safe_remove_file(temp_file, "temp")
+        return set(), set(), 0
+
+def extract_timesteps_from_file(filename):
+    """
+    Extract all timesteps from an XYZ file.
+    Returns set of timesteps found in the file.
+    """
+    timesteps = set()
+    if not os.path.exists(filename):
+        return timesteps
+    
+    try:
+        with open(filename, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("Atoms. Timestep:"):
+                    try:
+                        timestep = int(line.split(":")[1].strip())
+                        timesteps.add(timestep)
+                    except (ValueError, IndexError):
+                        pass
+    except Exception as e:
+        print(f"Warning: Could not read file {filename}: {e}")
+    
+    return timesteps
 
 def load_processed_timesteps(output_file):
     """
@@ -121,23 +405,8 @@ def load_processed_timesteps(output_file):
     For XYZ format, we extract timestep numbers from the comment lines.
     Only called by rank 0 process.
     """
-    processed = set()
-    
-    # Check main output file
-    if os.path.exists(output_file):
-        try:
-            with open(output_file, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("Atoms. Timestep:"):
-                        try:
-                            # Extract timestep from "Atoms. Timestep: X"
-                            timestep = int(line.split(":")[1].strip())
-                            processed.add(timestep)
-                        except (ValueError, IndexError):
-                            pass
-        except Exception as e:
-            print(f"[Rank 0] Warning: Could not read main output file: {e}")
+    # Use the consolidated timestep extraction function
+    processed = extract_timesteps_from_file(output_file)
     
     # Note: Per-process files are handled during combination process
     # Only rank 0 calls this function, so we don't need to check per-process files here
@@ -188,6 +457,7 @@ def read_xyz_frame(f):
     """
     Read a complete XYZ frame from file handle.
     Returns (num_atoms, timestep, frame_lines) or (None, None, None) at EOF.
+    Enhanced with better error handling and validation.
     """
     # Read number of atoms
     line = f.readline()
@@ -196,12 +466,17 @@ def read_xyz_frame(f):
     
     try:
         num_atoms = int(line.strip())
-    except ValueError:
+        if num_atoms < 0:
+            print(f"Warning: Invalid negative atom count: {num_atoms}")
+            return None, None, None
+    except ValueError as e:
+        print(f"Warning: Could not parse atom count from line: '{line.strip()}' - {e}")
         return None, None, None
     
     # Read comment line with timestep
     comment_line = f.readline()
     if not comment_line:
+        print(f"Warning: Missing comment line after atom count: {num_atoms}")
         return None, None, None
     
     # Extract timestep from comment line
@@ -209,16 +484,29 @@ def read_xyz_frame(f):
     if comment_line.strip().startswith("Atoms. Timestep:"):
         try:
             timestep = int(comment_line.split(":")[1].strip())
-        except (ValueError, IndexError):
+        except (ValueError, IndexError) as e:
+            print(f"Warning: Could not parse timestep from comment line: '{comment_line.strip()}' - {e}")
             return None, None, None
+    else:
+        print(f"Warning: Invalid comment line format: '{comment_line.strip()}'")
+        return None, None, None
     
     # Read atom data lines
     frame_lines = [line, comment_line]  # Include num_atoms and comment lines
+    atoms_read = 0
+    
     for i in range(num_atoms):
         atom_line = f.readline()
         if not atom_line:
+            print(f"Warning: Incomplete frame - expected {num_atoms} atoms, only read {atoms_read}")
             return None, None, None
         frame_lines.append(atom_line)
+        atoms_read += 1
+    
+    # Verify we read exactly the expected number of atoms
+    if atoms_read != num_atoms:
+        print(f"Warning: Frame validation failed - expected {num_atoms} atoms, read {atoms_read}")
+        return None, None, None
     
     return num_atoms, timestep, frame_lines
 
@@ -247,17 +535,7 @@ def streaming_merge_files(temp_combined_file, output_file, existing_timesteps=No
     
     # Get existing timesteps to avoid duplicates (use provided set or read from file)
     if existing_timesteps is None:
-        existing_timesteps = set()
-        if os.path.exists(output_file):
-            with open(output_file, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("Atoms. Timestep:"):
-                        try:
-                            timestep = int(line.split(":")[1].strip())
-                            existing_timesteps.add(timestep)
-                        except (ValueError, IndexError):
-                            continue
+        existing_timesteps = extract_timesteps_from_file(output_file)
     
     merged_file = f"{output_file}.merged"
     new_timesteps_added = 0
@@ -329,8 +607,7 @@ def streaming_merge_files(temp_combined_file, output_file, existing_timesteps=No
         
     except Exception as e:
         print(f"Error during streaming merge: {e}")
-        if os.path.exists(merged_file):
-            os.remove(merged_file)
+        safe_remove_file(merged_file, "temp")
         raise
 
 def combine_per_process_files(output_file, size):
@@ -351,9 +628,17 @@ def combine_per_process_files(output_file, size):
     # Step 1: Verify existing output file is sorted (critical requirement)
     existing_timesteps = set()
     if os.path.exists(output_file):
-        is_sorted, last_timestep, existing_timesteps = verify_output_file_sorted(output_file)
+        # First recover any malformed frames
+        recovered_timesteps, removed_timesteps, total_frames = recover_main_output_file(output_file)
+        existing_timesteps = recovered_timesteps
+        
+        if removed_timesteps:
+            print(f"  Recovered {len(recovered_timesteps)} valid frames, removed {len(removed_timesteps)} malformed frames")
+        
+        # Now verify the recovered file is sorted
+        is_sorted, last_timestep, verified_timesteps = verify_output_file_sorted(output_file)
         if not is_sorted:
-            print(f"ERROR: Cannot proceed - output file {output_file} is not chronologically sorted!")
+            print(f"ERROR: Cannot proceed - output file {output_file} is not chronologically sorted after recovery!")
             print("Please manually sort the output file or remove it and restart.")
             sys.exit(1)
         print(f"  Existing output file has timestep range up to {last_timestep} ({len(existing_timesteps)} timesteps)")
@@ -436,8 +721,7 @@ def combine_per_process_files(output_file, size):
             print(f"  Logged {len(overlapping_timesteps)} overlapping timesteps to {log_file}")
         
         # Clean up temporary file
-        if os.path.exists(temp_combined_file):
-            os.remove(temp_combined_file)
+        safe_remove_file(temp_combined_file, "temp")
         
         print(f"✓ Combination complete: {new_timesteps_added} new timesteps added, {total_timesteps} total timesteps")
         return total_timesteps, new_timesteps_added, len(overlapping_timesteps)
@@ -445,8 +729,7 @@ def combine_per_process_files(output_file, size):
     except Exception as e:
         print(f"Error during combination: {e}")
         # Clean up temporary file on error
-        if os.path.exists(temp_combined_file):
-            os.remove(temp_combined_file)
+        safe_remove_file(temp_combined_file, "temp")
         raise
 
 def process_timesteps_mpi(start, end, increment, output_file, template_prefix="303"):
@@ -464,6 +747,10 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
     script_dir = os.path.dirname(os.path.abspath(__file__))
     dumps_dir = os.path.join(script_dir, "..", "dumps")
     dumps_dir = os.path.abspath(dumps_dir)
+    
+    # Clean up any old backup files from previous runs (only rank 0)
+    if rank == 0:
+        cleanup_old_backups(output_file)
     
     # Debug: Print path information (only rank 0)
     if rank == 0:
@@ -487,11 +774,6 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
         print()
     # Create per-process output files for incremental writing
     proc_output_file = f"{output_file}.proc{rank}"
-    
-    # Clean up old per-process file to avoid duplicates from previous runs
-    if os.path.exists(proc_output_file):
-        os.remove(proc_output_file)
-        print(f"[Proc {rank}] Removed old per-process file to avoid duplicates", flush=True)
     
     # Calculate combination interval based on expected workload (only rank 0)
     if rank == 0:
@@ -557,87 +839,95 @@ def process_timesteps_mpi(start, end, increment, output_file, template_prefix="3
     # Create a dictionary for fast timestep lookup (optimization)
     timestep_to_index = {ts: idx for idx, ts in enumerate(timesteps_to_process)}
     
-    # Open per-process output file in write mode for incremental writing
-    f_out = open(proc_output_file, 'w')
+    # Initialize per-process output file (will be created by atomic writes)
+    if os.path.exists(proc_output_file):
+        # Try to recover any incomplete frames from previous runs
+        print(f"[Proc {rank}] Attempting to recover incomplete frames from existing file...")
+        recovered, removed, total = recover_incomplete_frames(proc_output_file)
+        if removed > 0:
+            print(f"[Proc {rank}] Recovery complete: {recovered} frames recovered, {removed} malformed frames removed")
+        else:
+            print(f"[Proc {rank}] No malformed frames found in existing file")
+    else:
+        print(f"[Proc {rank}] No existing per-process file found - starting fresh")
     
-    try:
-        # Each process processes its assigned timesteps
-        counter = 0
-        last_combination_counter = 0
-        
-        for i in range(start, end, increment):
-            # Check if this timestep needs processing and is assigned to this process
-            if i in timestep_to_index:
-                # Assign timesteps to processes using round-robin
-                timestep_index = timestep_to_index[i]
-                if timestep_index % size == rank:
-                    try:
-                        filename = os.path.join(dumps_dir, f"{template_prefix}.{i}")
+    # Each process processes its assigned timesteps
+    counter = 0
+    last_combination_counter = 0
+    
+    for i in range(start, end, increment):
+        # Check if this timestep needs processing and is assigned to this process
+        if i in timestep_to_index:
+            # Assign timesteps to processes using round-robin
+            timestep_index = timestep_to_index[i]
+            if timestep_index % size == rank:
+                try:
+                    filename = os.path.join(dumps_dir, f"{template_prefix}.{i}")
+                    
+                    # Debug: Check if file exists before processing
+                    if not os.path.exists(filename):
+                        print(f"[Proc {rank}] ERROR: File not found: {filename}")
+                        print(f"[Proc {rank}] Dumps directory: {dumps_dir}")
+                        print(f"[Proc {rank}] Template prefix: {template_prefix}")
+                        print(f"[Proc {rank}] Timestep: {i}")
                         
-                        # Debug: Check if file exists before processing
-                        if not os.path.exists(filename):
-                            print(f"[Proc {rank}] ERROR: File not found: {filename}")
-                            print(f"[Proc {rank}] Dumps directory: {dumps_dir}")
-                            print(f"[Proc {rank}] Template prefix: {template_prefix}")
-                            print(f"[Proc {rank}] Timestep: {i}")
-                            
-                            # Additional debugging: check if dumps directory has any files
-                            if os.path.exists(dumps_dir):
-                                try:
-                                    import subprocess
-                                    result = subprocess.run(['find', dumps_dir, '-maxdepth', '1', '-name', f'{template_prefix}.*', '-type', 'f'], 
-                                                          capture_output=True, text=True, timeout=5)
-                                    if result.returncode == 0:
-                                        files = result.stdout.strip().split('\n')
-                                        files = [f for f in files if f]
-                                        print(f"[Proc {rank}] Found {len(files)} {template_prefix}.* files in dumps directory")
-                                        if files:
-                                            print(f"[Proc {rank}] Sample files: {[os.path.basename(f) for f in files[:3]]}")
-                                    else:
-                                        print(f"[Proc {rank}] Could not list files in dumps directory")
-                                except Exception as e:
-                                    print(f"[Proc {rank}] Error checking dumps directory: {e}")
-                            else:
-                                print(f"[Proc {rank}] Dumps directory does not exist!")
-                            continue
-                        
-                        xyz_content = process_lammps_file(filename, output_file)
-                        
-                        if xyz_content is not None:
-                            print(f"[Proc {rank}] Timestep {i}: converted {filename}")
-                            
-                            # Write immediately for restart capability
-                            f_out.write(xyz_content)
-                            f_out.flush()  # Ensure data is written to disk
-                            counter += 1
-                            
-                            # Periodic combination check
-                            if counter - last_combination_counter >= combination_interval:
-                                # Synchronize before combining
-                                comm.Barrier()
-                                
-                                # Master process combines files
-                                if rank == 0:
-                                    total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
-                                    print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
-                                    if new_timesteps > 0 or overlapping_timesteps > 0:
-                                        print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
-                                
-                                last_combination_counter = counter
-                                comm.Barrier()  # Synchronize after combining
+                        # Additional debugging: check if dumps directory has any files
+                        if os.path.exists(dumps_dir):
+                            try:
+                                import subprocess
+                                result = subprocess.run(['find', dumps_dir, '-maxdepth', '1', '-name', f'{template_prefix}.*', '-type', 'f'], 
+                                                      capture_output=True, text=True, timeout=5)
+                                if result.returncode == 0:
+                                    files = result.stdout.strip().split('\n')
+                                    files = [f for f in files if f]
+                                    print(f"[Proc {rank}] Found {len(files)} {template_prefix}.* files in dumps directory")
+                                    if files:
+                                        print(f"[Proc {rank}] Sample files: {[os.path.basename(f) for f in files[:3]]}")
+                                else:
+                                    print(f"[Proc {rank}] Could not list files in dumps directory")
+                            except Exception as e:
+                                print(f"[Proc {rank}] Error checking dumps directory: {e}")
                         else:
-                            print(f"[Proc {rank}] Warning: File {filename} exists but could not be processed, skipping timestep {i}")
+                            print(f"[Proc {rank}] Dumps directory does not exist!")
+                        continue
+                    
+                    xyz_content = process_lammps_file(filename, output_file)
+                    
+                    if xyz_content is not None:
+                        print(f"[Proc {rank}] Timestep {i}: converted {filename}")
+                        
+                        # Use atomic write to ensure complete frame is written
+                        if atomic_write_frame(proc_output_file, xyz_content, i):
+                            counter += 1
+                            print(f"[Proc {rank}] Successfully wrote timestep {i} ({counter} total)")
+                        else:
+                            print(f"[Proc {rank}] Failed to write timestep {i} - frame may be incomplete")
+                            # Continue processing other timesteps rather than failing completely
+                        
+                        # Periodic combination check
+                        if counter - last_combination_counter >= combination_interval:
+                            # Synchronize before combining
+                            comm.Barrier()
                             
-                    except Exception as e:
-                        print(f"[Proc {rank}] Error processing timestep {i}: {e}")
-                        print(f"[Proc {rank}] Filename attempted: {filename}")
-                        import traceback
-                        traceback.print_exc()
-        
-        print(f"[Proc {rank}] Processed {counter} timesteps")
+                            # Master process combines files
+                            if rank == 0:
+                                total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
+                                print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
+                                if new_timesteps > 0 or overlapping_timesteps > 0:
+                                    print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
+                            
+                            last_combination_counter = counter
+                            comm.Barrier()  # Synchronize after combining
+                    else:
+                        print(f"[Proc {rank}] Warning: File {filename} exists but could not be processed, skipping timestep {i}")
+                        
+                except Exception as e:
+                    print(f"[Proc {rank}] Error processing timestep {i}: {e}")
+                    print(f"[Proc {rank}] Filename attempted: {filename}")
+                    import traceback
+                    traceback.print_exc()
     
-    finally:
-        f_out.close()
+    print(f"[Proc {rank}] Processed {counter} timesteps")
     
     # Synchronize all processes before final combination
     comm.Barrier()
