@@ -974,7 +974,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                       f"mean_mag = {mean_mag:.6f}")
                                 print(f"[Proc {rank}] Bond stats: {bond_stats['bonds_created']} created, "
                                       f"{bond_stats['bonds_missing']} missing, "
-                                      f"{bond_stats['atoms_within_cutoff']} type_B within cutoff, "
+                                      f"{bond_stats['avg_type_B_within_cutoff']:.2f} avg type_B within cutoff, "
                                       f"type_A: {bond_stats['type_A_count']}, type_B: {bond_stats['type_B_count']}")
                                 
                                 # Accumulate bond statistics
