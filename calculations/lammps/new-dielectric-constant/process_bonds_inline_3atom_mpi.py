@@ -60,6 +60,8 @@ import datetime
 import time
 from mpi4py import MPI
 
+WRITE_BUFFER_SIZE = 8192
+
 # Type-to-charge mapping (hardcoded)
 TYPE_TO_CHARGE = {
     2: -0.65966,  # Central atoms (e.g., oxygen)
@@ -405,6 +407,8 @@ def get_timesteps_to_process(start, end, increment, output_file):
     
     # Calculate which timesteps NEED processing
     timesteps_to_process = sorted(all_timesteps - already_processed)
+
+    print(f"Timesteps to process: {timesteps_to_process}", flush=True)
     
     return timesteps_to_process, already_processed
 
@@ -983,7 +987,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     stats_report_interval = max(100, frames_per_process // 100)  # Every 1% or 100 frames
     
     # Buffer size for writing - reduce flush frequency
-    write_buffer_size = 100  # Write in batches of 100 frames
+    write_buffer_size = WRITE_BUFFER_SIZE  # Write in batches of 100 frames
     
     # All processes: Determine which timesteps need processing
     if rank == 0:
@@ -1049,6 +1053,10 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     print(f"[Proc {rank}] DEBUG: About to create timestep lookup dictionary", flush=True)
     # Create a dictionary for fast timestep lookup (optimization)
     timestep_to_index = {ts: idx for idx, ts in enumerate(timesteps_to_process)}
+    print(f"[Proc {rank}] DEBUG: timestep_to_index has {len(timestep_to_index)} entries", flush=True)
+    if len(timestep_to_index) > 0:
+        print(f"[Proc {rank}] DEBUG: timestep_to_index range: {min(timestep_to_index.keys())} to {max(timestep_to_index.keys())}", flush=True)
+        print(f"[Proc {rank}] DEBUG: First 10 timesteps: {sorted(list(timestep_to_index.keys()))[:10]}", flush=True)
     
     # Calculate sequential assignment ranges for this process
     total_timesteps = len(timesteps_to_process)
@@ -1094,6 +1102,22 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print(f"[Proc {rank}] DEBUG: timestep_to_index has {len(timestep_to_index)} entries", flush=True)
         with open(filename, 'r') as f_in:
             print(f"[Proc {rank}] DEBUG: Input file opened successfully", flush=True)
+            
+            # Debug: Show first few timesteps from file
+            print(f"[Proc {rank}] DEBUG: Checking first few timesteps from file...", flush=True)
+            file_timesteps = []
+            temp_f = open(filename, 'r')
+            for i in range(10):  # Check first 10 frames
+                num_atoms, timestep = read_timestep_only(temp_f)
+                if timestep is None:
+                    break
+                file_timesteps.append(timestep)
+                # Skip atom data
+                for j in range(num_atoms):
+                    temp_f.readline()
+            temp_f.close()
+            print(f"[Proc {rank}] DEBUG: First 10 timesteps from file: {file_timesteps}", flush=True)
+            
             while True:
                 # First, read only timestep information to decide if we need to process this frame
                 num_atoms, timestep = read_timestep_only(f_in)
@@ -1103,9 +1127,17 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                 
                 frame_count += 1
                 
+                # Debug: Show what we're reading vs what we expect
+                if frame_count <= 10:  # Only show first 10 frames to avoid spam
+                    print(f"[Proc {rank}] DEBUG: Frame {frame_count}: read timestep {timestep} (type: {type(timestep)})", flush=True)
+                    print(f"[Proc {rank}] DEBUG: Sample timestep_to_index keys: {list(timestep_to_index.keys())[:10]}", flush=True)
+                    print(f"[Proc {rank}] DEBUG: timestep in timestep_to_index? {timestep in timestep_to_index}", flush=True)
+                    if not (timestep in timestep_to_index):
+                        print(f"[Proc {rank}] DEBUG: MISMATCH! File has timestep {timestep} but expected range is {min(timestep_to_index.keys())} to {max(timestep_to_index.keys())}", flush=True)
+                
                 # Check if this timestep needs processing and is assigned to this process
                 if timestep in timestep_to_index.keys():
-                    print(f"Timestep {timestep} needs processing and is assigned to this process", flush=True)
+                    print(f"[Proc {rank}] Timestep {timestep} needs processing", flush=True)
                     # Assign timesteps to processes using sequential assignment
                     timestep_index = timestep_to_index[timestep]
                     
