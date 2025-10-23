@@ -73,6 +73,7 @@ size = comm.Get_size()
 
 def read_timestep_only(f):
     """Read only timestep information from file handle - OPTIMIZED VERSION. Returns (num_atoms, timestep) or (None, None) at EOF."""
+    print(f"Reading timestep only from file handle", flush=True)
     line = f.readline()
     if not line or not line.strip():
         return None, None
@@ -86,6 +87,7 @@ def read_timestep_only(f):
 
 def read_frame(f):
     """Read a single frame from file handle - OPTIMIZED VERSION. Returns (atoms, num_atoms, timestep) or (None, None, None) at EOF."""
+    print(f"Reading frame from file handle", flush=True)
     atoms = {}
     
     line = f.readline()
@@ -112,6 +114,7 @@ def read_frame(f):
 
 def read_frame_from_position(f, num_atoms):
     """Read frame data starting from current position, given the number of atoms. Returns atoms dictionary."""
+    print(f"Reading frame from position from file handle", flush=True)
     atoms = {i: None for i in range(1, num_atoms + 1)}
     
     for i in range(1, num_atoms + 1):
@@ -433,6 +436,7 @@ class SimpleAverage:
 
 def process_frame(atoms, num_atoms, timestep, type_A, type_B, cutoff, box_dims, type_to_charge):
     """Process a single frame and return dipole moment with bond statistics."""
+    print(f"Processing frame", flush=True)
     bonds, bond_stats = create_3atom_bonds(atoms, type_A, type_B, cutoff, box_dims)
     dipole, dipole_mags = calculate_molecular_dipole(atoms, bonds, box_dims, type_to_charge)
     
@@ -1040,10 +1044,27 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print(f"\nProcessing {len(timesteps_to_process)} timesteps...", flush=True)
         if rank == 0:
             print(f"Combining results every {combination_interval} frames per process", flush=True)
+        print(f"Timestep assignment: Sequential (not round-robin)", flush=True)
     
     print(f"[Proc {rank}] DEBUG: About to create timestep lookup dictionary", flush=True)
     # Create a dictionary for fast timestep lookup (optimization)
     timestep_to_index = {ts: idx for idx, ts in enumerate(timesteps_to_process)}
+    
+    # Calculate sequential assignment ranges for this process
+    total_timesteps = len(timesteps_to_process)
+    timesteps_per_process = total_timesteps // size
+    remainder = total_timesteps % size
+    
+    if rank < remainder:
+        # First 'remainder' processes get one extra timestep
+        start_idx = rank * (timesteps_per_process + 1)
+        end_idx = start_idx + timesteps_per_process + 1
+    else:
+        # Remaining processes get standard number of timesteps
+        start_idx = rank * timesteps_per_process + remainder
+        end_idx = start_idx + timesteps_per_process
+    
+    print(f"[Proc {rank}] DEBUG: Sequential assignment - timesteps {start_idx} to {end_idx-1} (total: {end_idx-start_idx})", flush=True)
     
     # Initialize simple average tracking for bond statistics
     running_stats = {
@@ -1084,9 +1105,10 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                 
                 # Check if this timestep needs processing and is assigned to this process
                 if timestep in timestep_to_index:
-                    # Assign timesteps to processes using round-robin
+                    # Assign timesteps to processes using sequential assignment
                     timestep_index = timestep_to_index[timestep]
-                    if timestep_index % size == rank:
+                    
+                    if start_idx <= timestep_index < end_idx:
                         # Only now read the full frame data since we need to process it
                         atoms = read_frame_from_position(f_in, num_atoms)
                         try:
@@ -1142,6 +1164,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                 
                                 # Proceed if ALL ranks are ready OR if timeout has been reached
                                 if ready_sum == size or timeout_sum > 0:
+                                    print(f"Combination check passed", flush=True)
                                     # Flush write buffer to ensure all data is written to per-process file
                                     if write_buffer:
                                         f_out.writelines(write_buffer)
