@@ -1104,7 +1104,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                 frame_count += 1
                 
                 # Check if this timestep needs processing and is assigned to this process
-                if timestep in timestep_to_index:
+                if timestep in timestep_to_index.keys():
                     print(f"Timestep {timestep} needs processing and is assigned to this process", flush=True)
                     # Assign timesteps to processes using sequential assignment
                     timestep_index = timestep_to_index[timestep]
