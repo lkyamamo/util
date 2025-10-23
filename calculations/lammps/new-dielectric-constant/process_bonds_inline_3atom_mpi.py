@@ -1105,10 +1105,12 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                 
                 # Check if this timestep needs processing and is assigned to this process
                 if timestep in timestep_to_index:
+                    print(f"Timestep {timestep} needs processing and is assigned to this process", flush=True)
                     # Assign timesteps to processes using sequential assignment
                     timestep_index = timestep_to_index[timestep]
                     
                     if start_idx <= timestep_index < end_idx:
+                        print(f"Timestep {timestep} is in the assigned range", flush=True)
                         # Only now read the full frame data since we need to process it
                         atoms = read_frame_from_position(f_in, num_atoms)
                         try:
