@@ -13,7 +13,7 @@ if any(x == -1 for x in (a, b, c, alpha, beta, gamma)):
 if "CHANGE1" in type_map.values():
     raise ValueError("Must change type dictionary to element names")
 
-filename = "../all_lammps.xyz"
+filename = "../all_lammps_last500.xyz"
 with open(filename, "r") as f:
     lines = f.readlines()
 
