@@ -53,18 +53,23 @@ run() {
 
 [[ -f "$LIST_FILE" ]] || { log "Error: '$LIST_FILE' not found in $(pwd)"; exit 1; }
 
-# Test SSH connection first
-if ! test_ssh_connection; then
+# Setup persistent SSH connection
+log "Establishing persistent SSH connection..."
+if ! setup_ssh_control; then
   log "Error: Cannot establish SSH connection to HPC"
   log "Please check your SSH configuration and network connectivity"
   exit 1
 fi
+
+# Cleanup SSH connection on exit
+trap 'cleanup_ssh_control' EXIT
 
 # Preflight: confirm remote rsync exists & reachable
 log "Checking remote rsync availability..."
 if ! robust_ssh "command -v '$RSYNC_PATH' >/dev/null"; then
   log "Error: cannot find '$RSYNC_PATH' on $REMOTE"
   log "Please ensure rsync is installed on the remote system"
+  cleanup_ssh_control
   exit 1
 fi
 
@@ -113,7 +118,7 @@ while IFS= read -r raw <&3 || [[ -n "${raw:-}" ]]; do
 
   log "==> [$processed] $REMOTE:$remote_path -> $dest"
 
-  if robust_ssh "[ -d \"$remote_path\" ]" 2>/dev/null; then
+  if quick_ssh "[ -d \"$remote_path\" ]"; then
     # Directory: use partial-dir for efficient resumes across many files
     mkdir -p "$dest"
     mkdir -p "$dest/.rsync-partial"
@@ -123,7 +128,7 @@ while IFS= read -r raw <&3 || [[ -n "${raw:-}" ]]; do
       ((failed++)) || true
     fi
 
-  elif robust_ssh "[ -f \"$remote_path\" ]" 2>/dev/null; then
+  elif quick_ssh "[ -f \"$remote_path\" ]"; then
     # File (tarball): use in-place delta updates
     mkdir -p "$(dirname -- "$dest")"
     if rsync_with_retry "$REMOTE:$remote_path" "$dest" "file" "${RSYNC_FILE_EXTRA[@]}"; then
@@ -147,3 +152,6 @@ log "OK:        $ok"
 log "Warnings:  $warned   (partial transfers)"
 log "Skipped:   $skipped  (missing/inaccessible)"
 log "Failed:    $failed   (non-transient errors)"
+
+# Cleanup SSH connection before exit
+cleanup_ssh_control

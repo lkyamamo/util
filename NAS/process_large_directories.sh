@@ -2,8 +2,6 @@
 # Process multiple directories from large_directory_list.txt
 # Creates tarballs of each directory on HPC and syncs them to local directories
 
-set -euo pipefail
-
 # Load configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "${SCRIPT_DIR}/config.sh" ]]; then
@@ -111,12 +109,16 @@ main() {
   log "Remote base: $REMOTE_BASE"
   log "Local base: $LOCAL_BASE"
   
-  # Test SSH connection first
-  if ! test_ssh_connection; then
+  # Setup persistent SSH connection
+  log "Establishing persistent SSH connection..."
+  if ! setup_ssh_control; then
     log "ERROR: Cannot establish SSH connection to HPC"
     log "Please check your SSH configuration and network connectivity"
     exit 1
   fi
+  
+  # Cleanup SSH connection on exit
+  trap 'cleanup_ssh_control' EXIT
   
   if [[ "$DRY_RUN" == "true" ]]; then
     log "DRY RUN MODE - No actual transfers will be performed"
@@ -156,6 +158,9 @@ main() {
   log "Total directories processed: $processed"
   log "Successfully completed: $ok"
   log "Failed: $failed"
+  
+  # Cleanup SSH connection before exit
+  cleanup_ssh_control
   
   if [[ $failed -gt 0 ]]; then
     log "Some directories failed to process. Check the logs above for details."

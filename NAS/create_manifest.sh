@@ -51,18 +51,22 @@ TMP_LIST="$(mktemp)"; trap 'rm -f "$TMP_LIST"' EXIT
 
 echo "[1/2] Scanning directory: ${HPC}:${REMOTE_DIR}"
 
-# Test SSH connection first
-if ! test_ssh_connection; then
+# Setup persistent SSH connection
+if ! setup_ssh_control; then
   echo "Error: Cannot establish SSH connection to HPC" >&2
   echo "Please check your SSH configuration and network connectivity" >&2
   exit 1
 fi
 
+# Cleanup SSH connection on exit
+trap 'cleanup_ssh_control; rm -f "$TMP_LIST"' EXIT
+
 # Build list of immediate children on the HPC: <type>\t<name>
 echo "Scanning remote directory contents..."
-if ! robust_ssh "cd '$REMOTE_DIR' && find . -mindepth 1 -maxdepth 1 -printf '%y\t%P\n'" > "$TMP_LIST" 2>/dev/null; then
+if ! robust_ssh "cd '$REMOTE_DIR' && find . -mindepth 1 -maxdepth 1 -printf '%y\t%P\n'" > "$TMP_LIST"; then
   echo "Error: Failed to access directory '$REMOTE_DIR' on HPC" >&2
   echo "Please check that the directory exists and you have read permissions" >&2
+  cleanup_ssh_control
   exit 1
 fi
 
@@ -86,6 +90,9 @@ fi
 
 mv "${MANIFEST}.tmp" "$MANIFEST"
 echo "Done. $(wc -l < "$MANIFEST") lines (incl. header)."
+
+# Cleanup SSH connection before exit
+cleanup_ssh_control
 
 # Function to create manifests for multiple directories (for use by other scripts)
 create_manifests_for_directories() {

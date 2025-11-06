@@ -408,7 +408,7 @@ def get_timesteps_to_process(start, end, increment, output_file):
     # Calculate which timesteps NEED processing
     timesteps_to_process = sorted(all_timesteps - already_processed)
 
-    print(f"Timesteps to process: {timesteps_to_process}", flush=True)
+    print(f"Timesteps to process: {len(timesteps_to_process)}", flush=True)
     
     return timesteps_to_process, already_processed
 
