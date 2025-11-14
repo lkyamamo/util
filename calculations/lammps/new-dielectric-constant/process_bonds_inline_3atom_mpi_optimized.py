@@ -651,6 +651,11 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     # Initialize write buffer for batch writing
     write_buffer = []
     
+    # Initialize counters before try block to ensure they're always defined
+    counter = 0
+    last_stats_report_counter = 0
+    last_combination_counter = 0
+    
     # Timeout-based combination (fallback for ranks with zero timesteps)
     combination_timeout = 300  # 5 minutes timeout for combination
     last_combination_time = time.time()
