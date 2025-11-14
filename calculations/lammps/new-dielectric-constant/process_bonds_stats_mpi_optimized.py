@@ -743,12 +743,14 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     # Open per-process output file in write mode for incremental writing
     f_out = open(proc_output_file, 'w')
     
+    # Initialize counters before try block to ensure they're always defined
+    counter = 0
+    frame_count = 0
+    last_combination_counter = 0
+    last_stats_report_counter = 0
+    
     try:
         # Each process reads through the file and processes its assigned timesteps
-        counter = 0
-        frame_count = 0
-        last_combination_counter = 0
-        last_stats_report_counter = 0
         
         with open(filename, 'r') as f_in:
             while True:
