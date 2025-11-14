@@ -83,7 +83,7 @@ program main
           rr1(0) = sqrt(sum(rr1(1:3)*rr1(1:3)))
           rr1(1:3) = rr1(1:3)/rr1(0)
 
-          if((rr1(0)>ac%ba_rc(ity,jty)) .or. (rr1(0)<ac%ba_mrc(ity,jty))) cycle ! bond angle cutoff
+          if((rr1(0)>ac%ba_rc0(ity,jty)) .or. (rr1(0)<ac%ba_mrc0(ity,jty))) cycle ! bond angle cutoff
 
           do k = j+1, ia%counter
              kty = ia%nbrs(k)%itype
@@ -92,7 +92,7 @@ program main
              rr2(0) = sqrt(sum(rr2(1:3)*rr2(1:3)))
              rr2(1:3) = rr2(1:3)/rr2(0)
 
-             if((rr2(0)>ac%ba_rc(ity,kty)) .or. (rr2(0)<ac%ba_mrc(ity,kty))) cycle ! bond angle cutoff
+             if((rr2(0)>ac%ba_rc1(ity,kty)) .or. (rr2(0)<ac%ba_mrc1(ity,kty))) cycle ! bond angle cutoff
              !print'(3i3,2f8.3,2es10.2)',ity,jty,kty,rr1(0),rr2(0), ac%ba_rc(ity,jty), ac%ba_rc(ity,kty)
         
              cosine = sum(rr1(1:3)*rr2(1:3))

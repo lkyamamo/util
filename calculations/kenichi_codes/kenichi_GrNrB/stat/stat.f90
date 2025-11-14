@@ -26,12 +26,22 @@ module stat_mod
 
   type(bond_length) :: bond_length0(3) = [ & 
                        bond_length('H','H',1.80d0), &
-                       bond_length('H','O',1.2d0), &
+                       bond_length('H','O',2.47d0), &
                        bond_length('O','O',4.4d0) &
                        ] 
+  type(bond_length) :: bond_length1(3) = [ & 
+                       bond_length('H','H',1.80d0), &
+                       bond_length('H','O',2.47d0), &
+                       bond_length('O','O',4.4d0) &
+                       ]
   type(bond_length) :: min_bond_length0(3) = [ &
                        bond_length('H','H',0.0d0), &
-                       bond_length('H','O',0.0d0), &
+                       bond_length('H','O',1.3d0), &
+                       bond_length('O','O',0.0d0) &
+                       ]
+  type(bond_length) :: min_bond_length1(3) = [ &
+                       bond_length('H','H',0.0d0), &
+                       bond_length('H','O',1.3d0), &
                        bond_length('O','O',0.0d0) &
                        ]
   type NSD_type ! Neutron Scattering Data type
@@ -121,8 +131,10 @@ module stat_mod
 
      real(8),allocatable :: concentration(:), gr(:,:,:), nr(:,:,:), ba(:,:,:,:), sq(:,:,:)
 
-     real(8),allocatable :: ba_rc(:,:)
-     real(8),allocatable :: ba_mrc(:,:)
+     real(8),allocatable :: ba_rc0(:,:)
+     real(8),allocatable :: ba_mrc0(:,:)
+     real(8),allocatable :: ba_rc1(:,:)
+     real(8),allocatable :: ba_mrc1(:,:)
 
      integer :: num_atoms, num_atom_types
      real(8) :: volume, lattice(6), kvector(3)
@@ -468,18 +480,26 @@ contains
 
      print'(a)',repeat('-',60)
      ! setup bond angle cutoff
-     allocate(c%ba_rc(ne,ne))
-     allocate(c%ba_mrc(ne,ne))
-     c%ba_rc=BARC0
-     c%ba_mrc=BARC0
+     allocate(c%ba_rc0(ne,ne))
+     allocate(c%ba_mrc0(ne,ne))
+     allocate(c%ba_rc1(ne,ne))
+     allocate(c%ba_mrc1(ne,ne))
+     c%ba_rc0=BARC0
+     c%ba_mrc0=BARC0
+     c%ba_rc1=BARC0
+     c%ba_mrc1=BARC0
      do ity = 1, ne
      do jty = 1, ne
         do i=1,size(bond_length0)
            if( bond_length0(i)%A ==  c%elems(jty)%str .and.  bond_length0(i)%B == c%elems(ity)%str) then
-              c%ba_rc(ity,jty) = bond_length0(i)%rc
-              c%ba_mrc(ity,jty) = min_bond_length0(i)%rc
-              c%ba_rc(jty,ity) = bond_length0(i)%rc
-              c%ba_mrc(jty,ity) = min_bond_length0(i)%rc
+              c%ba_rc0(ity,jty) = bond_length0(i)%rc
+              c%ba_mrc0(ity,jty) = min_bond_length0(i)%rc
+              c%ba_rc0(jty,ity) = bond_length0(i)%rc
+              c%ba_mrc0(jty,ity) = min_bond_length0(i)%rc
+              c%ba_rc1(ity,jty) = bond_length1(i)%rc
+              c%ba_mrc1(ity,jty) = min_bond_length1(i)%rc
+              c%ba_rc1(jty,ity) = bond_length1(i)%rc
+              c%ba_mrc1(jty,ity) = min_bond_length1(i)%rc
               print'(a,f6.2)',' found bond angle cutff '//trim(bond_length0(i)%A)//'-'//trim(bond_length0(i)%B), bond_length0(i)%rc
               print'(a,f6.2)',' found minnimum bond angle cutff '//trim(min_bond_length0(i)%A)//'-'//trim(min_bond_length0(i)%B), min_bond_length0(i)%rc
            endif
