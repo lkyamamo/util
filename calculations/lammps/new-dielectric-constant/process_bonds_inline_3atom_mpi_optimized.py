@@ -107,46 +107,54 @@ def read_timestep_only(f):
     return num_atoms, timestep
 
 
-def find_timestep_position(filename, target_timestep):
+def calculate_timestep_position(filename, target_timestep, increment):
     """
-    Find the file position where a specific timestep starts.
+    Calculate the file position where a specific timestep starts.
+    Since the number of atoms is constant, we can calculate positions directly.
+    
+    Note: Frame index and timestep number are different!
+    - Frame 0 has timestep 0
+    - Frame 1 has timestep 10 (if increment=10)
+    - Frame 2 has timestep 20 (if increment=10)
+    - etc.
+    
+    Formula: frame_index = (target_timestep - first_timestep) / increment
+    
     Returns (file_position, num_atoms) or (None, None) if not found.
     """
-    frames_searched = 0
-    last_progress_time = time.time()
-    progress_interval = 5.0  # Report progress every 5 seconds
-    
+    # Read first frame to get num_atoms, first timestep, and calculate frame size
     with open(filename, 'r') as f:
-        while True:
-            # Remember current position
-            pos = f.tell()
-            
-            # Read timestep info
-            num_atoms, timestep = read_timestep_only(f)
-            if timestep is None:
-                return None, None
-            
-            frames_searched += 1
-            
-            # Report progress periodically to avoid appearing stuck
-            current_time = time.time()
-            if current_time - last_progress_time >= progress_interval:
-                print(f"[Proc {rank}] Searching for timestep {target_timestep}: checked {frames_searched} frames, current timestep: {timestep}", flush=True)
-                last_progress_time = current_time
-            
-            if timestep == target_timestep:
-                if frames_searched > 1000:
-                    print(f"[Proc {rank}] Found timestep {target_timestep} after searching {frames_searched} frames", flush=True)
-                return pos, num_atoms
-            
-            # Skip to next frame
-            for _ in range(num_atoms):
-                f.readline()
+        first_pos = f.tell()
+        num_atoms, first_timestep = read_timestep_only(f)
+        if num_atoms is None or first_timestep is None:
+            return None, None
+        
+        # Read the rest of the first frame to calculate frame size in bytes
+        for _ in range(num_atoms):
+            f.readline()
+        first_frame_end = f.tell()
+        frame_size_bytes = first_frame_end - first_pos
+    
+    # Calculate which frame index (not timestep!) the target timestep corresponds to
+    # Frame index = (target_timestep - first_timestep) / increment
+    # Example: if first_timestep=0, increment=10, target_timestep=10:
+    #   frame_index = (10 - 0) / 10 = 1 (second frame in file)
+    if (target_timestep - first_timestep) % increment != 0:
+        # Target timestep is not in the sequence
+        return None, None
+    
+    frame_index = (target_timestep - first_timestep) // increment
+    
+    # Calculate file position: start position + (frame_index * frame_size_bytes)
+    file_position = first_pos + (frame_index * frame_size_bytes)
+    
+    return file_position, num_atoms
 
 
-def jump_to_timestep_range(filename, assigned_timesteps):
+def jump_to_timestep_range(filename, assigned_timesteps, increment):
     """
     Jump directly to the start of the assigned timestep range for this process.
+    Since the number of atoms is constant, we calculate the position directly.
     Returns file handle positioned at the start of the range.
     """
     if not assigned_timesteps:
@@ -155,17 +163,27 @@ def jump_to_timestep_range(filename, assigned_timesteps):
     # Find the first timestep assigned to this process
     first_timestep = min(assigned_timesteps)
     
-    print(f"[Proc {rank}] Locating timestep {first_timestep} in file (this may take a while for large files)...", flush=True)
+    print(f"[Proc {rank}] Calculating position for timestep {first_timestep} (no search needed - constant frame size)", flush=True)
     
-    # Find the position of the first timestep
-    file_pos, num_atoms = find_timestep_position(filename, first_timestep)
+    # Calculate the position directly (reads first frame to get file's starting timestep)
+    file_pos, num_atoms = calculate_timestep_position(filename, first_timestep, increment)
     if file_pos is None:
-        print(f"[Proc {rank}] ERROR: Could not find timestep {first_timestep} in file", flush=True)
+        print(f"[Proc {rank}] ERROR: Could not calculate position for timestep {first_timestep}", flush=True)
         return None, None
     
     # Open file and jump to position
     f = open(filename, 'r')
     f.seek(file_pos)
+    
+    # Verify we're at the correct timestep
+    verify_num_atoms, verify_timestep = read_timestep_only(f)
+    if verify_timestep != first_timestep:
+        print(f"[Proc {rank}] WARNING: Position calculation may be off. Expected timestep {first_timestep}, got {verify_timestep}", flush=True)
+        # Reset to calculated position
+        f.seek(file_pos)
+    else:
+        # Reset to start of frame (we read the header)
+        f.seek(file_pos)
     
     print(f"[Proc {rank}] Successfully positioned at timestep {first_timestep}", flush=True)
     
@@ -747,7 +765,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
             
             # Jump directly to the start of this process's assigned range
             print(f"[Proc {rank}] DEBUG: About to jump to timestep range in file: {filename}", flush=True)
-            f_in, num_atoms = jump_to_timestep_range(filename, assigned_timesteps)
+            f_in, num_atoms = jump_to_timestep_range(filename, assigned_timesteps, increment)
             
             if f_in is None:
                 print(f"[Proc {rank}] ERROR: Could not position file at assigned range", flush=True)
