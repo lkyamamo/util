@@ -25,17 +25,13 @@ echo "CPUs per task: ${SLURM_CPUS_PER_TASK}"
 echo "Output: ${OUTPUT_FILE}"
 echo "=========================================="
 
-source /apps/conda/miniforge3/24.11.3/etc/profile.d/conda.sh
-conda activate /home1/lkyamamo/.conda/envs/analysis
-
 # Load MPI module - IMPORTANT: Only load ONE MPI implementation!
 # Option 1: Use OpenMPI (recommended for SLURM)
-module load ver/2506  gcc/14.3.0
-module load openmpi/5.0.8
+module purge
+module load usc
+module load openmpi/5.0.5
 
-# Option 2: Use MVAPICH2 (uncomment if you prefer)
-# module load legacy/CentOS7
-# module load mvapich2/2.3.7
+source ~/venvs/mpi-ompi5/bin/activate
 
 # Run the MPI script
 echo "Starting MPI execution..."
