@@ -236,54 +236,72 @@ def jump_to_timestep_range(filename, assigned_timesteps, increment):
             
             print(f"[Proc {rank}] DEBUG: Seeking to approximate byte position {seek_pos}/{file_size} (estimated from line {target_line_number})", flush=True)
             
-            # Estimate current line number based on byte position
-            estimated_current_line = seek_pos // int(avg_bytes_per_line) if avg_bytes_per_line > 0 else 0
+            # Strategy: Scan forward from seek position to find nearest frame boundary
+            # Then calculate position and read forward to target frame
+            f.seek(seek_pos)
+            found_boundary = False
+            boundary_timestep = None
+            max_scan = min(lines_per_frame * 10, 100000)  # Scan up to 10 frames forward
             
-            # Read forward to find the exact frame start
-            # Scan forward looking for frame boundaries (lines that match num_atoms)
-            max_scan_lines = min(target_line_number - estimated_current_line + lines_per_frame * 5, 200000)
-            current_line = estimated_current_line
-            found_frame = False
-            
-            for scan_count in range(max_scan_lines):
+            # Scan forward looking for ANY frame boundary
+            for scan_count in range(max_scan):
                 saved_pos = f.tell()
                 line = f.readline()
                 if not line:
                     break
                 
                 # Check if this line matches num_atoms (frame start indicator)
-                try:
-                    if line.strip() == str(num_atoms):
-                        # This might be a frame start - verify by reading timestep
-                        timestep_line = f.readline()
-                        if timestep_line:
-                            try:
-                                test_timestep = int(timestep_line.strip().split(':')[1].strip())
-                                if test_timestep == first_timestep:
-                                    # Found it! Position at start of this frame
-                                    f.seek(saved_pos)
-                                    found_frame = True
-                                    current_line = estimated_current_line + scan_count
-                                    print(f"[Proc {rank}] DEBUG: Found target frame after scanning {scan_count} lines from seek position", flush=True)
-                                    break
-                                elif test_timestep > first_timestep:
-                                    # We've passed it - go back
-                                    f.seek(saved_pos)
-                                    break
-                            except:
-                                pass
-                        # Reset to continue scanning
-                        f.seek(saved_pos + len(line))
-                except:
-                    pass
-                
-                current_line += 1
+                if line.strip() == str(num_atoms):
+                    # Verify it's a frame boundary by reading timestep line
+                    timestep_line = f.readline()
+                    if timestep_line and 'Timestep:' in timestep_line:
+                        try:
+                            test_timestep = int(timestep_line.strip().split(':')[1].strip())
+                            # Found a frame boundary!
+                            boundary_timestep = test_timestep
+                            f.seek(saved_pos)  # Position at start of this frame
+                            found_boundary = True
+                            print(f"[Proc {rank}] DEBUG: Found frame boundary at timestep {test_timestep} after scanning {scan_count} lines", flush=True)
+                            break
+                        except:
+                            pass
+                    # Reset position to continue scanning
+                    f.seek(saved_pos + len(line))
+            
+            if found_boundary and boundary_timestep is not None:
+                # Calculate which frame we're at based on timestep
+                boundary_frame_index = calculate_frame_index(boundary_timestep, file_first_timestep, increment)
+                if boundary_frame_index is not None:
+                    boundary_line = boundary_frame_index * lines_per_frame
+                    
+                    # Calculate how many lines to read forward to reach target
+                    lines_to_target = target_line_number - boundary_line
+                    
+                    if lines_to_target == 0:
+                        # We're already at the target!
+                        current_line = target_line_number
+                        found_frame = True
+                    elif lines_to_target > 0 and lines_to_target < 1000000:  # Reasonable distance forward
+                        # Read forward from boundary to target
+                        print(f"[Proc {rank}] DEBUG: Reading forward {lines_to_target} lines from boundary to reach target frame", flush=True)
+                        for _ in range(lines_to_target):
+                            line = f.readline()
+                            if not line:
+                                print(f"[Proc {rank}] ERROR: Reached end of file while reading forward from boundary", flush=True)
+                                f.close()
+                                return None, None
+                        current_line = target_line_number
+                        found_frame = True
+                    else:
+                        # Too far or negative - fallback to reading from beginning
+                        print(f"[Proc {rank}] DEBUG: Boundary too far from target ({lines_to_target} lines), reading from beginning", flush=True)
+                        found_frame = False
             
             if not found_frame:
-                # Fallback: seek back to estimated position and read normally
-                f.seek(seek_pos)
-                current_line = estimated_current_line
-                print(f"[Proc {rank}] DEBUG: Frame not found via scanning, falling back to line-by-line from position {current_line}", flush=True)
+                # Fallback: read from beginning (safer than reading from bad position)
+                print(f"[Proc {rank}] DEBUG: Could not find frame via seeking, reading from beginning to line {target_line_number}", flush=True)
+                f.seek(0)
+                current_line = 0
         else:
             # Fallback: read from beginning
             f.seek(0)
