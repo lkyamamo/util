@@ -3,7 +3,8 @@
 Combine MPI per-process output files into a single output file.
 
 This script reads all .proc* files and combines them into the main output file,
-sorted by timestep. Useful for:
+sorted by timestep. Also combines statistics files (.statistics.proc*) into a
+single statistics file with summary. Useful for:
 - Manual combination if needed
 - Recovery after job crash
 - Recombining after manual edits
@@ -13,11 +14,16 @@ Usage:
 
 Example:
     python combine_mpi_output.py dipole_output.txt
+
+This will combine:
+- dipole_output.txt.proc* → dipole_output.txt
+- dipole_output.txt.statistics.proc* → dipole_output.txt.statistics
 """
 
 import sys
 import os
 import glob
+import datetime
 from pathlib import Path
 
 
@@ -326,30 +332,229 @@ def combine_mpi_files(output_file):
         raise
 
 
+def combine_statistics_files(stats_file):
+    """
+    Combine all .statistics.proc* files into a single statistics file.
+    Similar to combine_mpi_files but for statistics.
+    
+    Format of statistics lines: timestep  frames_processed  avg_created  avg_failed  avg_type_B_per_mol  failed_percentage
+    """
+    # Find all per-process statistics files
+    proc_stats_files = sorted(glob.glob(f"{stats_file}.proc*"))
+    
+    if not proc_stats_files:
+        print(f"No per-process statistics files found for {stats_file}")
+        print(f"Looking for files matching: {stats_file}.proc*")
+        
+        # Check if there's an existing statistics file
+        if os.path.exists(stats_file):
+            print(f"\nReading existing statistics file...")
+            with open(stats_file, 'r') as f:
+                lines = [l for l in f if l.strip() and not l.strip().startswith('#')]
+                if lines:
+                    print(f"  ✓ Found {len(lines)} statistics entries in existing file")
+                else:
+                    print(f"  ✓ Existing file is empty")
+        else:
+            print(f"  ✓ No existing statistics file found")
+        
+        return 0
+    
+    print(f"\nFound {len(proc_stats_files)} per-process statistics files:")
+    for proc_file in proc_stats_files:
+        print(f"  - {proc_file}")
+    
+    # Read all per-process statistics files
+    print("\nReading per-process statistics files...")
+    all_stats_entries = []
+    
+    for proc_file in proc_stats_files:
+        try:
+            with open(proc_file, 'r', buffering=8192) as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if len(parts) >= 6:
+                            try:
+                                timestep = int(parts[0])
+                                frames_processed = int(parts[1])
+                                avg_created = float(parts[2])
+                                avg_failed = float(parts[3])
+                                avg_type_B_per_mol = float(parts[4])
+                                failed_percentage = float(parts[5])
+                                all_stats_entries.append({
+                                    'timestep': timestep,
+                                    'frames_processed': frames_processed,
+                                    'avg_created': avg_created,
+                                    'avg_failed': avg_failed,
+                                    'avg_type_B_per_mol': avg_type_B_per_mol,
+                                    'failed_percentage': failed_percentage
+                                })
+                            except ValueError as e:
+                                print(f"Warning: Could not parse line {line_num} in {proc_file}: {line}")
+            print(f"  ✓ {proc_file}: read successfully")
+        except Exception as e:
+            print(f"Error reading {proc_file}: {e}")
+    
+    if not all_stats_entries:
+        print("\nNo valid statistics data found in per-process files!")
+        return 0
+    
+    # Read existing statistics file to merge
+    print("\nReading existing statistics file...")
+    existing_entries = []
+    if os.path.exists(stats_file):
+        try:
+            with open(stats_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('# SUMMARY'):
+                        break  # Stop at summary section
+                    if line and not line.startswith('#'):
+                        parts = line.split()
+                        if len(parts) >= 6:
+                            try:
+                                timestep = int(parts[0])
+                                frames_processed = int(parts[1])
+                                avg_created = float(parts[2])
+                                avg_failed = float(parts[3])
+                                avg_type_B_per_mol = float(parts[4])
+                                failed_percentage = float(parts[5])
+                                existing_entries.append({
+                                    'timestep': timestep,
+                                    'frames_processed': frames_processed,
+                                    'avg_created': avg_created,
+                                    'avg_failed': avg_failed,
+                                    'avg_type_B_per_mol': avg_type_B_per_mol,
+                                    'failed_percentage': failed_percentage
+                                })
+                            except ValueError:
+                                continue
+            if existing_entries:
+                print(f"  ✓ Found {len(existing_entries)} statistics entries in existing file")
+            else:
+                print(f"  ✓ No existing entries (will create new file)")
+        except Exception as e:
+            print(f"Warning: Could not read existing statistics file: {e}")
+    else:
+        print(f"  ✓ No existing file (will create new one)")
+    
+    # Merge existing and new entries (keep unique timesteps, new data wins)
+    existing_timesteps = {entry['timestep'] for entry in existing_entries}
+    merged_entries = existing_entries.copy()
+    
+    for entry in all_stats_entries:
+        if entry['timestep'] not in existing_timesteps:
+            merged_entries.append(entry)
+    
+    # Sort merged entries by timestep
+    merged_entries.sort(key=lambda x: x['timestep'])
+    
+    # Calculate aggregated statistics for summary
+    if merged_entries:
+        # Group by timestep and aggregate (in case multiple processes reported at same timestep)
+        timestep_groups = {}
+        for entry in merged_entries:
+            ts = entry['timestep']
+            if ts not in timestep_groups:
+                timestep_groups[ts] = []
+            timestep_groups[ts].append(entry)
+        
+        # For summary, use the latest timestep's aggregated values
+        latest_timestep = max(timestep_groups.keys())
+        latest_entries = timestep_groups[latest_timestep]
+        
+        # Aggregate across all processes for the latest timestep
+        total_frames_latest = sum(e['frames_processed'] for e in latest_entries)
+        total_created_latest = sum(e['avg_created'] * e['frames_processed'] for e in latest_entries)
+        total_failed_latest = sum(e['avg_failed'] * e['frames_processed'] for e in latest_entries)
+        total_type_B_latest = sum(e['avg_type_B_per_mol'] * e['frames_processed'] for e in latest_entries)
+        
+        avg_created_overall = total_created_latest / total_frames_latest if total_frames_latest > 0 else 0.0
+        avg_failed_overall = total_failed_latest / total_frames_latest if total_frames_latest > 0 else 0.0
+        avg_type_B_per_mol_overall = total_type_B_latest / total_frames_latest if total_frames_latest > 0 else 0.0
+        failed_percentage_overall = (avg_failed_overall / (avg_created_overall + avg_failed_overall) * 100) if (avg_created_overall + avg_failed_overall) > 0 else 0.0
+        total_frames = total_frames_latest
+    else:
+        avg_created_overall = avg_failed_overall = avg_type_B_per_mol_overall = failed_percentage_overall = 0.0
+        total_frames = 0
+    
+    # Write merged statistics file with summary
+    temp_stats_file = f"{stats_file}.temp"
+    try:
+        with open(temp_stats_file, 'w') as f:
+            # Write header
+            f.write("# Bond Statistics - Periodic Reports\n")
+            f.write(f"# Generated: {datetime.datetime.now().isoformat()}\n")
+            f.write("# Format: timestep  frames_processed  avg_created  avg_failed  avg_type_B_per_mol  failed_percentage\n")
+            f.write("#\n")
+            
+            # Write data entries
+            for entry in merged_entries:
+                f.write(f"{entry['timestep']}  {entry['frames_processed']}  "
+                       f"{entry['avg_created']:.6f}  {entry['avg_failed']:.6f}  "
+                       f"{entry['avg_type_B_per_mol']:.6f}  {entry['failed_percentage']:.6f}\n")
+            
+            # Write summary section
+            f.write("\n" + "="*70 + "\n")
+            f.write("# SUMMARY - Aggregated Statistics Across All Timesteps\n")
+            f.write("="*70 + "\n")
+            f.write(f"# Total frames processed: {total_frames}\n")
+            f.write(f"# Total statistics entries: {len(merged_entries)}\n")
+            f.write("#\n")
+            f.write("AGGREGATED STATISTICS:\n")
+            f.write(f"  Average type B atoms within cutoff per molecule: {avg_type_B_per_mol_overall:8.2f}\n")
+            f.write(f"  Average failed bonds per frame:         {avg_failed_overall:8.2f}\n")
+            f.write(f"  Average created bonds per frame:        {avg_created_overall:8.2f}\n")
+            f.write(f"  Percentage of failed bonds:             {failed_percentage_overall:8.2f}%\n")
+            f.write("="*70 + "\n")
+        
+        # Replace original file
+        os.replace(temp_stats_file, stats_file)
+        print(f"\n✓ Combined {len(merged_entries)} statistics entries (added {len(all_stats_entries)} new entries)")
+        print(f"  Summary: {total_frames} total frames, avg created: {avg_created_overall:.2f}, avg failed: {avg_failed_overall:.2f}")
+        
+        return len(merged_entries)
+        
+    except Exception as e:
+        print(f"Error writing statistics file: {e}")
+        if os.path.exists(temp_stats_file):
+            os.remove(temp_stats_file)
+        raise
+
+
 def main():
     """Main function."""
     if len(sys.argv) != 2:
         print("Usage: python combine_mpi_output.py <output_file>")
         print("\nExample:")
         print("  python combine_mpi_output.py dipole_output.txt")
-        print("\nThis will combine all dipole_output.txt.proc* files into dipole_output.txt")
+        print("\nThis will combine:")
+        print("  - dipole_output.txt.proc* → dipole_output.txt")
+        print("  - dipole_output.txt.statistics.proc* → dipole_output.txt.statistics")
         sys.exit(1)
     
     output_file = sys.argv[1]
+    stats_file = f"{output_file}.statistics"
     
     print("=" * 70)
     print("MPI Output File Combiner")
     print("=" * 70)
     print(f"Output file: {output_file}")
+    print(f"Statistics file: {stats_file}")
     print()
     
     # Note: Script now merges with existing file instead of overwriting
     # No need to ask for confirmation - it will merge intelligently
     
-    # Combine files (will merge with existing if it exists)
+    # Combine dipole files (will merge with existing if it exists)
     num_frames = combine_mpi_files(output_file)
     
-    if num_frames == 0:
+    # Combine statistics files (will merge with existing if it exists)
+    num_stats_entries = combine_statistics_files(stats_file)
+    
+    if num_frames == 0 and num_stats_entries == 0:
         print("\nNo data to combine.")
         sys.exit(1)
     
@@ -358,6 +563,7 @@ def main():
     print("=" * 70)
     print(f"\nYou can now delete the per-process files:")
     print(f"  rm {output_file}.proc*")
+    print(f"  rm {stats_file}.proc*")
     print()
 
 
