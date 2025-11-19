@@ -714,25 +714,15 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print(f"\nProcessing {len(timesteps_to_process)} timesteps...", flush=True)
         if rank == 0:
             print(f"Combining results every {combination_interval} frames per process", flush=True)
-        print(f"Timestep assignment: Sequential (not round-robin)", flush=True)
+        print(f"Timestep assignment: Round-robin (distributed across processes)", flush=True)
     
-    # Calculate sequential assignment ranges for this process
+    # Calculate round-robin assignment for this process
+    # Each process gets every Nth timestep where N = number of processes
+    # Process 0 gets timesteps 0, size, 2*size, ...
+    # Process 1 gets timesteps 1, size+1, 2*size+1, ...
+    # etc.
     total_timesteps = len(timesteps_to_process)
-    timesteps_per_process = total_timesteps // size
-    remainder = total_timesteps % size
-    
-    if rank < remainder:
-        # First 'remainder' processes get one extra timestep
-        start_idx = rank * (timesteps_per_process + 1)
-        end_idx = start_idx + timesteps_per_process + 1
-    else:
-        # Remaining processes get standard number of timesteps
-        start_idx = rank * timesteps_per_process + remainder
-        end_idx = start_idx + timesteps_per_process
-    
-    # Get the actual timestep values for this process's range
-    # timesteps_to_process is already sorted, so the slice will also be sorted
-    assigned_timesteps = timesteps_to_process[start_idx:end_idx]
+    assigned_timesteps = [timesteps_to_process[i] for i in range(total_timesteps) if i % size == rank]
     
     # Ensure assigned_timesteps is sorted (should already be, but verify)
     if assigned_timesteps:
@@ -950,21 +940,20 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                             
                             last_stats_report_counter = counter
                         
-                        # Periodic combination check - DEADLOCK-SAFE VERSION
-                        # Check if this rank is ready for combination
-                        ready_local = 1 if (counter - last_combination_counter) >= combination_interval else 0
-                        
-                        # Also check timeout for ranks with zero timesteps
+                        # Periodic combination check - ASYNCHRONOUS VERSION
+                        # Each process checks independently and only rank 0 performs combination
+                        # Other processes continue processing without waiting
                         current_time = time.time()
-                        timeout_ready = 1 if (current_time - last_combination_time) >= combination_timeout else 0
+                        should_combine = False
                         
-                        # Use allreduce to check both conditions
-                        ready_sum = comm.allreduce(ready_local, op=MPI.SUM)
-                        timeout_sum = comm.allreduce(timeout_ready, op=MPI.SUM)
+                        # Check if this process has processed enough frames since last combination
+                        if (counter - last_combination_counter) >= combination_interval:
+                            should_combine = True
+                        # Also check timeout for processes that may be waiting
+                        elif (current_time - last_combination_time) >= combination_timeout:
+                            should_combine = True
                         
-                        # Proceed if ALL ranks are ready OR if timeout has been reached
-                        if ready_sum == size or timeout_sum > 0:
-                            print(f"[Proc {rank}] DEBUG: Combination check passed (ready_sum={ready_sum}, timeout_sum={timeout_sum})", flush=True)
+                        if should_combine:
                             # Flush write buffer to ensure all data is written to per-process file
                             if write_buffer:
                                 f_out.writelines(write_buffer)
@@ -973,9 +962,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                             # Flush output to ensure data is on disk before combining
                             f_out.flush()
                             
-                            # Synchronize before combining
-                            comm.Barrier()
-                            
                             # Flush statistics buffer before combining
                             if stats_write_buffer:
                                 f_stats_out.writelines(stats_write_buffer)
@@ -983,44 +969,37 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                 stats_write_buffer.clear()
                             f_stats_out.flush()
                             
-                            # Master process combines files
+                            # Only rank 0 combines files - other processes continue processing
                             if rank == 0:
                                 try:
-                                    print(f"[Proc {rank}] DEBUG: Starting combination of per-process files...", flush=True)
+                                    print(f"[Proc {rank}] DEBUG: Starting asynchronous combination of per-process files...", flush=True)
                                     total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
                                     
                                     # Also combine statistics files
                                     stats_file = f"{output_file}.statistics"
                                     combine_statistics_files(stats_file, size)
+                                    
+                                    if total_frames == -1 and new_timesteps == -1 and overlapping_timesteps == -1:
+                                        # Combination failed, abort all processes
+                                        print(f"\n[Combination] ERROR: Combination failed, aborting all processes", flush=True)
+                                        comm.Abort(1)
+                                    elif total_frames == 0 and new_timesteps == 0 and overlapping_timesteps == 0:
+                                        # File sorting error occurred, abort all processes
+                                        print(f"\n[Combination] ERROR: Output file sorting issue detected, aborting all processes", flush=True)
+                                        comm.Abort(1)
+                                    else:
+                                        print(f"\n[Combination] Combined {total_frames} total frames", flush=True)
+                                    if new_timesteps > 0 or overlapping_timesteps > 0:
+                                        print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
                                 except Exception as e:
                                     print(f"[Proc {rank}] ERROR: Combination failed: {e}", flush=True)
                                     import traceback
                                     traceback.print_exc()
-                                    # Set error values that will be broadcast to all processes
-                                    total_frames, new_timesteps, overlapping_timesteps = -1, -1, -1
-                                if total_frames == -1 and new_timesteps == -1 and overlapping_timesteps == -1:
-                                    # Combination failed, abort all processes
-                                    print(f"\n[Combination] ERROR: Combination failed, aborting all processes", flush=True)
                                     comm.Abort(1)
-                                elif total_frames == 0 and new_timesteps == 0 and overlapping_timesteps == 0:
-                                    # File sorting error occurred, abort all processes
-                                    print(f"\n[Combination] ERROR: Output file sorting issue detected, aborting all processes", flush=True)
-                                    comm.Abort(1)
-                                else:
-                                    print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
-                                if new_timesteps > 0 or overlapping_timesteps > 0:
-                                    print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
                             
-                            # Broadcast the counter value to all processes to keep them synchronized
-                            last_combined_global = comm.bcast(counter, root=0)
-                            last_combination_counter = last_combined_global
-                            
-                            # Update timeout timer
-                            last_combination_time = time.time()
-                            
-                            # Synchronize after combining
-                            comm.Barrier()
-                            print(f"[Proc {rank}] DEBUG: Combination complete, continuing processing", flush=True)
+                            # Update local counter and timer (no synchronization needed)
+                            last_combination_counter = counter
+                            last_combination_time = current_time
                 
                 except Exception as e:
                     print(f"[Proc {rank}] Error processing timestep {current_timestep}: {e}")
