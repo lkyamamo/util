@@ -750,8 +750,13 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print(f"{'='*70}", flush=True)
         print(f"Total timesteps to process: {total_timesteps}", flush=True)
         print(f"Number of MPI processes: {size}", flush=True)
-        print(f"Timesteps per process (base): {timesteps_per_process}", flush=True)
+        
+        # Calculate distribution statistics for round-robin assignment
+        timesteps_per_process_base = total_timesteps // size
+        remainder = total_timesteps % size
+        print(f"Timesteps per process (base): {timesteps_per_process_base}", flush=True)
         print(f"Processes with extra timestep: {remainder}", flush=True)
+        print(f"Assignment method: Round-robin (distributed)", flush=True)
         
         # Verify no overlap between processes
         all_assigned = set()
