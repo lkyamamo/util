@@ -64,8 +64,8 @@ from mpi4py import MPI
 
 # Type-to-charge mapping (hardcoded)
 TYPE_TO_CHARGE = {
-    2: -0.65966,  # Central atoms (e.g., oxygen)
-    1: 0.32983,   # Terminal atoms (e.g., hydrogen)
+    1: -0.65966,  # Central atoms (e.g., oxygen)
+    2: 0.32983,   # Terminal atoms (e.g., hydrogen)
 }
 
 # Initialize MPI
@@ -585,6 +585,9 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         )
         print(f"[Proc {rank}] DEBUG: get_timesteps_to_process completed", flush=True)
         print(f"[Proc {rank}] DEBUG: Found {len(timesteps_to_process)} timesteps to process", flush=True)
+        if timesteps_to_process:
+            print(f"[Proc {rank}] DEBUG: First 10 timesteps to process: {timesteps_to_process[:10]}", flush=True)
+            print(f"[Proc {rank}] DEBUG: Last 10 timesteps to process: {timesteps_to_process[-10:]}", flush=True)
     except Exception as e:
         print(f"[Proc {rank}] ERROR: Failed to read existing output file: {e}", flush=True)
         # Set empty values to prevent further issues
@@ -635,6 +638,9 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     
     print(f"[Proc {rank}] DEBUG: Sequential assignment - timesteps {start_idx} to {end_idx-1} (total: {end_idx-start_idx})", flush=True)
     print(f"[Proc {rank}] DEBUG: Assigned timestep range: {start_timestep} to {end_timestep}", flush=True)
+    if assigned_timesteps:
+        print(f"[Proc {rank}] DEBUG: First 10 assigned timesteps: {assigned_timesteps[:10]}", flush=True)
+        print(f"[Proc {rank}] DEBUG: Last 10 assigned timesteps: {assigned_timesteps[-10:]}", flush=True)
     
     # Initialize simple average tracking for bond statistics
     running_stats = {
@@ -673,16 +679,37 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
             else:
                 print(f"[Proc {rank}] Successfully positioned at assigned range, starting processing...", flush=True)
                 
-                # Process only the assigned timesteps
-                for target_timestep in assigned_timesteps:
+                # Verify we're at the correct position by reading the first timestep
+                file_pos = f_in.tell()
+                test_num_atoms, test_timestep = read_timestep_only(f_in)
+                print(f"[Proc {rank}] DEBUG: After jump, file position: {file_pos}, first timestep read: {test_timestep}", flush=True)
+                if test_timestep is not None:
+                    # Reset to start of this timestep (we'll read it again in the loop)
+                    f_in.seek(file_pos)
+                    print(f"[Proc {rank}] DEBUG: Reset file pointer to start of timestep {test_timestep}", flush=True)
+                
+                # Convert assigned_timesteps to a set for fast lookup
+                assigned_timesteps_set = set(assigned_timesteps)
+                print(f"[Proc {rank}] DEBUG: assigned_timesteps_set has {len(assigned_timesteps_set)} timesteps", flush=True)
+                print(f"[Proc {rank}] DEBUG: First few in set: {sorted(list(assigned_timesteps_set))[:10]}", flush=True)
+                
+                # Read sequentially from file and process timesteps that are in assigned_timesteps
+                # This handles gaps in assigned_timesteps correctly
+                while True:
                     # Read the current timestep
                     current_num_atoms, current_timestep = read_timestep_only(f_in)
                     if current_timestep is None:
-                        print(f"[Proc {rank}] Reached end of file while looking for timestep {target_timestep}", flush=True)
+                        print(f"[Proc {rank}] Reached end of file", flush=True)
                         break
                     
-                    # Check if this is the timestep we want
-                    if current_timestep == target_timestep:
+                    # Debug: Show first few timesteps read from file
+                    if counter == 0:
+                        print(f"[Proc {rank}] DEBUG: First timestep read from file: {current_timestep} (in assigned set: {current_timestep in assigned_timesteps_set})", flush=True)
+                    elif counter < 5:
+                        print(f"[Proc {rank}] DEBUG: Timestep {current_timestep} read from file (in assigned set: {current_timestep in assigned_timesteps_set})", flush=True)
+                    
+                    # Check if this timestep is in our assigned range
+                    if current_timestep in assigned_timesteps_set:
                         print(f"[Proc {rank}] Processing timestep {current_timestep}", flush=True)
                         
                         # Read the full frame data
@@ -789,7 +816,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                             traceback.print_exc()
                     else:
                         # This timestep is not in our assigned range, skip it
-                        print(f"[Proc {rank}] Skipping timestep {current_timestep} (not in assigned range)", flush=True)
                         # Skip the atom data for this frame
                         for _ in range(current_num_atoms):
                             f_in.readline()
