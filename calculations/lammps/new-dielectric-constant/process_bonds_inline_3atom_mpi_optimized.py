@@ -100,17 +100,51 @@ def read_timestep_only(f):
     if not line or not line.strip():
         return None, None
     
-    num_atoms = int(line.strip())
-    timestep_line = f.readline().strip()
-    timestep = int(timestep_line.split(':')[1].strip())
+    try:
+        num_atoms = int(line.strip())
+    except ValueError as e:
+        print(f"[Proc {rank}] ERROR: Failed to parse number of atoms from line: '{line.strip()}'", flush=True)
+        print(f"[Proc {rank}] ERROR: File position: {f.tell()}", flush=True)
+        raise ValueError(f"Expected integer (number of atoms) but got: '{line.strip()}'") from e
+    
+    timestep_line = f.readline()
+    if not timestep_line or not timestep_line.strip():
+        print(f"[Proc {rank}] ERROR: Missing timestep comment line after num_atoms={num_atoms}", flush=True)
+        return None, None
+    
+    try:
+        timestep = int(timestep_line.strip().split(':')[1].strip())
+    except (ValueError, IndexError) as e:
+        print(f"[Proc {rank}] ERROR: Failed to parse timestep from line: '{timestep_line.strip()}'", flush=True)
+        raise ValueError(f"Expected timestep comment line (format: 'Atoms. Timestep: <number>') but got: '{timestep_line.strip()}'") from e
     
     return num_atoms, timestep
 
 
-def calculate_timestep_position(filename, target_timestep, increment):
+def get_frame_info(filename):
     """
-    Calculate the file position where a specific timestep starts.
-    Since the number of atoms is constant, we can calculate positions directly.
+    Read the first frame to get frame structure information.
+    Returns (num_atoms, first_timestep, lines_per_frame) or (None, None, None) if error.
+    """
+    try:
+        with open(filename, 'r') as f:
+            num_atoms, first_timestep = read_timestep_only(f)
+            if num_atoms is None or first_timestep is None:
+                return None, None, None
+            
+            # Each frame consists of: 1 line (num_atoms) + 1 line (timestep comment) + num_atoms lines (atom data)
+            # Total: num_atoms + 2 lines per frame (e.g., 5184 + 2 = 5186 lines)
+            lines_per_frame = num_atoms + 2
+            
+            return num_atoms, first_timestep, lines_per_frame
+    except Exception as e:
+        print(f"[Proc {rank}] ERROR in get_frame_info: Failed to read first frame from {filename}: {e}", flush=True)
+        raise
+
+
+def calculate_frame_index(target_timestep, first_timestep, increment):
+    """
+    Calculate which frame index (not timestep!) the target timestep corresponds to.
     
     Note: Frame index and timestep number are different!
     - Frame 0 has timestep 0
@@ -120,76 +154,82 @@ def calculate_timestep_position(filename, target_timestep, increment):
     
     Formula: frame_index = (target_timestep - first_timestep) / increment
     
-    Returns (file_position, num_atoms) or (None, None) if not found.
+    Returns frame_index or None if target_timestep is not in the sequence.
     """
-    # Read first frame to get num_atoms, first timestep, and calculate frame size
-    # Each frame consists of: 1 line (num_atoms) + 1 line (timestep comment) + num_atoms lines (atom data)
-    # Total: num_atoms + 2 lines per frame (e.g., 5184 + 2 = 5186 lines)
-    with open(filename, 'r') as f:
-        first_pos = f.tell()
-        num_atoms, first_timestep = read_timestep_only(f)
-        if num_atoms is None or first_timestep is None:
-            return None, None
-        
-        # Read the rest of the first frame to calculate frame size in bytes
-        # This reads the num_atoms atom data lines (the 2 header lines were already read by read_timestep_only)
-        for _ in range(num_atoms):
-            f.readline()
-        first_frame_end = f.tell()
-        frame_size_bytes = first_frame_end - first_pos  # Total size: (num_atoms + 2) lines in bytes
-    
-    # Calculate which frame index (not timestep!) the target timestep corresponds to
-    # Frame index = (target_timestep - first_timestep) / increment
-    # Example: if first_timestep=0, increment=10, target_timestep=10:
-    #   frame_index = (10 - 0) / 10 = 1 (second frame in file)
     if (target_timestep - first_timestep) % increment != 0:
         # Target timestep is not in the sequence
-        return None, None
+        return None
     
     frame_index = (target_timestep - first_timestep) // increment
-    
-    # Calculate file position: start position + (frame_index * frame_size_bytes)
-    file_position = first_pos + (frame_index * frame_size_bytes)
-    
-    return file_position, num_atoms
+    return frame_index
 
 
 def jump_to_timestep_range(filename, assigned_timesteps, increment):
     """
-    Jump directly to the start of the assigned timestep range for this process.
-    Since the number of atoms is constant, we calculate the position directly.
+    Jump to the start of the assigned timestep range for this process using line-based navigation.
+    Since the number of atoms is constant, we calculate the line number directly.
     Assumes all assigned_timesteps exist in the file (they should be <= final timestep).
-    Returns file handle positioned at the start of the range.
+    
+    Note: This function only needs the FIRST timestep in the sorted list, since we'll read
+    sequentially from there. The assigned_timesteps list should be sorted.
+    
+    Returns file handle positioned at the start of the first timestep.
     """
     if not assigned_timesteps:
         return None, None
     
-    # Find the first timestep assigned to this process
-    first_timestep = min(assigned_timesteps)
+    # Get the first timestep (should be the minimum since timesteps are sorted)
+    first_timestep = assigned_timesteps[0] if isinstance(assigned_timesteps, list) else min(assigned_timesteps)
     
-    print(f"[Proc {rank}] Calculating position for timestep {first_timestep} (no search needed - constant frame size)", flush=True)
+    print(f"[Proc {rank}] Calculating line position for timestep {first_timestep} (line-based navigation)", flush=True)
     
-    # Calculate the position directly (reads first frame to get file's starting timestep)
-    file_pos, num_atoms = calculate_timestep_position(filename, first_timestep, increment)
-    if file_pos is None:
-        print(f"[Proc {rank}] ERROR: Could not calculate position for timestep {first_timestep}", flush=True)
+    # Get frame structure information
+    num_atoms, file_first_timestep, lines_per_frame = get_frame_info(filename)
+    if num_atoms is None:
+        print(f"[Proc {rank}] ERROR: Could not read frame info from {filename}", flush=True)
         return None, None
     
-    # Open file and jump to position
+    # Calculate which frame index the target timestep corresponds to
+    frame_index = calculate_frame_index(first_timestep, file_first_timestep, increment)
+    if frame_index is None:
+        print(f"[Proc {rank}] ERROR: Timestep {first_timestep} is not in the sequence (first_timestep={file_first_timestep}, increment={increment})", flush=True)
+        return None, None
+    
+    # Calculate the line number where this frame starts
+    # Line 0 is the first line (num_atoms line of frame 0)
+    # Frame 0 starts at line 0
+    # Frame 1 starts at line (num_atoms + 2)
+    # Frame N starts at line N * (num_atoms + 2)
+    target_line_number = frame_index * lines_per_frame
+    
+    print(f"[Proc {rank}] DEBUG: Frame index {frame_index} starts at line {target_line_number} (lines_per_frame={lines_per_frame})", flush=True)
+    
+    # Open file and read lines until we reach the target line
     f = open(filename, 'r')
-    f.seek(file_pos)
+    
+    # Read lines until we reach the target frame
+    current_line = 0
+    while current_line < target_line_number:
+        line = f.readline()
+        if not line:
+            print(f"[Proc {rank}] ERROR: Reached end of file at line {current_line}, expected to reach line {target_line_number}", flush=True)
+            f.close()
+            return None, None
+        current_line += 1
     
     # Verify we're at the correct timestep
+    saved_pos = f.tell()
     verify_num_atoms, verify_timestep = read_timestep_only(f)
     if verify_timestep != first_timestep:
-        print(f"[Proc {rank}] ERROR: Position calculation incorrect. Expected timestep {first_timestep}, got {verify_timestep}", flush=True)
+        print(f"[Proc {rank}] ERROR: Line navigation incorrect. Expected timestep {first_timestep}, got {verify_timestep}", flush=True)
+        print(f"[Proc {rank}] ERROR: Reached line {current_line}, verify_num_atoms={verify_num_atoms}", flush=True)
         f.close()
         return None, None
     
     # Reset to start of frame (we read the header)
-    f.seek(file_pos)
+    f.seek(saved_pos)
     
-    print(f"[Proc {rank}] Successfully positioned at timestep {first_timestep}", flush=True)
+    print(f"[Proc {rank}] Successfully positioned at timestep {first_timestep} (line {target_line_number})", flush=True)
     
     return f, num_atoms
 
@@ -691,10 +731,14 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         end_idx = start_idx + timesteps_per_process
     
     # Get the actual timestep values for this process's range
+    # timesteps_to_process is already sorted, so the slice will also be sorted
     assigned_timesteps = timesteps_to_process[start_idx:end_idx]
+    
+    # Ensure assigned_timesteps is sorted (should already be, but verify)
     if assigned_timesteps:
-        start_timestep = min(assigned_timesteps)
-        end_timestep = max(assigned_timesteps)
+        assigned_timesteps = sorted(assigned_timesteps)
+        start_timestep = assigned_timesteps[0]
+        end_timestep = assigned_timesteps[-1]
     else:
         start_timestep = end_timestep = None
     
@@ -775,186 +819,216 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
             # Processes with zero timesteps just wait - they'll participate in the final Barrier
         else:
             print(f"[Proc {rank}] DEBUG: Processing {len(assigned_timesteps)} assigned timesteps", flush=True)
-            print(f"[Proc {rank}] DEBUG: Assigned timestep range: {min(assigned_timesteps)} to {max(assigned_timesteps)}", flush=True)
+            print(f"[Proc {rank}] DEBUG: Assigned timestep range: {assigned_timesteps[0]} to {assigned_timesteps[-1]}", flush=True)
             
-            # Jump directly to the start of this process's assigned range
-            print(f"[Proc {rank}] DEBUG: About to jump to timestep range in file: {filename}", flush=True)
-            f_in, num_atoms = jump_to_timestep_range(filename, assigned_timesteps, increment)
+            # Get frame structure information to calculate line skips
+            _, file_first_timestep, lines_per_frame = get_frame_info(filename)
             
-            print(f"[Proc {rank}] DEBUG: Successfully positioned at start of assigned range", flush=True)
-            # Convert assigned_timesteps to a set for fast lookup
-            assigned_timesteps_set = set(assigned_timesteps)
-            print(f"[Proc {rank}] DEBUG: Created timestep set with {len(assigned_timesteps_set)} entries", flush=True)
+            # Jump directly to the FIRST timestep in this process's assigned range
+            first_assigned_timestep = assigned_timesteps[0]
+            print(f"[Proc {rank}] DEBUG: Jumping to first assigned timestep {first_assigned_timestep} in file: {filename}", flush=True)
+            f_in, num_atoms = jump_to_timestep_range(filename, [first_assigned_timestep], increment)
             
-            # Read sequentially from file and process timesteps that are in assigned_timesteps
-            # This handles gaps in assigned_timesteps correctly
-            # Stop when we reach a timestep beyond the final timestep (end)
-            frame_count = 0
-            while True:
-                # Read the current timestep
-                current_num_atoms, current_timestep = read_timestep_only(f_in)
-                if current_timestep is None:
-                    print(f"[Proc {rank}] DEBUG: Reached end of file after {frame_count} frames", flush=True)
-                    break
-                
-                # Stop if we've gone beyond the final timestep
-                if current_timestep > end:
-                    print(f"[Proc {rank}] DEBUG: Reached timestep {current_timestep} which is beyond final timestep {end}, stopping", flush=True)
-                    break
-                
-                frame_count += 1
-                if frame_count <= 10:  # Debug first 10 frames
-                    print(f"[Proc {rank}] DEBUG: Frame {frame_count}: read timestep {current_timestep}", flush=True)
-                    print(f"[Proc {rank}] DEBUG: Timestep {current_timestep} in assigned set? {current_timestep in assigned_timesteps_set}", flush=True)
+            print(f"[Proc {rank}] DEBUG: Successfully positioned at first assigned timestep {first_assigned_timestep}", flush=True)
+            print(f"[Proc {rank}] DEBUG: Lines per frame: {lines_per_frame}, increment: {increment}", flush=True)
+            
+            # Process each assigned timestep by calculating line skips between them
+            # Since timesteps are sorted, we can calculate how many lines to skip between consecutive assigned timesteps
+            for i, target_timestep in enumerate(assigned_timesteps):
+                if i == 0:
+                    # First timestep - we're already positioned at the start of the frame
+                    # Read the timestep header
+                    current_num_atoms, current_timestep = read_timestep_only(f_in)
+                    if current_timestep is None:
+                        print(f"[Proc {rank}] ERROR: Reached end of file at first timestep {target_timestep}", flush=True)
+                        break
+                    if current_timestep != target_timestep:
+                        print(f"[Proc {rank}] ERROR: Expected timestep {target_timestep}, got {current_timestep} at start", flush=True)
+                        break
+                else:
+                    # Calculate how many lines to skip to get to the next assigned timestep
+                    prev_timestep = assigned_timesteps[i-1]
+                    timestep_diff = target_timestep - prev_timestep
                     
-                    # Check if this timestep is in our assigned range
-                    if current_timestep in assigned_timesteps_set:
-                        
-                        # Read the full frame data
-                        atoms = read_frame_from_position(f_in, current_num_atoms)
-                        try:
-                            result = process_frame(atoms, current_num_atoms, current_timestep, type_A, type_B,
-                                                  cutoff, box_dims, type_to_charge)
-                            if result is not None:
-                                timestep, dipole, num_bonds, mean_mag, bond_stats = result
-                                
-                                # Reduced verbose output for performance - only show every 100th frame
-                                if counter % 100 == 0:
-                                    print(f"[Proc {rank}] Timestep {timestep}: {num_bonds} bonds, "
-                                          f"dipole = [{dipole[0]:14.6f}, {dipole[1]:14.6f}, {dipole[2]:14.6f}], "
-                                          f"mean_mag = {mean_mag:.6f}")
-                                    print(f"[Proc {rank}] Bond stats: {bond_stats['bonds_created']} created, "
-                                          f"{bond_stats['bonds_missing']} missing, "
-                                          f"{bond_stats['avg_type_B_within_cutoff']:.2f} avg type_B within cutoff, "
-                                          f"type_A: {bond_stats['type_A_count']}, type_B: {bond_stats['type_B_count']}")
-                                
-                                # Accumulate bond statistics
-                                running_stats['bonds_created'].add_value(bond_stats['bonds_created'])
-                                running_stats['bonds_missing'].add_value(bond_stats['bonds_missing'])
-                                running_stats['avg_type_B_within_cutoff'].add_value(bond_stats['avg_type_B_within_cutoff'])
-                                
-                                # Add to write buffer for batch writing
-                                write_buffer.append(f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n")
-                                counter += 1
-                                
-                                # Flush buffer when it reaches the buffer size
-                                if len(write_buffer) >= write_buffer_size:
-                                    f_out.writelines(write_buffer)
-                                    f_out.flush()
-                                    write_buffer.clear()
-                                
-                                # Periodic statistics reporting and saving - FIXED INTERVAL
-                                if counter - last_stats_report_counter >= stats_report_interval:
-                                    # Calculate current statistics
-                                    avg_created = running_stats['bonds_created'].get_mean()
-                                    avg_failed = running_stats['bonds_missing'].get_mean()
-                                    avg_type_B_per_mol = running_stats['avg_type_B_within_cutoff'].get_mean()
-                                    total_possible = running_stats['bonds_created'].get_count() * (avg_created + avg_failed) if running_stats['bonds_created'].get_count() > 0 else 0
-                                    failed_percentage = (avg_failed / (avg_created + avg_failed) * 100) if (avg_created + avg_failed) > 0 else 0.0
-                                    
-                                    # Print progress
-                                    print(f"[Proc {rank}] Progress: {counter} frames processed, "
-                                          f"avg created: {avg_created:.2f}, "
-                                          f"avg failed: {avg_failed:.2f}, "
-                                          f"avg type_B_per_mol: {avg_type_B_per_mol:.2f}")
-                                    
-                                    # Save statistics to per-process file
-                                    stats_line = (f"{timestep}  {counter}  {avg_created:.6f}  {avg_failed:.6f}  "
-                                                f"{avg_type_B_per_mol:.6f}  {failed_percentage:.6f}\n")
-                                    stats_write_buffer.append(stats_line)
-                                    
-                                    # Flush stats buffer periodically
-                                    if len(stats_write_buffer) >= 10:
-                                        f_stats_out.writelines(stats_write_buffer)
-                                        f_stats_out.flush()
-                                        stats_write_buffer.clear()
-                                    
-                                    last_stats_report_counter = counter
-                                
-                                # Periodic combination check - DEADLOCK-SAFE VERSION
-                                # Check if this rank is ready for combination
-                                ready_local = 1 if (counter - last_combination_counter) >= combination_interval else 0
-                                
-                                # Also check timeout for ranks with zero timesteps
-                                current_time = time.time()
-                                timeout_ready = 1 if (current_time - last_combination_time) >= combination_timeout else 0
-                                
-                                # Use allreduce to check both conditions
-                                ready_sum = comm.allreduce(ready_local, op=MPI.SUM)
-                                timeout_sum = comm.allreduce(timeout_ready, op=MPI.SUM)
-                                
-                                # Proceed if ALL ranks are ready OR if timeout has been reached
-                                if ready_sum == size or timeout_sum > 0:
-                                    print(f"[Proc {rank}] DEBUG: Combination check passed (ready_sum={ready_sum}, timeout_sum={timeout_sum})", flush=True)
-                                    # Flush write buffer to ensure all data is written to per-process file
-                                    if write_buffer:
-                                        f_out.writelines(write_buffer)
-                                        f_out.flush()
-                                        write_buffer.clear()
-                                    # Flush output to ensure data is on disk before combining
-                                    f_out.flush()
-                                    
-                                    # Synchronize before combining
-                                    comm.Barrier()
-                                    
-                                    # Flush statistics buffer before combining
-                                    if stats_write_buffer:
-                                        f_stats_out.writelines(stats_write_buffer)
-                                        f_stats_out.flush()
-                                        stats_write_buffer.clear()
-                                    f_stats_out.flush()
-                                    
-                                    # Master process combines files
-                                    if rank == 0:
-                                        try:
-                                            print(f"[Proc {rank}] DEBUG: Starting combination of per-process files...", flush=True)
-                                            total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
-                                            
-                                            # Also combine statistics files
-                                            stats_file = f"{output_file}.statistics"
-                                            combine_statistics_files(stats_file, size)
-                                        except Exception as e:
-                                            print(f"[Proc {rank}] ERROR: Combination failed: {e}", flush=True)
-                                            import traceback
-                                            traceback.print_exc()
-                                            # Set error values that will be broadcast to all processes
-                                            total_frames, new_timesteps, overlapping_timesteps = -1, -1, -1
-                                        if total_frames == -1 and new_timesteps == -1 and overlapping_timesteps == -1:
-                                            # Combination failed, abort all processes
-                                            print(f"\n[Combination] ERROR: Combination failed, aborting all processes", flush=True)
-                                            comm.Abort(1)
-                                        elif total_frames == 0 and new_timesteps == 0 and overlapping_timesteps == 0:
-                                            # File sorting error occurred, abort all processes
-                                            print(f"\n[Combination] ERROR: Output file sorting issue detected, aborting all processes", flush=True)
-                                            comm.Abort(1)
-                                        else:
-                                            print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
-                                        if new_timesteps > 0 or overlapping_timesteps > 0:
-                                            print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
-                                    
-                                    # Broadcast the counter value to all processes to keep them synchronized
-                                    last_combined_global = comm.bcast(counter, root=0)
-                                    last_combination_counter = last_combined_global
-                                    
-                                    # Update timeout timer
-                                    last_combination_time = time.time()
-                                    
-                                    # Synchronize after combining
-                                    comm.Barrier()
-                                    print(f"[Proc {rank}] DEBUG: Combination complete, continuing processing", flush=True)
-                                
-                        except Exception as e:
-                            print(f"[Proc {rank}] Error processing timestep {current_timestep}: {e}")
-                            import traceback
-                            traceback.print_exc()
+                    # Calculate frame difference: how many frames between these timesteps
+                    frame_diff = timestep_diff // increment
+                    
+                    # Calculate lines to skip
+                    # After processing previous frame, we've read: num_atoms lines of atom data
+                    # So we need to skip: remaining lines of current frame (0, we're past it) + (frame_diff - 1) full frames + header of next frame
+                    # Actually, we're positioned after reading the previous frame's atom data
+                    # So we need to skip: (frame_diff - 1) complete frames + the header of the target frame
+                    if frame_diff > 1:
+                        # Skip (frame_diff - 1) complete frames
+                        lines_to_skip = (frame_diff - 1) * lines_per_frame
                     else:
-                        # This timestep is not in our assigned range, skip it
-                        # Skip the atom data for this frame
-                        for _ in range(current_num_atoms):
-                            f_in.readline()
+                        # Adjacent frames (frame_diff == 1) - skip to next frame header
+                        # We're at the end of previous frame's atom data, so skip the header lines of next frame
+                        lines_to_skip = 0  # We'll read the header next
+                    
+                    print(f"[Proc {rank}] DEBUG: Skipping {lines_to_skip} lines from timestep {prev_timestep} to {target_timestep} (frame_diff={frame_diff})", flush=True)
+                    
+                    # Skip the calculated number of lines
+                    for _ in range(lines_to_skip):
+                        line = f_in.readline()
+                        if not line:
+                            print(f"[Proc {rank}] ERROR: Reached end of file while skipping lines to timestep {target_timestep}", flush=True)
+                            break
+                    
+                    # Read the timestep header to verify we're at the right place
+                    current_num_atoms, current_timestep = read_timestep_only(f_in)
+                    if current_timestep is None:
+                        print(f"[Proc {rank}] ERROR: Reached end of file at timestep {target_timestep}", flush=True)
+                        break
+                    
+                    if current_timestep != target_timestep:
+                        print(f"[Proc {rank}] ERROR: Expected timestep {target_timestep}, got {current_timestep} after skipping lines", flush=True)
+                        break
                 
-                # Close the file
-                f_in.close()
+                # Process the current frame
+                print(f"[Proc {rank}] DEBUG: Processing timestep {current_timestep} ({i+1}/{len(assigned_timesteps)})", flush=True)
+                
+                # Read the full frame data (we've already read the header, so just read atom data)
+                atoms = read_frame_from_position(f_in, num_atoms)
+                
+                try:
+                    result = process_frame(atoms, current_num_atoms, current_timestep, type_A, type_B,
+                                          cutoff, box_dims, type_to_charge)
+                    if result is not None:
+                        timestep, dipole, num_bonds, mean_mag, bond_stats = result
+                        
+                        # Reduced verbose output for performance - only show every 100th frame
+                        if counter % 100 == 0:
+                            print(f"[Proc {rank}] Timestep {timestep}: {num_bonds} bonds, "
+                                  f"dipole = [{dipole[0]:14.6f}, {dipole[1]:14.6f}, {dipole[2]:14.6f}], "
+                                  f"mean_mag = {mean_mag:.6f}")
+                            print(f"[Proc {rank}] Bond stats: {bond_stats['bonds_created']} created, "
+                                  f"{bond_stats['bonds_missing']} missing, "
+                                  f"{bond_stats['avg_type_B_within_cutoff']:.2f} avg type_B within cutoff, "
+                                  f"type_A: {bond_stats['type_A_count']}, type_B: {bond_stats['type_B_count']}")
+                        
+                        # Accumulate bond statistics
+                        running_stats['bonds_created'].add_value(bond_stats['bonds_created'])
+                        running_stats['bonds_missing'].add_value(bond_stats['bonds_missing'])
+                        running_stats['avg_type_B_within_cutoff'].add_value(bond_stats['avg_type_B_within_cutoff'])
+                        
+                        # Add to write buffer for batch writing
+                        write_buffer.append(f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n")
+                        counter += 1
+                        
+                        # Flush buffer when it reaches the buffer size
+                        if len(write_buffer) >= write_buffer_size:
+                            f_out.writelines(write_buffer)
+                            f_out.flush()
+                            write_buffer.clear()
+                        
+                        # Periodic statistics reporting and saving - FIXED INTERVAL
+                        if counter - last_stats_report_counter >= stats_report_interval:
+                            # Calculate current statistics
+                            avg_created = running_stats['bonds_created'].get_mean()
+                            avg_failed = running_stats['bonds_missing'].get_mean()
+                            avg_type_B_per_mol = running_stats['avg_type_B_within_cutoff'].get_mean()
+                            total_possible = running_stats['bonds_created'].get_count() * (avg_created + avg_failed) if running_stats['bonds_created'].get_count() > 0 else 0
+                            failed_percentage = (avg_failed / (avg_created + avg_failed) * 100) if (avg_created + avg_failed) > 0 else 0.0
+                            
+                            # Print progress
+                            print(f"[Proc {rank}] Progress: {counter} frames processed, "
+                                  f"avg created: {avg_created:.2f}, "
+                                  f"avg failed: {avg_failed:.2f}, "
+                                  f"avg type_B_per_mol: {avg_type_B_per_mol:.2f}")
+                            
+                            # Save statistics to per-process file
+                            stats_line = (f"{timestep}  {counter}  {avg_created:.6f}  {avg_failed:.6f}  "
+                                        f"{avg_type_B_per_mol:.6f}  {failed_percentage:.6f}\n")
+                            stats_write_buffer.append(stats_line)
+                            
+                            # Flush stats buffer periodically
+                            if len(stats_write_buffer) >= 10:
+                                f_stats_out.writelines(stats_write_buffer)
+                                f_stats_out.flush()
+                                stats_write_buffer.clear()
+                            
+                            last_stats_report_counter = counter
+                        
+                        # Periodic combination check - DEADLOCK-SAFE VERSION
+                        # Check if this rank is ready for combination
+                        ready_local = 1 if (counter - last_combination_counter) >= combination_interval else 0
+                        
+                        # Also check timeout for ranks with zero timesteps
+                        current_time = time.time()
+                        timeout_ready = 1 if (current_time - last_combination_time) >= combination_timeout else 0
+                        
+                        # Use allreduce to check both conditions
+                        ready_sum = comm.allreduce(ready_local, op=MPI.SUM)
+                        timeout_sum = comm.allreduce(timeout_ready, op=MPI.SUM)
+                        
+                        # Proceed if ALL ranks are ready OR if timeout has been reached
+                        if ready_sum == size or timeout_sum > 0:
+                            print(f"[Proc {rank}] DEBUG: Combination check passed (ready_sum={ready_sum}, timeout_sum={timeout_sum})", flush=True)
+                            # Flush write buffer to ensure all data is written to per-process file
+                            if write_buffer:
+                                f_out.writelines(write_buffer)
+                                f_out.flush()
+                                write_buffer.clear()
+                            # Flush output to ensure data is on disk before combining
+                            f_out.flush()
+                            
+                            # Synchronize before combining
+                            comm.Barrier()
+                            
+                            # Flush statistics buffer before combining
+                            if stats_write_buffer:
+                                f_stats_out.writelines(stats_write_buffer)
+                                f_stats_out.flush()
+                                stats_write_buffer.clear()
+                            f_stats_out.flush()
+                            
+                            # Master process combines files
+                            if rank == 0:
+                                try:
+                                    print(f"[Proc {rank}] DEBUG: Starting combination of per-process files...", flush=True)
+                                    total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
+                                    
+                                    # Also combine statistics files
+                                    stats_file = f"{output_file}.statistics"
+                                    combine_statistics_files(stats_file, size)
+                                except Exception as e:
+                                    print(f"[Proc {rank}] ERROR: Combination failed: {e}", flush=True)
+                                    import traceback
+                                    traceback.print_exc()
+                                    # Set error values that will be broadcast to all processes
+                                    total_frames, new_timesteps, overlapping_timesteps = -1, -1, -1
+                                if total_frames == -1 and new_timesteps == -1 and overlapping_timesteps == -1:
+                                    # Combination failed, abort all processes
+                                    print(f"\n[Combination] ERROR: Combination failed, aborting all processes", flush=True)
+                                    comm.Abort(1)
+                                elif total_frames == 0 and new_timesteps == 0 and overlapping_timesteps == 0:
+                                    # File sorting error occurred, abort all processes
+                                    print(f"\n[Combination] ERROR: Output file sorting issue detected, aborting all processes", flush=True)
+                                    comm.Abort(1)
+                                else:
+                                    print(f"\n[Combination] Combined {total_frames} total frames at {counter} frames per process", flush=True)
+                                if new_timesteps > 0 or overlapping_timesteps > 0:
+                                    print(f"  Added {new_timesteps} new timesteps, found {overlapping_timesteps} overlapping timesteps", flush=True)
+                            
+                            # Broadcast the counter value to all processes to keep them synchronized
+                            last_combined_global = comm.bcast(counter, root=0)
+                            last_combination_counter = last_combined_global
+                            
+                            # Update timeout timer
+                            last_combination_time = time.time()
+                            
+                            # Synchronize after combining
+                            comm.Barrier()
+                            print(f"[Proc {rank}] DEBUG: Combination complete, continuing processing", flush=True)
+                
+                except Exception as e:
+                    print(f"[Proc {rank}] Error processing timestep {current_timestep}: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Close the file after processing all assigned timesteps
+            f_in.close()
         
         print(f"[Proc {rank}] Processed {counter} frames")
     
