@@ -204,18 +204,109 @@ def jump_to_timestep_range(filename, assigned_timesteps, increment):
     
     print(f"[Proc {rank}] DEBUG: Frame index {frame_index} starts at line {target_line_number} (lines_per_frame={lines_per_frame})", flush=True)
     
-    # Open file and read lines until we reach the target line
+    # Open file and use optimized seeking for large line numbers
     f = open(filename, 'r')
     
-    # Read lines until we reach the target frame
-    current_line = 0
-    while current_line < target_line_number:
-        line = f.readline()
-        if not line:
-            print(f"[Proc {rank}] ERROR: Reached end of file at line {current_line}, expected to reach line {target_line_number}", flush=True)
-            f.close()
-            return None, None
-        current_line += 1
+    # For large line numbers, use file seeking instead of reading line-by-line
+    if target_line_number > 10000:
+        # Get file size to estimate average bytes per line
+        f.seek(0, 2)  # Seek to end
+        file_size = f.tell()
+        f.seek(0)
+        
+        # Read first frame to estimate bytes per line more accurately
+        sample_bytes = 0
+        sample_lines_count = 0
+        for _ in range(min(lines_per_frame, 100)):  # Sample first frame or 100 lines
+            line = f.readline()
+            if not line:
+                break
+            sample_bytes += len(line)
+            sample_lines_count += 1
+        
+        if sample_lines_count > 0:
+            avg_bytes_per_line = sample_bytes / sample_lines_count
+            estimated_byte_pos = int(target_line_number * avg_bytes_per_line)
+            
+            # Seek to estimated position (go back a bit to ensure we don't miss frame start)
+            # Go back by approximately 2 frames worth to be safe
+            safety_margin = int(avg_bytes_per_line * lines_per_frame * 2)
+            seek_pos = max(0, estimated_byte_pos - safety_margin)
+            f.seek(seek_pos)
+            
+            print(f"[Proc {rank}] DEBUG: Seeking to approximate byte position {seek_pos}/{file_size} (estimated from line {target_line_number})", flush=True)
+            
+            # Estimate current line number based on byte position
+            estimated_current_line = seek_pos // int(avg_bytes_per_line) if avg_bytes_per_line > 0 else 0
+            
+            # Read forward to find the exact frame start
+            # Scan forward looking for frame boundaries (lines that match num_atoms)
+            max_scan_lines = min(target_line_number - estimated_current_line + lines_per_frame * 5, 200000)
+            current_line = estimated_current_line
+            found_frame = False
+            
+            for scan_count in range(max_scan_lines):
+                saved_pos = f.tell()
+                line = f.readline()
+                if not line:
+                    break
+                
+                # Check if this line matches num_atoms (frame start indicator)
+                try:
+                    if line.strip() == str(num_atoms):
+                        # This might be a frame start - verify by reading timestep
+                        timestep_line = f.readline()
+                        if timestep_line:
+                            try:
+                                test_timestep = int(timestep_line.strip().split(':')[1].strip())
+                                if test_timestep == first_timestep:
+                                    # Found it! Position at start of this frame
+                                    f.seek(saved_pos)
+                                    found_frame = True
+                                    current_line = estimated_current_line + scan_count
+                                    print(f"[Proc {rank}] DEBUG: Found target frame after scanning {scan_count} lines from seek position", flush=True)
+                                    break
+                                elif test_timestep > first_timestep:
+                                    # We've passed it - go back
+                                    f.seek(saved_pos)
+                                    break
+                            except:
+                                pass
+                        # Reset to continue scanning
+                        f.seek(saved_pos + len(line))
+                except:
+                    pass
+                
+                current_line += 1
+            
+            if not found_frame:
+                # Fallback: seek back to estimated position and read normally
+                f.seek(seek_pos)
+                current_line = estimated_current_line
+                print(f"[Proc {rank}] DEBUG: Frame not found via scanning, falling back to line-by-line from position {current_line}", flush=True)
+        else:
+            # Fallback: read from beginning
+            f.seek(0)
+            current_line = 0
+    else:
+        # For small line numbers, read normally from beginning
+        current_line = 0
+        f.seek(0)
+    
+    # Fine-tune position by reading to exact target line (only if needed)
+    if current_line < target_line_number:
+        remaining_lines = target_line_number - current_line
+        # Limit to reasonable number to avoid infinite loops
+        if remaining_lines > 1000000:
+            print(f"[Proc {rank}] WARNING: Would need to read {remaining_lines} lines, this may take a while...", flush=True)
+        
+        for _ in range(remaining_lines):
+            line = f.readline()
+            if not line:
+                print(f"[Proc {rank}] ERROR: Reached end of file at line {current_line}, expected to reach line {target_line_number}", flush=True)
+                f.close()
+                return None, None
+            current_line += 1
     
     # Verify we're at the correct timestep
     saved_pos = f.tell()
