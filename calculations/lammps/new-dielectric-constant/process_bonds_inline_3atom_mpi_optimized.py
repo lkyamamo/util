@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MPI-parallel version of process_bonds_inline_3atom.py for multi-node HPC clusters.
-OPTIMIZED FOR 1 MILLION FRAMES - High Performance Version with Direct Range Access
+OPTIMIZED FOR 1,000,001 FRAMES (0 to 1,000,000) - High Performance Version with Direct Range Access
 
 This version uses MPI to distribute frame processing across multiple nodes.
 Each MPI process handles a subset of frames independently and jumps directly to their assigned range.
@@ -123,6 +123,8 @@ def calculate_timestep_position(filename, target_timestep, increment):
     Returns (file_position, num_atoms) or (None, None) if not found.
     """
     # Read first frame to get num_atoms, first timestep, and calculate frame size
+    # Each frame consists of: 1 line (num_atoms) + 1 line (timestep comment) + num_atoms lines (atom data)
+    # Total: num_atoms + 2 lines per frame (e.g., 5184 + 2 = 5186 lines)
     with open(filename, 'r') as f:
         first_pos = f.tell()
         num_atoms, first_timestep = read_timestep_only(f)
@@ -130,10 +132,11 @@ def calculate_timestep_position(filename, target_timestep, increment):
             return None, None
         
         # Read the rest of the first frame to calculate frame size in bytes
+        # This reads the num_atoms atom data lines (the 2 header lines were already read by read_timestep_only)
         for _ in range(num_atoms):
             f.readline()
         first_frame_end = f.tell()
-        frame_size_bytes = first_frame_end - first_pos
+        frame_size_bytes = first_frame_end - first_pos  # Total size: (num_atoms + 2) lines in bytes
     
     # Calculate which frame index (not timestep!) the target timestep corresponds to
     # Frame index = (target_timestep - first_timestep) / increment
@@ -155,6 +158,7 @@ def jump_to_timestep_range(filename, assigned_timesteps, increment):
     """
     Jump directly to the start of the assigned timestep range for this process.
     Since the number of atoms is constant, we calculate the position directly.
+    Assumes all assigned_timesteps exist in the file (they should be <= final timestep).
     Returns file handle positioned at the start of the range.
     """
     if not assigned_timesteps:
@@ -178,12 +182,12 @@ def jump_to_timestep_range(filename, assigned_timesteps, increment):
     # Verify we're at the correct timestep
     verify_num_atoms, verify_timestep = read_timestep_only(f)
     if verify_timestep != first_timestep:
-        print(f"[Proc {rank}] WARNING: Position calculation may be off. Expected timestep {first_timestep}, got {verify_timestep}", flush=True)
-        # Reset to calculated position
-        f.seek(file_pos)
-    else:
-        # Reset to start of frame (we read the header)
-        f.seek(file_pos)
+        print(f"[Proc {rank}] ERROR: Position calculation incorrect. Expected timestep {first_timestep}, got {verify_timestep}", flush=True)
+        f.close()
+        return None, None
+    
+    # Reset to start of frame (we read the header)
+    f.seek(file_pos)
     
     print(f"[Proc {rank}] Successfully positioned at timestep {first_timestep}", flush=True)
     
@@ -469,19 +473,21 @@ def calculate_molecular_dipole(atoms, bonds, box_dims, type_to_charge):
 def get_timesteps_to_process(start, end, increment, output_file):
     """
     Calculate which timesteps should be processed and which are already done.
+    Only includes timesteps up to and including the final timestep (end).
     
     Returns:
-    - timesteps_to_process: sorted list of timesteps that need processing
+    - timesteps_to_process: sorted list of timesteps that need processing (all <= end)
     - already_processed: set of timesteps already in output file
     """
-    # Calculate all timesteps that SHOULD be processed
+    # Calculate all timesteps that SHOULD be processed (up to and including end)
     all_timesteps = set(range(start, end+1, increment))
     
     # Load already processed timesteps from output file
     already_processed = load_processed_timesteps(output_file)
     
     # Calculate which timesteps NEED processing
-    timesteps_to_process = sorted(all_timesteps - already_processed)
+    # Filter to ensure we only process timesteps <= end (should already be the case, but be explicit)
+    timesteps_to_process = sorted([ts for ts in (all_timesteps - already_processed) if ts <= end])
     
     return timesteps_to_process, already_processed
 
@@ -610,7 +616,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     if rank == 0:
         print("=" * 70)
         print("MPI Parallel Bond Processing - 3-Atom Molecular Bonds")
-        print("OPTIMIZED FOR 1 MILLION FRAMES × 5184 ATOMS - DIRECT RANGE ACCESS")
+        print("OPTIMIZED FOR 1,000,001 FRAMES (0 to 1,000,000) × 5184 ATOMS - DIRECT RANGE ACCESS")
         print("=" * 70)
         print(f"Input file: {filename}")
         print(f"Timesteps: {start} to {end} (step {increment})")
@@ -775,28 +781,31 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
             print(f"[Proc {rank}] DEBUG: About to jump to timestep range in file: {filename}", flush=True)
             f_in, num_atoms = jump_to_timestep_range(filename, assigned_timesteps, increment)
             
-            if f_in is None:
-                print(f"[Proc {rank}] ERROR: Could not position file at assigned range", flush=True)
-            else:
-                print(f"[Proc {rank}] DEBUG: Successfully positioned at start of assigned range", flush=True)
-                # Convert assigned_timesteps to a set for fast lookup
-                assigned_timesteps_set = set(assigned_timesteps)
-                print(f"[Proc {rank}] DEBUG: Created timestep set with {len(assigned_timesteps_set)} entries", flush=True)
+            print(f"[Proc {rank}] DEBUG: Successfully positioned at start of assigned range", flush=True)
+            # Convert assigned_timesteps to a set for fast lookup
+            assigned_timesteps_set = set(assigned_timesteps)
+            print(f"[Proc {rank}] DEBUG: Created timestep set with {len(assigned_timesteps_set)} entries", flush=True)
+            
+            # Read sequentially from file and process timesteps that are in assigned_timesteps
+            # This handles gaps in assigned_timesteps correctly
+            # Stop when we reach a timestep beyond the final timestep (end)
+            frame_count = 0
+            while True:
+                # Read the current timestep
+                current_num_atoms, current_timestep = read_timestep_only(f_in)
+                if current_timestep is None:
+                    print(f"[Proc {rank}] DEBUG: Reached end of file after {frame_count} frames", flush=True)
+                    break
                 
-                # Read sequentially from file and process timesteps that are in assigned_timesteps
-                # This handles gaps in assigned_timesteps correctly
-                frame_count = 0
-                while True:
-                    # Read the current timestep
-                    current_num_atoms, current_timestep = read_timestep_only(f_in)
-                    if current_timestep is None:
-                        print(f"[Proc {rank}] DEBUG: Reached end of file after {frame_count} frames", flush=True)
-                        break
-                    
-                    frame_count += 1
-                    if frame_count <= 10:  # Debug first 10 frames
-                        print(f"[Proc {rank}] DEBUG: Frame {frame_count}: read timestep {current_timestep}", flush=True)
-                        print(f"[Proc {rank}] DEBUG: Timestep {current_timestep} in assigned set? {current_timestep in assigned_timesteps_set}", flush=True)
+                # Stop if we've gone beyond the final timestep
+                if current_timestep > end:
+                    print(f"[Proc {rank}] DEBUG: Reached timestep {current_timestep} which is beyond final timestep {end}, stopping", flush=True)
+                    break
+                
+                frame_count += 1
+                if frame_count <= 10:  # Debug first 10 frames
+                    print(f"[Proc {rank}] DEBUG: Frame {frame_count}: read timestep {current_timestep}", flush=True)
+                    print(f"[Proc {rank}] DEBUG: Timestep {current_timestep} in assigned set? {current_timestep in assigned_timesteps_set}", flush=True)
                     
                     # Check if this timestep is in our assigned range
                     if current_timestep in assigned_timesteps_set:
