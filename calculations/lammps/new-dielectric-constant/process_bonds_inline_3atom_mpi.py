@@ -64,8 +64,8 @@ WRITE_BUFFER_SIZE = 8192
 
 # Type-to-charge mapping (hardcoded)
 TYPE_TO_CHARGE = {
-    2: -0.65966,  # Central atoms (e.g., oxygen)
-    1: 0.32983,   # Terminal atoms (e.g., hydrogen)
+    1: -0.784951,  # Central atoms (e.g., oxygen)
+    2: 0.392475,   # Terminal atoms (e.g., hydrogen)
 }
 
 # Initialize MPI

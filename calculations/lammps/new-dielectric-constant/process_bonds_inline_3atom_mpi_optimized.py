@@ -15,7 +15,7 @@ Key Features:
 - Preserves all existing data - only adds new timesteps, never overwrites
 - Proper sorting ensures chronological order in the final output file
 - Restart capability: skips already processed timesteps
-- Periodic combination during processing to avoid data loss
+- Final combination: combines all results at the end of processing
 - Automatic backup and recovery on merge failures
 - Separate statistics file: saves bond formation statistics to {output_file}.statistics (merges with existing)
 - Optimized statistics tracking: O(1) memory usage with periodic progress reporting
@@ -25,8 +25,8 @@ OPTIMIZATIONS FOR 1M FRAMES × 5184 ATOMS:
 - Early termination when exactly 2 atoms found within cutoff
 - Optimized for 5184 atoms: ~26M distance calculations per frame → vectorized
 - Buffered file I/O (100-frame batches) to reduce disk writes
-- Reduced combination frequency (every 2% vs 5% of work)
-- Reduced progress reporting frequency (every 2% vs 1% of work)
+- Final combination at end of processing (no periodic combinations)
+- Reduced progress reporting frequency (every 1% or 100 frames)
 - Optimized memory usage with pre-allocated data structures
 - Reduced verbose output (every 1000th frame vs every frame)
 - Larger file buffers (8KB) for better I/O performance
@@ -112,6 +112,10 @@ def find_timestep_position(filename, target_timestep):
     Find the file position where a specific timestep starts.
     Returns (file_position, num_atoms) or (None, None) if not found.
     """
+    frames_searched = 0
+    last_progress_time = time.time()
+    progress_interval = 5.0  # Report progress every 5 seconds
+    
     with open(filename, 'r') as f:
         while True:
             # Remember current position
@@ -122,7 +126,17 @@ def find_timestep_position(filename, target_timestep):
             if timestep is None:
                 return None, None
             
+            frames_searched += 1
+            
+            # Report progress periodically to avoid appearing stuck
+            current_time = time.time()
+            if current_time - last_progress_time >= progress_interval:
+                print(f"[Proc {rank}] Searching for timestep {target_timestep}: checked {frames_searched} frames, current timestep: {timestep}", flush=True)
+                last_progress_time = current_time
+            
             if timestep == target_timestep:
+                if frames_searched > 1000:
+                    print(f"[Proc {rank}] Found timestep {target_timestep} after searching {frames_searched} frames", flush=True)
                 return pos, num_atoms
             
             # Skip to next frame
@@ -141,7 +155,7 @@ def jump_to_timestep_range(filename, assigned_timesteps):
     # Find the first timestep assigned to this process
     first_timestep = min(assigned_timesteps)
     
-    print(f"[Proc {rank}] Jumping to first timestep {first_timestep} in assigned range", flush=True)
+    print(f"[Proc {rank}] Locating timestep {first_timestep} in file (this may take a while for large files)...", flush=True)
     
     # Find the position of the first timestep
     file_pos, num_atoms = find_timestep_position(filename, first_timestep)
@@ -154,6 +168,7 @@ def jump_to_timestep_range(filename, assigned_timesteps):
     f.seek(file_pos)
     
     print(f"[Proc {rank}] Successfully positioned at timestep {first_timestep}", flush=True)
+    
     return f, num_atoms
 
 
@@ -546,7 +561,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     - Direct range access: Each process jumps directly to their assigned timesteps
     - Incremental writing: each process writes to its own file
     - Restart capability: skips already processed timesteps
-    - Periodic combination: combines results periodically during processing
     - Final combination: master process combines all results at the end
     """
     # Create per-process output files for incremental writing
@@ -557,16 +571,15 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         os.remove(proc_output_file)
         print(f"[Proc {rank}] Removed old per-process file to avoid duplicates", flush=True)
     
+    # Statistics reporting interval (show progress during long runs) - REDUCED FREQUENCY
+    total_frames_expected = len(range(start, end+1, increment))
+    frames_per_process = max(1, total_frames_expected // size)
+    stats_report_interval = max(100, frames_per_process // 100)  # Every 1% or 100 frames
+    
     # Calculate combination interval based on expected workload - OPTIMIZED FOR 1M FRAMES
     # For 1M frames with 64 processes: ~15,625 frames per process
     # Combine every 2% of expected work or every 5000 frames, whichever is larger
-    # This reduces I/O overhead significantly for large datasets
-    total_frames_expected = len(range(start, end+1, increment))
-    frames_per_process = max(1, total_frames_expected // size)
     combination_interval = max(5000, frames_per_process // 50)  # Every 2% or 5000 frames
-    
-    # Statistics reporting interval (show progress during long runs) - REDUCED FREQUENCY
-    stats_report_interval = max(100, frames_per_process // 100)  # Every 1% or 100 frames
     
     # Buffer size for writing - reduce flush frequency
     write_buffer_size = 100  # Write in batches of 100 frames
@@ -594,7 +607,9 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print("=" * 70)
         print()
     
-    print("Determining which timesteps need processing...", flush=True)
+    if rank == 0:
+        print("Determining which timesteps need processing...", flush=True)
+    
     print(f"[Proc {rank}] DEBUG: About to call get_timesteps_to_process", flush=True)
     
     # Synchronize before reading existing output file to avoid I/O contention
@@ -606,9 +621,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         )
         print(f"[Proc {rank}] DEBUG: get_timesteps_to_process completed", flush=True)
         print(f"[Proc {rank}] DEBUG: Found {len(timesteps_to_process)} timesteps to process", flush=True)
-        if timesteps_to_process:
-            print(f"[Proc {rank}] DEBUG: First 10 timesteps to process: {timesteps_to_process[:10]}", flush=True)
-            print(f"[Proc {rank}] DEBUG: Last 10 timesteps to process: {timesteps_to_process[-10:]}", flush=True)
     except Exception as e:
         print(f"[Proc {rank}] ERROR: Failed to read existing output file: {e}", flush=True)
         # Set empty values to prevent further issues
@@ -619,9 +631,10 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     comm.Barrier()
     
     total_timesteps = len(range(start, end+1, increment))
-    print(f"  Total timesteps in range: {total_timesteps}")
-    print(f"  Already processed: {len(already_processed)}")
-    print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
+    if rank == 0:
+        print(f"  Total timesteps in range: {total_timesteps}")
+        print(f"  Already processed: {len(already_processed)}")
+        print(f"  Need to process: {len(timesteps_to_process)}", flush=True)
     
     if len(timesteps_to_process) == 0:
         if rank == 0:
@@ -640,8 +653,6 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     timesteps_per_process = total_timesteps // size
     remainder = total_timesteps % size
     
-    print(f"[Proc {rank}] DEBUG: Distribution calculation - total_timesteps={total_timesteps}, size={size}, timesteps_per_process={timesteps_per_process}, remainder={remainder}", flush=True)
-    
     if rank < remainder:
         # First 'remainder' processes get one extra timestep
         start_idx = rank * (timesteps_per_process + 1)
@@ -659,24 +670,18 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     else:
         start_timestep = end_timestep = None
     
-    print(f"[Proc {rank}] ========================================", flush=True)
-    print(f"[Proc {rank}] PROCESS ASSIGNMENT SUMMARY", flush=True)
-    print(f"[Proc {rank}] ========================================", flush=True)
-    print(f"[Proc {rank}] Rank: {rank} of {size}", flush=True)
-    print(f"[Proc {rank}] Sequential assignment - indices {start_idx} to {end_idx-1} (total: {end_idx-start_idx})", flush=True)
-    print(f"[Proc {rank}] Assigned timestep range: {start_timestep} to {end_timestep}", flush=True)
-    print(f"[Proc {rank}] Number of timesteps assigned: {len(assigned_timesteps)}", flush=True)
     if assigned_timesteps:
-        print(f"[Proc {rank}] First 10 assigned timesteps: {assigned_timesteps[:10]}", flush=True)
-        print(f"[Proc {rank}] Last 10 assigned timesteps: {assigned_timesteps[-10:]}", flush=True)
+        print(f"[Proc {rank}] Assigned {len(assigned_timesteps)} timesteps (range: {start_timestep} to {end_timestep})", flush=True)
     else:
         print(f"[Proc {rank}] WARNING: No timesteps assigned to this process!", flush=True)
-    print(f"[Proc {rank}] ========================================", flush=True)
     
     # Synchronize all processes to ensure all assignments are calculated
     comm.Barrier()
     
-    # Master process prints summary of all process assignments
+    # Gather all assigned timesteps from all processes to verify no overlap
+    all_assigned_timesteps_list = comm.gather(set(assigned_timesteps), root=0)
+    
+    # Master process verifies no overlap and prints summary
     if rank == 0:
         print(f"\n{'='*70}", flush=True)
         print(f"MPI PROCESS DISTRIBUTION SUMMARY", flush=True)
@@ -685,7 +690,29 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
         print(f"Number of MPI processes: {size}", flush=True)
         print(f"Timesteps per process (base): {timesteps_per_process}", flush=True)
         print(f"Processes with extra timestep: {remainder}", flush=True)
-        print(f"{'='*70}\n", flush=True)
+        
+        # Verify no overlap between processes
+        all_assigned = set()
+        overlaps_found = []
+        for proc_rank, proc_timesteps in enumerate(all_assigned_timesteps_list):
+            if proc_timesteps:
+                overlap = all_assigned & proc_timesteps
+                if overlap:
+                    overlaps_found.append((proc_rank, sorted(overlap)))
+                all_assigned |= proc_timesteps
+        
+        if overlaps_found:
+            print(f"\nERROR: OVERLAP DETECTED BETWEEN PROCESSES!", flush=True)
+            for proc_rank, overlap_timesteps in overlaps_found:
+                print(f"  Process {proc_rank} overlaps with previous processes on timesteps: {overlap_timesteps[:20]}...", flush=True)
+            print(f"{'='*70}\n", flush=True)
+            comm.Abort(1)
+        else:
+            print(f"\n✓ VERIFICATION: No overlap detected - all timesteps assigned uniquely", flush=True)
+            print(f"  Total unique timesteps assigned: {len(all_assigned)}", flush=True)
+            if len(all_assigned) != total_timesteps:
+                print(f"  WARNING: Expected {total_timesteps} timesteps, but only {len(all_assigned)} were assigned!", flush=True)
+            print(f"{'='*70}\n", flush=True)
     
     # Initialize simple average tracking for bond statistics
     running_stats = {
@@ -712,50 +739,41 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     try:
         # Check if this process has any assigned timesteps
         if not assigned_timesteps:
-            print(f"[Proc {rank}] No timesteps assigned to this process", flush=True)
+            print(f"[Proc {rank}] DEBUG: No timesteps assigned to this process - waiting for other processes to complete", flush=True)
+            # Processes with zero timesteps just wait - they'll participate in the final Barrier
         else:
-            print(f"[Proc {rank}] Processing {len(assigned_timesteps)} assigned timesteps", flush=True)
+            print(f"[Proc {rank}] DEBUG: Processing {len(assigned_timesteps)} assigned timesteps", flush=True)
+            print(f"[Proc {rank}] DEBUG: Assigned timestep range: {min(assigned_timesteps)} to {max(assigned_timesteps)}", flush=True)
             
             # Jump directly to the start of this process's assigned range
+            print(f"[Proc {rank}] DEBUG: About to jump to timestep range in file: {filename}", flush=True)
             f_in, num_atoms = jump_to_timestep_range(filename, assigned_timesteps)
             
             if f_in is None:
                 print(f"[Proc {rank}] ERROR: Could not position file at assigned range", flush=True)
             else:
-                print(f"[Proc {rank}] Successfully positioned at assigned range, starting processing...", flush=True)
-                
-                # Verify we're at the correct position by reading the first timestep
-                file_pos = f_in.tell()
-                test_num_atoms, test_timestep = read_timestep_only(f_in)
-                print(f"[Proc {rank}] DEBUG: After jump, file position: {file_pos}, first timestep read: {test_timestep}", flush=True)
-                if test_timestep is not None:
-                    # Reset to start of this timestep (we'll read it again in the loop)
-                    f_in.seek(file_pos)
-                    print(f"[Proc {rank}] DEBUG: Reset file pointer to start of timestep {test_timestep}", flush=True)
-                
+                print(f"[Proc {rank}] DEBUG: Successfully positioned at start of assigned range", flush=True)
                 # Convert assigned_timesteps to a set for fast lookup
                 assigned_timesteps_set = set(assigned_timesteps)
-                print(f"[Proc {rank}] DEBUG: assigned_timesteps_set has {len(assigned_timesteps_set)} timesteps", flush=True)
-                print(f"[Proc {rank}] DEBUG: First few in set: {sorted(list(assigned_timesteps_set))[:10]}", flush=True)
+                print(f"[Proc {rank}] DEBUG: Created timestep set with {len(assigned_timesteps_set)} entries", flush=True)
                 
                 # Read sequentially from file and process timesteps that are in assigned_timesteps
                 # This handles gaps in assigned_timesteps correctly
+                frame_count = 0
                 while True:
                     # Read the current timestep
                     current_num_atoms, current_timestep = read_timestep_only(f_in)
                     if current_timestep is None:
-                        print(f"[Proc {rank}] Reached end of file", flush=True)
+                        print(f"[Proc {rank}] DEBUG: Reached end of file after {frame_count} frames", flush=True)
                         break
                     
-                    # Debug: Show first few timesteps read from file
-                    if counter == 0:
-                        print(f"[Proc {rank}] DEBUG: First timestep read from file: {current_timestep} (in assigned set: {current_timestep in assigned_timesteps_set})", flush=True)
-                    elif counter < 5:
-                        print(f"[Proc {rank}] DEBUG: Timestep {current_timestep} read from file (in assigned set: {current_timestep in assigned_timesteps_set})", flush=True)
+                    frame_count += 1
+                    if frame_count <= 10:  # Debug first 10 frames
+                        print(f"[Proc {rank}] DEBUG: Frame {frame_count}: read timestep {current_timestep}", flush=True)
+                        print(f"[Proc {rank}] DEBUG: Timestep {current_timestep} in assigned set? {current_timestep in assigned_timesteps_set}", flush=True)
                     
                     # Check if this timestep is in our assigned range
                     if current_timestep in assigned_timesteps_set:
-                        print(f"[Proc {rank}] Processing timestep {current_timestep}", flush=True)
                         
                         # Read the full frame data
                         atoms = read_frame_from_position(f_in, current_num_atoms)
@@ -812,7 +830,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                 
                                 # Proceed if ALL ranks are ready OR if timeout has been reached
                                 if ready_sum == size or timeout_sum > 0:
-                                    print(f"Combination check passed", flush=True)
+                                    print(f"[Proc {rank}] DEBUG: Combination check passed (ready_sum={ready_sum}, timeout_sum={timeout_sum})", flush=True)
                                     # Flush write buffer to ensure all data is written to per-process file
                                     if write_buffer:
                                         f_out.writelines(write_buffer)
@@ -827,9 +845,12 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                     # Master process combines files
                                     if rank == 0:
                                         try:
+                                            print(f"[Proc {rank}] DEBUG: Starting combination of per-process files...", flush=True)
                                             total_frames, new_timesteps, overlapping_timesteps = combine_per_process_files(output_file, size)
                                         except Exception as e:
                                             print(f"[Proc {rank}] ERROR: Combination failed: {e}", flush=True)
+                                            import traceback
+                                            traceback.print_exc()
                                             # Set error values that will be broadcast to all processes
                                             total_frames, new_timesteps, overlapping_timesteps = -1, -1, -1
                                         if total_frames == -1 and new_timesteps == -1 and overlapping_timesteps == -1:
@@ -854,6 +875,7 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
                                     
                                     # Synchronize after combining
                                     comm.Barrier()
+                                    print(f"[Proc {rank}] DEBUG: Combination complete, continuing processing", flush=True)
                                 
                         except Exception as e:
                             print(f"[Proc {rank}] Error processing timestep {current_timestep}: {e}")
