@@ -64,14 +64,35 @@ from mpi4py import MPI
 
 # Type-to-charge mapping (hardcoded)
 TYPE_TO_CHARGE = {
-    1: -0.65966,  # Central atoms (e.g., oxygen)
-    2: 0.32983,   # Terminal atoms (e.g., hydrogen)
+    1: -0.784951,  # Central atoms (e.g., oxygen)
+    2: 0.392475,   # Terminal atoms (e.g., hydrogen)
 }
 
 # Initialize MPI
 comm = MPI.COMM_WORLD
 rank = comm.Get_rank()
 size = comm.Get_size()
+
+# Diagnostic: Verify MPI is working correctly
+if rank == 0:
+    print(f"\n{'='*70}", flush=True)
+    print(f"MPI INITIALIZATION CHECK", flush=True)
+    print(f"{'='*70}", flush=True)
+    print(f"Total MPI processes detected: {size}", flush=True)
+    if size == 1:
+        print(f"WARNING: Only 1 MPI process detected!", flush=True)
+        print(f"This means work will NOT be distributed across multiple processors.", flush=True)
+        print(f"To use multiple processes, run with:", flush=True)
+        print(f"  srun -n <num_tasks> python process_bonds_inline_3atom_mpi_optimized.py ...", flush=True)
+        print(f"  or", flush=True)
+        print(f"  mpirun -np <num_procs> python process_bonds_inline_3atom_mpi_optimized.py ...", flush=True)
+        print(f"{'='*70}\n", flush=True)
+    else:
+        print(f"✓ Multiple MPI processes detected - work will be distributed", flush=True)
+        print(f"{'='*70}\n", flush=True)
+
+# Synchronize all processes
+comm.Barrier()
 
 def read_timestep_only(f):
     """Read only timestep information from file handle - OPTIMIZED VERSION. Returns (num_atoms, timestep) or (None, None) at EOF."""
@@ -619,6 +640,8 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     timesteps_per_process = total_timesteps // size
     remainder = total_timesteps % size
     
+    print(f"[Proc {rank}] DEBUG: Distribution calculation - total_timesteps={total_timesteps}, size={size}, timesteps_per_process={timesteps_per_process}, remainder={remainder}", flush=True)
+    
     if rank < remainder:
         # First 'remainder' processes get one extra timestep
         start_idx = rank * (timesteps_per_process + 1)
@@ -636,11 +659,33 @@ def process_concatenated_file_mpi(filename, start, end, increment, type_A, type_
     else:
         start_timestep = end_timestep = None
     
-    print(f"[Proc {rank}] DEBUG: Sequential assignment - timesteps {start_idx} to {end_idx-1} (total: {end_idx-start_idx})", flush=True)
-    print(f"[Proc {rank}] DEBUG: Assigned timestep range: {start_timestep} to {end_timestep}", flush=True)
+    print(f"[Proc {rank}] ========================================", flush=True)
+    print(f"[Proc {rank}] PROCESS ASSIGNMENT SUMMARY", flush=True)
+    print(f"[Proc {rank}] ========================================", flush=True)
+    print(f"[Proc {rank}] Rank: {rank} of {size}", flush=True)
+    print(f"[Proc {rank}] Sequential assignment - indices {start_idx} to {end_idx-1} (total: {end_idx-start_idx})", flush=True)
+    print(f"[Proc {rank}] Assigned timestep range: {start_timestep} to {end_timestep}", flush=True)
+    print(f"[Proc {rank}] Number of timesteps assigned: {len(assigned_timesteps)}", flush=True)
     if assigned_timesteps:
-        print(f"[Proc {rank}] DEBUG: First 10 assigned timesteps: {assigned_timesteps[:10]}", flush=True)
-        print(f"[Proc {rank}] DEBUG: Last 10 assigned timesteps: {assigned_timesteps[-10:]}", flush=True)
+        print(f"[Proc {rank}] First 10 assigned timesteps: {assigned_timesteps[:10]}", flush=True)
+        print(f"[Proc {rank}] Last 10 assigned timesteps: {assigned_timesteps[-10:]}", flush=True)
+    else:
+        print(f"[Proc {rank}] WARNING: No timesteps assigned to this process!", flush=True)
+    print(f"[Proc {rank}] ========================================", flush=True)
+    
+    # Synchronize all processes to ensure all assignments are calculated
+    comm.Barrier()
+    
+    # Master process prints summary of all process assignments
+    if rank == 0:
+        print(f"\n{'='*70}", flush=True)
+        print(f"MPI PROCESS DISTRIBUTION SUMMARY", flush=True)
+        print(f"{'='*70}", flush=True)
+        print(f"Total timesteps to process: {total_timesteps}", flush=True)
+        print(f"Number of MPI processes: {size}", flush=True)
+        print(f"Timesteps per process (base): {timesteps_per_process}", flush=True)
+        print(f"Processes with extra timestep: {remainder}", flush=True)
+        print(f"{'='*70}\n", flush=True)
     
     # Initialize simple average tracking for bond statistics
     running_stats = {

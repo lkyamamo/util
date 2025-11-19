@@ -40,7 +40,10 @@ echo "Starting MPI execution..."
 if [ -n "$SLURM_JOB_ID" ]; then
     # Running under SLURM - use srun
     echo "Running under SLURM (job ID: $SLURM_JOB_ID)"
-    srun python process_bonds_inline_3atom_mpi.py \
+    # Use -n to specify number of tasks (defaults to 1 if not set)
+    NUM_TASKS=${SLURM_NTASKS:-1}
+    echo "Using $NUM_TASKS MPI tasks"
+    srun -n ${NUM_TASKS} --mpi=pmix python process_bonds_inline_3atom_mpi_optimized.py \
         ${INPUT_FILE} \
         ${START} \
         ${END} \
@@ -57,7 +60,7 @@ else
     echo "Running directly (not under SLURM)"
     NUM_PROCS=${NUM_PROCS:-1}  # Default to 1 process if not set
     echo "Using $NUM_PROCS MPI processes"
-    mpirun -np ${NUM_PROCS} python process_bonds_inline_3atom_mpi.py \
+    mpirun -np ${NUM_PROCS} python process_bonds_inline_3atom_mpi_optimized.py \
         ${INPUT_FILE} \
         ${START} \
         ${END} \
