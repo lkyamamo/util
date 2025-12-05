@@ -106,6 +106,21 @@ export MANIFEST_FILE="custom_manifest.tsv"
 
 # Stop on first error (default is to continue)
 export CONTINUE_ON_ERROR="false"
+
+# Tar compression options
+export TAR_COMPRESSION="cf"  # Use uncompressed tarballs for faster large directory archiving
+export TAR_SSH_TIMEOUT="14400"  # 4 hour timeout for tar operations (default)
+
+# Enable debug mode for verbose SSH output (use when troubleshooting)
+export DEBUG="true"
+
+# Adjust SSH retry settings for quick checks
+export SSH_QUICK_RETRIES="2"  # Number of retries for quick checks (default: 2)
+export SSH_QUICK_DELAY="2"    # Delay between quick check retries in seconds (default: 2)
+
+# SSH ControlMaster settings (for persistent connections)
+export SSH_CONTROL_DIR="${HOME}/.ssh/nas_control"  # Directory for SSH control sockets
+export SSH_CONTROL_SOCKET="${SSH_CONTROL_DIR}/${HPC_USER}@${HPC_HOST}:22"  # Control socket path
 ```
 
 ## Data Files
@@ -160,11 +175,25 @@ All scripts include:
 - **Graceful handling** of network timeouts and disconnections
 
 **SSH Robustness Features:**
+- **Persistent SSH connections**: All scripts establish one SSH connection and reuse it for multiple operations
+- **SSH ControlMaster**: Automatic connection multiplexing via SSH ControlMaster for faster transfers
 - Automatic retry with exponential backoff (5 attempts by default)
 - Connection keepalive settings to prevent timeouts
 - Pre-flight connection testing before operations
-- Enhanced timeout handling (60s connection, 600s rsync)
+- Enhanced timeout handling (60s connection, 600s rsync, 14400s tar operations)
 - TCP keepalive and compression optimization
+- Automatic cleanup of SSH connections on script exit
+
+**Performance Notes:**
+- **Tar creation time**: For very large directories (approaching 1TB), tar with compression may take 2-4 hours
+- **Timeout settings**: SSH timeout is set to 4 hours (14400s) for tar operations to handle large directories
+- **Compression**: Default is gzip (`-czf`). For faster archiving with large files, consider uncompressed tarballs (`-cf`) by setting `TAR_COMPRESSION=cf`
+- **Progress**: Tar operations show verbose output (-v flag) so you can monitor progress
+
+**Resume Capabilities:**
+- **Tar failures**: If tar creation fails, the partial tarball is detected and deleted, then tar starts fresh
+- **Rsync failures**: If rsync fails during transfer, it will automatically resume from where it left off using `--partial` and `--partial-dir` options
+- **Existing tarballs**: If a tarball already exists on the remote server (from a previous failed run), it will be reused instead of being recreated
 
 ## Requirements
 
