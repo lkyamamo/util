@@ -11,5 +11,5 @@ module load usc
 module load fftw
 module load openmpi
 
-srun --mpi=pmix_v2 -n 64 /home1/lkyamamo/lammps/7Aug2019/lmp_mpi -in ./test.lammps
+srun --mpi=pmix_v2 -n 64 /home1/lkyamamo/executables/lammps/lmp_mpi_2019 -in ./test.lammps
 

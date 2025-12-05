@@ -53,7 +53,7 @@ if [ -n "$SLURM_JOB_ID" ]; then
     # Running under SLURM - use srun
     echo "Running under SLURM (job ID: $SLURM_JOB_ID)"
     echo "Using $NUM_PROCS MPI tasks with $CORES_PER_TASK cores per task"
-    srun -n ${NUM_PROCS} -c ${CORES_PER_TASK} --mpi=pmix python process_bonds_inline_3atom_mpi_optimized.py \
+    srun -n ${NUM_PROCS} -c ${CORES_PER_TASK} --mpi=pmix python process_bonds_inline_3atom_mpi.py \
         ${INPUT_FILE} \
         ${START} \
         ${END} \
