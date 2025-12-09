@@ -1,12 +1,16 @@
 import sys
 import csv
 from collections import deque
+from winreg import DisableReflectionKey
 
 file1 = sys.argv[1]
 T = float(sys.argv[2])
 la = float(sys.argv[3])
 lb = float(sys.argv[4])
 lc = float(sys.argv[5])
+
+# units of K A^3/(e^2 m^2)
+PREFACTOR = (2.56*(10**7))/(1.38*8.85*T*la*lb*lc)
 
 # Window size for averaging
 WINDOW_SIZE = 10000
@@ -308,6 +312,7 @@ def process_dipole_data(file1, averaging_function, data_key_prefix, is_windowed=
                 mavgsq_debye = avg_data[f'{data_key_prefix}_mavgsq'] * DEBYE_CONVERSION_FACTOR
                 msq_debye = avg_data[f'{data_key_prefix}_msq'] * DEBYE_CONVERSION_FACTOR
                 var_debye = avg_data[f'{data_key_prefix}_var'] * DEBYE_CONVERSION_FACTOR
+                dielectric_constant = PREFACTOR * avg_data[f'{data_key_prefix}_var']
                 
                 # Get representative timestep (for binned, use representative_step; others use current step)
                 rep_step = avg_data.get('representative_step', step)
@@ -319,7 +324,8 @@ def process_dipole_data(file1, averaging_function, data_key_prefix, is_windowed=
                     'msqavg_t((eA)^2)': avg_data[f'{data_key_prefix}_msq'],
                     'msqavg_t(D^2)': msq_debye,
                     'var_t((eA)^2)': avg_data[f'{data_key_prefix}_var'],
-                    'var_t(D^2)': var_debye
+                    'var_t(D^2)': var_debye,
+                    'dielectric_constant': dielectric_constant
                 })
                 
                 # Reset bin running sums after bin is processed (for binned method)
@@ -401,13 +407,12 @@ mdev = mdev / 3
 
 print("%14.6f %14.6f %14.6f" %(mavg[0], mavg[1],mavg[2]))
 
-# units of K A^3/(e^2 m^2)
-prefactor = (2.56*(10**7))/(1.38*8.85*T*la*lb*lc)
+
 
 # Write timestep data to CSV
 output_filename = file1.replace('.txt', f'_timestep_data_{AVERAGING_METHOD}.csv')
 with open(output_filename, 'w', newline='') as csvfile:
-    fieldnames = ['timestep', 'mavgsq_t((eA)^2)', 'mavgsq_t(D^2)', 'msqavg_t((eA)^2)', 'msqavg_t(D^2)', 'var_t((eA)^2)', 'var_t(D^2)']
+    fieldnames = ['timestep', 'mavgsq_t((eA)^2)', 'mavgsq_t(D^2)', 'msqavg_t((eA)^2)', 'msqavg_t(D^2)', 'var_t((eA)^2)', 'var_t(D^2)', 'dielectric_constant']
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
     
     writer.writeheader()
@@ -417,4 +422,4 @@ with open(output_filename, 'w', newline='') as csvfile:
 print(f"Timestep data saved to: {output_filename}")
 
 print("x_dev = %12.6f, y_dev = %12.6f, z_dev = %12.6f,deviation = %14.6f" %(mx_dev, my_dev, mz_dev, mdev))
-print("eps_x = %12.6f, eps_y = %12.6f, eps_z = %12.6f, eps_total = %12.6f" %(prefactor * mx_dev, prefactor * my_dev, prefactor * mz_dev, prefactor * mdev))
+print("eps_x = %12.6f, eps_y = %12.6f, eps_z = %12.6f, eps_total = %12.6f" %(PREFACTOR * mx_dev, PREFACTOR * my_dev, PREFACTOR * mz_dev, PREFACTOR * mdev))
