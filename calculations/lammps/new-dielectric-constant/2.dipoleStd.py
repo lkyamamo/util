@@ -1,7 +1,6 @@
 import sys
 import csv
 from collections import deque
-from winreg import DisableReflectionKey
 
 file1 = sys.argv[1]
 T = float(sys.argv[2])
