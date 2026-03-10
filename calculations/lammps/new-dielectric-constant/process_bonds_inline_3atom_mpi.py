@@ -64,8 +64,8 @@ from mpi4py import MPI
 
 # Type-to-charge mapping (hardcoded)
 TYPE_TO_CHARGE = {
-    1: -0.784951,  # Central atoms (e.g., oxygen)
-    2: 0.392475,   # Terminal atoms (e.g., hydrogen)
+    1: -0.813976,  # Central atoms (e.g., oxygen)
+    2: 0.406988,   # Terminal atoms (e.g., hydrogen)
 }
 
 # Initialize MPI
