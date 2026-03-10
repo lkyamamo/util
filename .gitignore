@@ -1,3 +1,4 @@
 *POTCAR*
 calculations/lammps/dumps/*
 *__pycache__*
+*.venv

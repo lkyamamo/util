@@ -1,0 +1,54 @@
+assignment_metadata:
+  course: PHYS 515
+  sheet_number: 2
+  semester: Spring 2026
+
+global_requirements:
+  - id: G1
+    description: "Submission includes handwritten explanatory text in PDF format"
+  - id: G2
+    description: "Plots are computer-generated (not hand-drawn)"
+  - id: G3
+    description: "Code files are included or linked"
+  - id: G4
+    description: "All figures and tables are clearly labeled"
+
+problem_1:
+  - id: P1_R1
+    description: "Numerical MSE and MAE reported before and after outlier"
+  - id: P1_R2
+    description: "Scatter plot with predictions vs true values and y=x line"
+  - id: P1_R3
+    description: "Written explanation (2–3 sentences) on outlier robustness"
+  - id: P1_R4
+    description: "RMSE calculated and units compared to MAE"
+  - id: P1_R5
+    description: "Code included as appendix"
+
+problem_2:
+  - id: P2_R1
+    description: "Closed-form regression parameters ω₀ and ω₁ calculated"
+  - id: P2_R2
+    description: "Intermediate steps shown"
+  - id: P2_R3
+    description: "Slope interpretation provided"
+  - id: P2_R4
+    description: "Predictions for 15°C, 23°C, 30°C"
+  - id: P2_R5
+    description: "R² calculated and interpreted"
+  - id: P2_R6
+    description: "Visualization with data, fitted line, and prediction points"
+
+problem_3:
+  - id: P3_R1
+    description: "200 synthetic samples generated with correct distributions"
+  - id: P3_R2
+    description: "Regression fitted using closed-form solution"
+  - id: P3_R3
+    description: "Scatter plot with 4 required components"
+  - id: P3_R4
+    description: "Tall-parent analysis table included"
+  - id: P3_R5
+    description: "Correlation coefficient calculated"
+  - id: P3_R6
+    description: "Discussion explaining regression-to-the-mean (3–4 sentences)"

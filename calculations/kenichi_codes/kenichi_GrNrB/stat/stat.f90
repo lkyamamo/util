@@ -9,6 +9,7 @@ module stat_mod
   real(8),parameter :: RCUT = 10.0d0, DRI = NTABLES/RCUT
   !real(8),parameter :: RCUT = 7d0, DRI = NTABLES/RCUT
   real(8),parameter :: QCUT = 10.0d0, DQ = QCUT/NTABLES_SQ
+  real(8),parameter :: BA_MAX = 180.0d0, DBA = NTABLES_BA/BA_MAX
   integer,parameter :: MAXNEIGHBS = 2000
 
   type bond_length 
@@ -374,7 +375,7 @@ contains
      write(unit=iunit,fmt=*)
 
      do k=1,size(this%ba,dim=4)
-        write(unit=iunit,fmt='(i8,a1)',advance='no') k,','
+        write(unit=iunit,fmt='(f12.5,a1)',advance='no') k/DBA,','
         do ity=1,size(this%elems)
         do jty=1,size(this%elems)
         do kty=1,size(this%elems)

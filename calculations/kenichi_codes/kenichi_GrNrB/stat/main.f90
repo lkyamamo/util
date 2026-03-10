@@ -97,7 +97,7 @@ program main
         
              cosine = sum(rr1(1:3)*rr2(1:3))
              theta = acos(cosine)*180d0/pi
-             idx = int(theta) + 1
+             idx = int(theta*DBA) + 1
 
              ac%ba(jty,ity,kty,idx) = ac%ba(jty,ity,kty,idx)+0.5d0
              ac%ba(kty,ity,jty,idx) = ac%ba(kty,ity,jty,idx)+0.5d0
