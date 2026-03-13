@@ -11,11 +11,9 @@ def get_unit_cell_mass_grams(data, repeat):
     print("repeat dimensions: {}".format(repeat))
 
     unit_cell_mass_g = unit_cell_mass_amu * 1.66054e-24
-    total_mass_amu = unit_cell_mass_amu*repeat[0]*repeat[1]*repeat[2]
-    total_mass_grams = total_mass_amu * 1.66054e-24
 
-    print("total mass: {0} g".format(total_mass_grams))
-    print("total mass: {0} amu".format(total_mass_amu))
+    print("unit cell mass: {0} g".format(unit_cell_mass_g))
+    print("unit cell mass: {0} amu".format(unit_cell_mass_amu))
 
     return unit_cell_mass_g
 
@@ -40,6 +38,7 @@ def get_volume(target_density, data, repeat):
 def get_density(unit_cell_dims, data, repeat):
 
     volume = unit_cell_dims[0]*unit_cell_dims[1]*unit_cell_dims[2] 
+    print("current unit cell volume: {0} A^3".format(volume))
     supercell_volume = volume*repeat[0]*repeat[1]*repeat[2]
     print("current supercell dimensions (A): {0}x{1}x{2}".format(unit_cell_dims[0]*repeat[0],unit_cell_dims[1]*repeat[1],unit_cell_dims[2]*repeat[2])) 
     print("current supercell volume: {0} A^3".format(supercell_volume))
@@ -54,8 +53,8 @@ filename = 'masses_quantities.dat'
 data = np.loadtxt(filename)
 
 target_density = 2.2
-current_unit_cell_dim = (7.135,7.135,7.135)
-repeat = (2,2,3)
+current_unit_cell_dim = (4.99264721, 4.99264721, 6.93392642)
+repeat = (6,6,6)
 
 get_density(current_unit_cell_dim, data, repeat)
 get_volume(target_density, data, repeat)
