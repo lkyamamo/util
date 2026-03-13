@@ -106,6 +106,17 @@ frac_cg   = np.array([site.frac_coords for site in cg])
 delta = frac_cg - frac_orig
 delta -= np.round(delta)  # minimum image convention
 
+# --- add this ---
+masses = np.array([site.specie.atomic_mass for site in orig])
+com_shift = np.average(delta, axis=0, weights=masses)
+
+print(f"\n--- Center of Mass Shift (fractional) ---")
+print(f"  {com_shift}")
+print(f"  magnitude: {np.linalg.norm(com_shift):.6f}")
+
+delta -= com_shift
+# ----------------
+
 per_atom_disp = np.sqrt(np.sum(delta**2, axis=1))
 msd           = np.mean(per_atom_disp**2)
 mean_disp     = np.mean(per_atom_disp)

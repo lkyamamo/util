@@ -53,8 +53,8 @@ filename = 'masses_quantities.dat'
 data = np.loadtxt(filename)
 
 target_density = 2.2
-current_unit_cell_dim = (4.99264721, 4.99264721, 6.93392642)
-repeat = (6,6,6)
+current_unit_cell_dim = (30.1181, 30.1194201, 40.564142)
+repeat = (1,1,1)
 
 get_density(current_unit_cell_dim, data, repeat)
 get_volume(target_density, data, repeat)
