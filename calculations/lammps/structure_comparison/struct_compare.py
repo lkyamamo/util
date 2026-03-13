@@ -7,9 +7,11 @@ data file format, using pymatgen. Computes:
   2. Lattice parameter comparison (a, b, c, α, β, γ)
   3. MSD in real coordinates (Å), MIC via original lattice
   4. COM shift — reported as diagnostic only, not subtracted
-  5. StructureMatcher — symmetry-aware structural similarity
-  6. Per-species MSD breakdown
-  7. Top 5 most displaced atoms
+  5. Per-species MSD breakdown
+  6. Top 5 most displaced atoms
+
+Atom correspondence is established via the atom ID column (first column in
+the LAMMPS data file), which is assumed to be consistent between both files.
 
 Usage:
   python compare_structures_pymatgen.py                         # default output file
@@ -21,7 +23,6 @@ Usage:
 import argparse
 import numpy as np
 from pymatgen.io.lammps.data import LammpsData
-from pymatgen.analysis.structure_matcher import StructureMatcher
 
 
 # =============================================================================
@@ -102,9 +103,6 @@ class OutputHandler:
 # subtracted from the displacements. For a two-frame CG comparison, any
 # apparent COM drift is an artifact of box remapping or floating point
 # accumulation during minimization — not a physical rigid-body translation.
-# Subtracting it would be correcting for something that was never physically
-# real. It is reported so the user can verify it is small and flag anything
-# unexpected.
 
 def compute_displacements(cart_orig, cart_cg, lattice_orig, masses):
     """
@@ -146,7 +144,7 @@ def compute_displacements(cart_orig, cart_cg, lattice_orig, masses):
 def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
 
     # -------------------------------------------------------------------------
-    # Load structures
+    # Load structures and align by atom ID
     # -------------------------------------------------------------------------
     out.print("=" * 55)
     out.print("  Structure Comparison: Original vs CG Relaxed")
@@ -155,22 +153,49 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
     orig_lmp = LammpsData.from_file(orig_file, atom_style="atomic")
     cg_lmp   = LammpsData.from_file(cg_file,   atom_style="atomic")
 
+    # .atoms is a DataFrame indexed by atom ID (first column in LAMMPS data
+    # file). Sorting by index aligns both DataFrames by ID before any
+    # coordinate extraction, making the correspondence explicit and robust to
+    # any reordering in the file.
+    orig_df = orig_lmp.atoms.sort_index()
+    cg_df   = cg_lmp.atoms.sort_index()
+
+    assert list(orig_df.index) == list(cg_df.index), \
+        "Atom IDs do not match between files — cannot establish correspondence"
+
     orig = orig_lmp.structure
     cg   = cg_lmp.structure
 
-    N = len(orig)
-    assert len(orig) == len(cg), \
-        f"Atom count mismatch: {len(orig)} vs {len(cg)}"
+    N = len(orig_df)
 
     out.print(f"\nOriginal file   : {orig_file}")
     out.print(f"CG file         : {cg_file}")
     out.print(f"Number of atoms : {N}")
-    out.print(f"Species present : {set(str(s.specie) for s in orig)}")
 
-    masses         = np.array([site.specie.atomic_mass for site in orig])
-    species        = [str(site.specie) for site in orig]
+    # -------------------------------------------------------------------------
+    # Species and masses from the sorted DataFrame
+    # -------------------------------------------------------------------------
+    # .atoms['type'] gives the LAMMPS atom type integer for each atom.
+    # mass_df maps type integer -> atomic mass via the LammpsData.masses table.
+    # force_map maps type integer -> element symbol via the structure's
+    # site_properties, which pymatgen populates from the Masses section.
+
+    type_to_element = {
+        i + 1: str(orig.species[i])
+        for i in range(len(orig.species))
+    }
+
+    # Build per-atom arrays in atom-ID order
+    atom_types     = orig_df["type"].values
+    species        = [type_to_element[t] for t in atom_types]
     unique_species = sorted(set(species))
-    lattice_orig   = orig.lattice.matrix    # (3,3), rows = lattice vectors, Å
+
+    from pymatgen.core.periodic_table import Element
+    masses = np.array([Element(sp).atomic_mass for sp in species])
+
+    out.print(f"Species present : {set(unique_species)}")
+
+    lattice_orig = orig.lattice.matrix      # (3,3), rows = lattice vectors, Å
 
     # -------------------------------------------------------------------------
     # Volume
@@ -204,10 +229,14 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
         out.print(f"  {name:<8} {vo:>12.5f} {vc:>12.5f} {vc - vo:>+12.5f}")
 
     # -------------------------------------------------------------------------
-    # Displacements
+    # Cartesian coordinates in atom-ID order
     # -------------------------------------------------------------------------
-    cart_orig = np.array([site.coords for site in orig])
-    cart_cg   = np.array([site.coords for site in cg])
+    # Extract x, y, z from the sorted DataFrames directly rather than from
+    # site.coords, so the coordinate arrays are guaranteed to be in the same
+    # atom-ID order as the species and masses arrays built above.
+
+    cart_orig = orig_df[["x", "y", "z"]].values.astype(float)
+    cart_cg   = cg_df[["x", "y", "z"]].values.astype(float)
 
     per_atom_disp, com_shift = compute_displacements(
         cart_orig, cart_cg, lattice_orig, masses
@@ -216,12 +245,17 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
     msd       = np.mean(per_atom_disp**2)
     mean_disp = np.mean(per_atom_disp)
 
-    # COM shift — diagnostic only
+    # -------------------------------------------------------------------------
+    # COM shift diagnostic
+    # -------------------------------------------------------------------------
     out.print(f"\n--- Center of Mass Shift (diagnostic only) ---")
     out.print(f"  shift     : {com_shift} Å")
     out.print(f"  magnitude : {np.linalg.norm(com_shift):.6f} Å")
     out.print(f"  note      : not subtracted — expected to be numerical artifact")
 
+    # -------------------------------------------------------------------------
+    # Displacement summary
+    # -------------------------------------------------------------------------
     out.print(f"\n--- Cartesian Displacements (MIC via original lattice) ---")
     out.print(f"  MSD (Å²)              : {msd:.6f}")
     out.print(f"  sqrt(MSD) (Å)         : {np.sqrt(msd):.6f}")
@@ -242,31 +276,15 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
             )
 
     # -------------------------------------------------------------------------
-    # StructureMatcher
-    # -------------------------------------------------------------------------
-    out.print(f"\n--- StructureMatcher (symmetry-aware) ---")
-    matcher = StructureMatcher()
-
-    fit = matcher.fit(orig, cg)
-    out.print(f"  Structures match : {fit}")
-
-    rms_result = matcher.get_rms_dist(orig, cg)
-    if rms_result is not None:
-        rms, max_dist = rms_result
-        out.print(f"  RMS distance (normalized)  : {rms:.6f}")
-        out.print(f"  Max distance (normalized)  : {max_dist:.6f}")
-    else:
-        out.print("  RMS distance : could not be computed (structures too dissimilar)")
-
-    # -------------------------------------------------------------------------
     # Top 5 most displaced atoms
     # -------------------------------------------------------------------------
+    atom_ids = list(orig_df.index)
     top5_idx = np.argsort(per_atom_disp)[::-1][:5]
 
     out.print(f"\n--- Top 5 Most Displaced Atoms ---")
-    out.print(f"  {'Index':>6}  {'Species':>8}  {'|Δr| (Å)':>10}")
-    for idx in top5_idx:
-        out.print(f"  {idx:>6}  {species[idx]:>8}  {per_atom_disp[idx]:>10.6f}")
+    out.print(f"  {'Atom ID':>8}  {'Species':>8}  {'|Δr| (Å)':>10}")
+    for i in top5_idx:
+        out.print(f"  {atom_ids[i]:>8}  {species[i]:>8}  {per_atom_disp[i]:>10.6f}")
 
     out.print("\nDone.")
 
