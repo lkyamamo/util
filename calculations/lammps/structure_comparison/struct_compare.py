@@ -5,21 +5,21 @@ Compares an original structure and a CG-relaxed structure, both in LAMMPS
 data file format, using pymatgen. Computes:
   1. ΔV/V  — volumetric change
   2. Lattice parameter comparison (a, b, c, α, β, γ)
-  3. MSD in fractional coordinates (volume-agnostic internal relaxation)
-  4. StructureMatcher — symmetry-aware structural similarity
-  5. Per-species MSD breakdown
-  6. Top 5 most displaced atoms
+  3. MSD in real coordinates (Å), MIC via original lattice
+  4. COM shift — reported as diagnostic only, not subtracted
+  5. StructureMatcher — symmetry-aware structural similarity
+  6. Per-species MSD breakdown
+  7. Top 5 most displaced atoms
 
 Usage:
-  python compare_structures_pymatgen.py                        # default output file
+  python compare_structures_pymatgen.py                         # default output file
+  python compare_structures_pymatgen.py orig.lammps cg.lammps
   python compare_structures_pymatgen.py --output my_results.txt
-  python compare_structures_pymatgen.py --no-export            # print only
+  python compare_structures_pymatgen.py --no-export             # print only
 """
 
 import argparse
-import sys
 import numpy as np
-from pymatgen.core import Structure
 from pymatgen.io.lammps.data import LammpsData
 from pymatgen.analysis.structure_matcher import StructureMatcher
 
@@ -61,8 +61,6 @@ def parse_args():
 # =============================================================================
 # OUTPUT HANDLER
 # =============================================================================
-# Wraps both terminal and file output so the analysis code only
-# calls one print function regardless of export settings.
 
 class OutputHandler:
     def __init__(self, export: bool, filepath: str):
@@ -81,11 +79,64 @@ class OutputHandler:
             self.file.close()
 
     def print(self, *args, **kwargs):
-        # Always print to terminal
         print(*args, **kwargs)
-        # Also write to file if export is on
         if self.file:
             print(*args, **kwargs, file=self.file)
+
+
+# =============================================================================
+# DISPLACEMENT HELPER
+# =============================================================================
+# Displacements are computed in Cartesian space (Å).
+#
+# The MIC is applied by converting the raw Cartesian delta into fractional
+# coordinates of the ORIGINAL lattice, applying np.round() to map each
+# component into (-0.5, 0.5], then converting back to Cartesian Å.
+#
+# Using the original lattice as the reference frame is correct because:
+#   - It defines the periodic boundaries the atoms started in
+#   - The CG lattice has a different basis after box relaxation, so converting
+#     through it would give displacements in an inconsistent frame
+#
+# The COM shift is computed and returned for diagnostic reporting but is NOT
+# subtracted from the displacements. For a two-frame CG comparison, any
+# apparent COM drift is an artifact of box remapping or floating point
+# accumulation during minimization — not a physical rigid-body translation.
+# Subtracting it would be correcting for something that was never physically
+# real. It is reported so the user can verify it is small and flag anything
+# unexpected.
+
+def compute_displacements(cart_orig, cart_cg, lattice_orig, masses):
+    """
+    Compute per-atom displacements in Cartesian Å with MIC applied via the
+    original lattice. COM shift is computed as a diagnostic but not removed.
+
+    Parameters
+    ----------
+    cart_orig    : (N, 3) Cartesian coordinates of original structure (Å)
+    cart_cg      : (N, 3) Cartesian coordinates of CG structure (Å)
+    lattice_orig : (3, 3) lattice vectors of original structure (rows, Å)
+    masses       : (N,)  atomic masses, used only for COM diagnostic
+
+    Returns
+    -------
+    per_atom_disp : (N,)  scalar displacement magnitudes (Å)
+    com_shift     : (3,)  mass-weighted mean displacement vector (Å),
+                          returned for reporting only
+    """
+    delta = cart_cg - cart_orig
+
+    # MIC: convert to fractional of original lattice, wrap, convert back
+    inv_lat    = np.linalg.inv(lattice_orig)
+    delta_frac = delta @ inv_lat
+    delta_frac -= np.round(delta_frac)
+    delta      = delta_frac @ lattice_orig
+
+    # COM shift — diagnostic only, not subtracted
+    com_shift = np.average(delta, axis=0, weights=masses)
+
+    per_atom_disp = np.sqrt(np.sum(delta**2, axis=1))
+    return per_atom_disp, com_shift
 
 
 # =============================================================================
@@ -94,7 +145,9 @@ class OutputHandler:
 
 def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
 
-    # --- Load structures ---
+    # -------------------------------------------------------------------------
+    # Load structures
+    # -------------------------------------------------------------------------
     out.print("=" * 55)
     out.print("  Structure Comparison: Original vs CG Relaxed")
     out.print("=" * 55)
@@ -114,7 +167,14 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
     out.print(f"Number of atoms : {N}")
     out.print(f"Species present : {set(str(s.specie) for s in orig)}")
 
-    # --- Volume ---
+    masses         = np.array([site.specie.atomic_mass for site in orig])
+    species        = [str(site.specie) for site in orig]
+    unique_species = sorted(set(species))
+    lattice_orig   = orig.lattice.matrix    # (3,3), rows = lattice vectors, Å
+
+    # -------------------------------------------------------------------------
+    # Volume
+    # -------------------------------------------------------------------------
     V_orig    = orig.volume
     V_cg      = cg.volume
     dV_over_V = (V_cg - V_orig) / V_orig
@@ -124,7 +184,9 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
     out.print(f"  CG       : {V_cg:.4f} Å³")
     out.print(f"  ΔV/V     : {dV_over_V:+.4f}  ({dV_over_V * 100:+.2f}%)")
 
-    # --- Lattice parameters ---
+    # -------------------------------------------------------------------------
+    # Lattice parameters
+    # -------------------------------------------------------------------------
     lo = orig.lattice
     lc = cg.lattice
 
@@ -141,43 +203,47 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
     ]:
         out.print(f"  {name:<8} {vo:>12.5f} {vc:>12.5f} {vc - vo:>+12.5f}")
 
-    # --- Fractional coordinate MSD with COM correction ---
-    frac_orig = np.array([site.frac_coords for site in orig])
-    frac_cg   = np.array([site.frac_coords for site in cg])
+    # -------------------------------------------------------------------------
+    # Displacements
+    # -------------------------------------------------------------------------
+    cart_orig = np.array([site.coords for site in orig])
+    cart_cg   = np.array([site.coords for site in cg])
 
-    delta = frac_cg - frac_orig
-    delta -= np.round(delta)
+    per_atom_disp, com_shift = compute_displacements(
+        cart_orig, cart_cg, lattice_orig, masses
+    )
 
-    masses     = np.array([site.specie.atomic_mass for site in orig])
-    com_shift  = np.average(delta, axis=0, weights=masses)
+    msd       = np.mean(per_atom_disp**2)
+    mean_disp = np.mean(per_atom_disp)
 
-    out.print(f"\n--- Center of Mass Shift (fractional) ---")
-    out.print(f"  shift     : {com_shift}")
-    out.print(f"  magnitude : {np.linalg.norm(com_shift):.6f}")
+    # COM shift — diagnostic only
+    out.print(f"\n--- Center of Mass Shift (diagnostic only) ---")
+    out.print(f"  shift     : {com_shift} Å")
+    out.print(f"  magnitude : {np.linalg.norm(com_shift):.6f} Å")
+    out.print(f"  note      : not subtracted — expected to be numerical artifact")
 
-    delta -= com_shift
+    out.print(f"\n--- Cartesian Displacements (MIC via original lattice) ---")
+    out.print(f"  MSD (Å²)              : {msd:.6f}")
+    out.print(f"  sqrt(MSD) (Å)         : {np.sqrt(msd):.6f}")
+    out.print(f"  Mean displacement (Å) : {mean_disp:.6f}")
 
-    per_atom_disp = np.sqrt(np.sum(delta**2, axis=1))
-    msd           = np.mean(per_atom_disp**2)
-    mean_disp     = np.mean(per_atom_disp)
-
-    out.print(f"\n--- Fractional Coordinate Displacements (COM-corrected) ---")
-    out.print(f"  MSD (fractional)         : {msd:.6f}")
-    out.print(f"  sqrt(MSD) (fractional)   : {np.sqrt(msd):.6f}")
-    out.print(f"  Mean displacement (frac) : {mean_disp:.6f}")
-
-    # --- Per-species MSD ---
-    species        = [str(site.specie) for site in orig]
-    unique_species = sorted(set(species))
-
+    # -------------------------------------------------------------------------
+    # Per-species MSD
+    # -------------------------------------------------------------------------
     if len(unique_species) > 1:
-        out.print(f"\n--- Per-Species MSD (fractional, COM-corrected) ---")
+        out.print(f"\n--- Per-Species MSD ---")
+        out.print(f"  {'Species':<8} {'MSD (Å²)':>14} {'sqrt(MSD) (Å)':>16} {'n':>6}")
+        out.print(f"  {'-'*48}")
         for sp in unique_species:
             idx    = [i for i, s in enumerate(species) if s == sp]
             sp_msd = np.mean(per_atom_disp[idx]**2)
-            out.print(f"  {sp:<6}  MSD = {sp_msd:.6f}  (n={len(idx)})")
+            out.print(
+                f"  {sp:<8} {sp_msd:>14.6f} {np.sqrt(sp_msd):>16.6f} {len(idx):>6}"
+            )
 
-    # --- StructureMatcher ---
+    # -------------------------------------------------------------------------
+    # StructureMatcher
+    # -------------------------------------------------------------------------
     out.print(f"\n--- StructureMatcher (symmetry-aware) ---")
     matcher = StructureMatcher()
 
@@ -192,11 +258,13 @@ def run_analysis(orig_file: str, cg_file: str, out: OutputHandler):
     else:
         out.print("  RMS distance : could not be computed (structures too dissimilar)")
 
-    # --- Top 5 most displaced atoms ---
+    # -------------------------------------------------------------------------
+    # Top 5 most displaced atoms
+    # -------------------------------------------------------------------------
     top5_idx = np.argsort(per_atom_disp)[::-1][:5]
 
-    out.print(f"\n--- Top 5 Most Displaced Atoms (fractional, COM-corrected) ---")
-    out.print(f"  {'Index':>6}  {'Species':>8}  {'|Δs|':>10}")
+    out.print(f"\n--- Top 5 Most Displaced Atoms ---")
+    out.print(f"  {'Index':>6}  {'Species':>8}  {'|Δr| (Å)':>10}")
     for idx in top5_idx:
         out.print(f"  {idx:>6}  {species[idx]:>8}  {per_atom_disp[idx]:>10.6f}")
 
