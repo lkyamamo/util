@@ -49,6 +49,34 @@ def get_density(unit_cell_dims, data, repeat):
     print("current density: {0} g/cm^3".format(mass/volume_cm))    
 
 
+# given two supercell dimensions, return the third supercell dimension
+# that achieves the target density
+# known_dims: (dim1, dim2) in angstroms for the two known supercell axes
+# axis: which supercell axis is unknown (0=x, 1=y, 2=z)
+def get_third_dimension(target_density, known_dims, data, repeat, axis=2):
+    unit_cell_mass_g = get_unit_cell_mass_grams(data, repeat)
+    total_mass_g = unit_cell_mass_g * repeat[0] * repeat[1] * repeat[2]
+
+    target_volume_A3 = (total_mass_g / target_density) * 1.0e24
+    third_dim = target_volume_A3 / (known_dims[0] * known_dims[1])
+
+    axis_labels = ['x', 'y', 'z']
+    known_axes = [l for i, l in enumerate(axis_labels) if i != axis]
+
+    supercell = [None, None, None]
+    for i, val in zip([j for j in range(3) if j != axis], known_dims):
+        supercell[i] = val
+    supercell[axis] = third_dim
+
+    print("target density: {0} g/cm^3".format(target_density))
+    print("known supercell dims: {0}={1} A, {2}={3} A".format(known_axes[0], known_dims[0], known_axes[1], known_dims[1]))
+    print("required supercell {0} dimension: {1} A".format(axis_labels[axis], third_dim))
+    print("final supercell dimensions (A): {0}x{1}x{2}".format(*supercell))
+    print("final supercell volume: {0} A^3".format(target_volume_A3))
+
+    return third_dim
+
+
 filename = 'masses_quantities.dat'
 data = np.loadtxt(filename)
 
