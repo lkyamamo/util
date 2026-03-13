@@ -7,7 +7,7 @@
 #SBATCH --mem=0
 #SBATCH --exclusive
 #SBATCH --output=STREAM_OUTPUT
-#SBATCH --job-name=1W_int
+#SBATCH --job-name=gga_elastic_222
 #SBATCH --constraint=epyc-7513
 #SBATCH --mail-type=all
 #SBATCH --mail-user=lkyamamo
@@ -22,7 +22,8 @@ date
 RUN_DIR=$SLURM_SUBMIT_DIR
 cp $SLURM_SUBMIT_DIR/../input_files/* $RUN_DIR
 
-export vsp_g="/home1/lkyamamo/executables/bubble_collapse_executables/vasp_gam"
+#export vsp="/home1/lkyamamo/executables/bubble_collapse_executables/vasp_gam"
+export vsp="/home1/lkyamamo/executables/bubble_collapse_executables/vasp_std"
 
 echo "Run directory: $RUN_DIR"
 
@@ -42,7 +43,7 @@ module load intel-oneapi-mkl/2024.0.0
 
 echo "Running in $(pwd)"
 
-srun --mpi=pmix_v5 -n 512 $vsp_g
+srun --mpi=pmix_v5 -n $SLURM_NTASKS $vsp
 date
 echo “simulation finished **************************************”
 echo
