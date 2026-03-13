@@ -2,16 +2,21 @@ import numpy as np
 import sys
 
 def get_unit_cell_mass_grams(data, repeat):
-    print("input masses and quantities")
-    unit_cell_mass_amu = 0
+    """Compute unit cell mass in grams. data is (quantity, mass_amu) per species;
+    quantity is the total count in the supercell (repeat[0]*repeat[1]*repeat[2] unit cells)."""
+    print("input masses and quantities (total in supercell)")
+    total_mass_amu = 0
     for pair in data:
-        print("{0} of mass {1} amu".format(pair[0],pair[1]))
-        unit_cell_mass_amu += pair[0] * pair[1]
+        print("{0} of mass {1} amu".format(pair[0], pair[1]))
+        total_mass_amu += pair[0] * pair[1]
 
     print("repeat dimensions: {}".format(repeat))
+    repeat_product = repeat[0] * repeat[1] * repeat[2]
+    unit_cell_mass_amu = total_mass_amu / repeat_product
 
     unit_cell_mass_g = unit_cell_mass_amu * 1.66054e-24
 
+    print("supercell mass: {0} amu".format(total_mass_amu))
     print("unit cell mass: {0} g".format(unit_cell_mass_g))
     print("unit cell mass: {0} amu".format(unit_cell_mass_amu))
 
@@ -26,10 +31,12 @@ def get_volume(target_density, data, repeat):
     volume_A3 = volume_cm3*1.0e24
 
     print("target unit cell volume: {0} A^3".format(volume_A3))
-    print("target unit cell cube side length: {0} A".format((volume_A3**(1/3))))
-    print("target supercell cube side length: {0} A".format((volume_A3**(1/3))*repeat[0]))
+    unit_cell_side = volume_A3 ** (1 / 3)
+    print("target unit cell cube side length: {0} A".format(unit_cell_side))
+    print("target supercell side lengths (A): {0} x {1} x {2}".format(
+        unit_cell_side * repeat[0], unit_cell_side * repeat[1], unit_cell_side * repeat[2]))
 
-    multiplier = repeat[0]*repeat[1]*repeat[2]
+    multiplier = repeat[0] * repeat[1] * repeat[2]
 
     print("target total volume: {} A^3".format(volume_A3*repeat[0]*repeat[1]*repeat[2]))
     print("target total volume: {} cm^3".format(volume_cm3*repeat[0]*repeat[1]*repeat[2]))
@@ -81,8 +88,9 @@ filename = 'masses_quantities.dat'
 data = np.loadtxt(filename)
 
 target_density = 2.2
-current_unit_cell_dim = (30.1181, 30.1194201, 40.564142)
-repeat = (1,1,1)
+current_unit_cell_dim = (6.3672, 6.3672, 6.3672)
+repeat = (5,5,6)
 
 get_density(current_unit_cell_dim, data, repeat)
 get_volume(target_density, data, repeat)
+get_third_dimension(target_density, (30.1181, 30.1194201), data, repeat, axis=2)
