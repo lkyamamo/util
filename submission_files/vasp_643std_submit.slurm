@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=priyav_216
-#SBATCH --nodes=2
-#SBATCH --ntasks=128
+#SBATCH --nodes=8
+#SBATCH --ntasks=512
 #SBATCH --partition=priya
 #SBATCH --time=240:59:00
 #SBATCH --mem=0
@@ -32,13 +32,12 @@ echo "Run directory: $RUN_DIR"
 ############################
 
 module purge
-module load gcc/13.3.0 
-module load openmpi/5.0.5 
-module load hdf5/1.14.3 
-module load intel-oneapi-mkl/2024.0.0
-
-export LD_LIBRARY_PATH=$HOME/lib:$LD_LIBRARY_PATH
-export PMIX_MCA_gds=hash
+module load legacy/CentOS7
+module load gcc/11.3.0
+module load openmpi/4.1.4
+module load pmix/3.2.3
+module load hdf5/1.12.2
+module load intel-oneapi-mkl/2022.1.0
 
 ############################
 # Run VASP
@@ -46,7 +45,7 @@ export PMIX_MCA_gds=hash
 
 echo "Running in $(pwd)"
 
-srun --mpi=pmix -n $SLURM_NTASKS $vsp
+srun --mpi=pmix_v3 -n $SLURM_NTASKS $vsp
 date
 echo “simulation finished **************************************”
 echo
