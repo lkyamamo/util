@@ -1,96 +1,74 @@
 import numpy as np
 import sys
 
-def get_unit_cell_mass_grams(data, repeat):
+def get_unit_cell_mass(data):
     """Compute unit cell mass in grams. data is (quantity, mass_amu) per species;
-    quantity is the total count in the supercell (repeat[0]*repeat[1]*repeat[2] unit cells)."""
-    print("input masses and quantities (total in supercell)")
+    quantity is the total count in the unit cell."""
+    print("input masses and quantities (total in unit cell)")
     total_mass_amu = 0
     for pair in data:
         print("{0} of mass {1} amu".format(pair[0], pair[1]))
         total_mass_amu += pair[0] * pair[1]
 
-    print("repeat dimensions: {}".format(repeat))
-    repeat_product = repeat[0] * repeat[1] * repeat[2]
-    unit_cell_mass_amu = total_mass_amu / repeat_product
+    mass_g = total_mass_amu * 1.66054e-24
+    print(f"total mass: {total_mass_amu} amu")
+    print(f"total mass: {mass_g} g")
 
-    unit_cell_mass_g = unit_cell_mass_amu * 1.66054e-24
+    return mass_g
 
-    print("supercell mass: {0} amu".format(total_mass_amu))
-    print("unit cell mass: {0} g".format(unit_cell_mass_g))
-    print("unit cell mass: {0} amu".format(unit_cell_mass_amu))
+def get_supercell_mass(data, repeat):
+    u_mass_g = get_unit_cell_mass(data)
+    total_mass_g = u_mass_g*repeat[0]*repeat[1]*repeat[2]
+    total_mass_amu = total_mass_g/1.66054e-24
+    print(f"supercell mass")
+    print(f"total mass: {total_mass_amu} amu")
+    print(f"total mass: {total_mass_g} g")
+    total_atoms = 0
+    for pair in data:
+        current_atoms = pair[0]*repeat[0]*repeat[1]*repeat[2]
+        total_atoms += current_atoms
+        print(f"Number of atoms of mass {pair[1]} amu: {current_atoms}")
+    print(f"total atoms: {total_atoms}")
+    return total_mass_g
 
-    return unit_cell_mass_g
+def get_volume(dimensions):
+    return dimensions[0]*dimensions[1]*dimensions[2]
 
-def get_volume(target_density, data, repeat):
-    density = target_density
-
-    print("target density: {0} g/cm^3".format(density))
-
-    volume_cm3 = (get_unit_cell_mass_grams(data,repeat)/density)
-    volume_A3 = volume_cm3*1.0e24
-
-    print("target unit cell volume: {0} A^3".format(volume_A3))
-    unit_cell_side = volume_A3 ** (1 / 3)
-    print("target unit cell cube side length: {0} A".format(unit_cell_side))
-    print("target supercell side lengths (A): {0} x {1} x {2}".format(
-        unit_cell_side * repeat[0], unit_cell_side * repeat[1], unit_cell_side * repeat[2]))
-
-    multiplier = repeat[0] * repeat[1] * repeat[2]
-
-    print("target total volume: {} A^3".format(volume_A3*repeat[0]*repeat[1]*repeat[2]))
-    print("target total volume: {} cm^3".format(volume_cm3*repeat[0]*repeat[1]*repeat[2]))
+    
 
 # side_length in angstroms
-def get_density(unit_cell_dims, data, repeat):
+def get_density(data, dimensions):
 
-    volume = unit_cell_dims[0]*unit_cell_dims[1]*unit_cell_dims[2] 
-    print("current unit cell volume: {0} A^3".format(volume))
-    supercell_volume = volume*repeat[0]*repeat[1]*repeat[2]
-    print("current supercell dimensions (A): {0}x{1}x{2}".format(unit_cell_dims[0]*repeat[0],unit_cell_dims[1]*repeat[1],unit_cell_dims[2]*repeat[2])) 
-    print("current supercell volume: {0} A^3".format(supercell_volume))
+    volume_A3 = get_volume(dimensions)
+    mass = get_unit_cell_mass(data)
+    density_g_cm3 = mass/volume_A3 * 10**24
+    return density_g_cm3
 
-    volume_cm = volume * 1.0e-24
-
-    mass = get_unit_cell_mass_grams(data, repeat)
-    print("current density: {0} g/cm^3".format(mass/volume_cm))    
-
-
-# given two supercell dimensions, return the third supercell dimension
-# that achieves the target density
-# known_dims: (dim1, dim2) in angstroms for the two known supercell axes
-# axis: which supercell axis is unknown (0=x, 1=y, 2=z)
-def get_third_dimension(target_density, known_dims, data, repeat, axis=2):
-    unit_cell_mass_g = get_unit_cell_mass_grams(data, repeat)
-    total_mass_g = unit_cell_mass_g * repeat[0] * repeat[1] * repeat[2]
-
-    target_volume_A3 = (total_mass_g / target_density) * 1.0e24
-    third_dim = target_volume_A3 / (known_dims[0] * known_dims[1])
-
-    axis_labels = ['x', 'y', 'z']
-    known_axes = [l for i, l in enumerate(axis_labels) if i != axis]
-
-    supercell = [None, None, None]
-    for i, val in zip([j for j in range(3) if j != axis], known_dims):
-        supercell[i] = val
-    supercell[axis] = third_dim
-
-    print("target density: {0} g/cm^3".format(target_density))
-    print("known supercell dims: {0}={1} A, {2}={3} A".format(known_axes[0], known_dims[0], known_axes[1], known_dims[1]))
-    print("required supercell {0} dimension: {1} A".format(axis_labels[axis], third_dim))
-    print("final supercell dimensions (A): {0}x{1}x{2}".format(*supercell))
-    print("final supercell volume: {0} A^3".format(target_volume_A3))
+# given 2 supercell dimensions return the last that would yield the target density
+def get_third_dimension(data, known_dimensions, repeat, target_density):
+    total_mass_g = get_supercell_mass(data, repeat) # total mass in the supercell (g)
+    third_dim = total_mass_g/(target_density * known_dimensions[0] * known_dimensions[1]) * 10**24 # convert to A
+    
+    print(f"final supercell dimension: {third_dim} A")
 
     return third_dim
+
+
+    
 
 
 filename = 'masses_quantities.dat'
 data = np.loadtxt(filename)
 
 target_density = 1.0
-current_unit_cell_dim = (6.3672, 6.3672, 6.3672)
-repeat = (6,5,7)
+current_unit_cell_dim = (21.5197,30.1194,40.5641)
+repeat = (1,1,1)
+known_dimensions = (30.1194201, 40.564142)
 
-get_density(current_unit_cell_dim, data, repeat)
-get_volume(target_density, data, repeat)
-get_third_dimension(target_density, (30.1194201,40.5641), data, repeat, axis=0)
+current_density = get_density(data, current_unit_cell_dim)
+print(f"current density: {current_density} g/cm^3")
+print(f"target density: {target_density} g/cm^3")
+print(f"Number of atoms of mass {data[0][1]} amu: {data[0][0]}")
+print(f"Number of atoms of mass {data[1][1]} amu: {data[1][0]}")
+
+get_third_dimension(data, known_dimensions, repeat, target_density)
