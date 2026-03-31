@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -104,8 +105,20 @@ def average_count_silanols(
     return total_silanols / (end_frame - start_frame), ids
 
 
-def main() -> None:
-    base_dir = Path(__file__).resolve().parent
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Compute silanol count and RDF (OVITO).")
+    p.add_argument(
+        "--base-dir",
+        type=Path,
+        default=None,
+        help="Directory containing '2.0_64.data' (defaults to this script's directory).",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    args = _parse_args(argv)
+    base_dir = args.base_dir.resolve() if args.base_dir is not None else Path(__file__).resolve().parent
     output_dir = base_dir / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
