@@ -87,10 +87,10 @@ def get_third_dimension(target_density, known_dims, data, repeat, axis=2):
 filename = 'masses_quantities.dat'
 data = np.loadtxt(filename)
 
-target_density = 2.2
+target_density = 1.0
 current_unit_cell_dim = (6.3672, 6.3672, 6.3672)
-repeat = (5,5,6)
+repeat = (6,5,7)
 
 get_density(current_unit_cell_dim, data, repeat)
 get_volume(target_density, data, repeat)
-get_third_dimension(target_density, (30.1181, 30.1194201), data, repeat, axis=2)
+get_third_dimension(target_density, (30.1194201,40.5641), data, repeat, axis=0)
