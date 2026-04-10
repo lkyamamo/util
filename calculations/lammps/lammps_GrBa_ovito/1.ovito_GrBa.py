@@ -1,5 +1,5 @@
 from ovito.io import import_file, export_file
-from ovito.modifiers import CoordinationAnalysisModifier, TimeAveragingModifier, CreateBondsModifier, BondAnalysisModifier
+from ovito.modifiers import CoordinationAnalysisModifier, TimeAveragingModifier, CreateBondsModifier, BondAnalysisModifier, StructureFactorModifier
 import numpy as np
 import pandas as pd
 import re
@@ -15,6 +15,11 @@ gr_cutoff = 12
 ba_bins = 180
 ba_cutoffs=  [[5.0, 1.15],
              [1.15, 1.75]]
+
+sf_k_min = 0
+sf_k_max = 25
+sf_k_bins = 200
+sf_mode = StructureFactorModifier.Mode.Debye
 ###############################
 
 DIFFRACTION_LENGTHS = {"Si": 4.1491/(10**5),
@@ -32,6 +37,12 @@ def create_table(tag, data):
         case "gr":
             table_name='coordination-rdf[average]'
             headers_name.append("distance")
+        case "sf":
+            table_name='structure-factor[average]'
+            headers_name.append("k")
+        case "fz":
+            table_name='faber-ziman-structure-factor[average]'
+            headers_name.append("k")
 
     table_data = data.tables[table_name].xy()
     headers_num = data.tables[table_name].y.component_names
@@ -121,11 +132,51 @@ total_gr_df = pd.DataFrame(data=table_data[:],columns=["total_gr"])
 
 gr_df = pd.concat([gr_df,total_gr_df], axis=1)
 
+# partial and Faber-Ziman structure factors
+pipeline3 = import_file(filename)
+
+sf_modifier = StructureFactorModifier(
+    k_min=sf_k_min, k_max=sf_k_max, k_bins=sf_k_bins,
+    mode=sf_mode, partial=True
+)
+pipeline3.modifiers.append(sf_modifier)
+
+sf_averaging_modifier = TimeAveragingModifier(operate_on='table:structure-factor')
+sf_averaging_modifier.interval = (pipeline3.num_frames - frame_count - 1, pipeline3.num_frames - 1)
+pipeline3.modifiers.append(sf_averaging_modifier)
+
+fz_averaging_modifier = TimeAveragingModifier(operate_on='table:faber-ziman-structure-factor')
+fz_averaging_modifier.interval = (pipeline3.num_frames - frame_count - 1, pipeline3.num_frames - 1)
+pipeline3.modifiers.append(fz_averaging_modifier)
+
+data = pipeline3.compute()
+
+sf_df = create_table("sf", data)
+fz_df = create_table("fz", data)
+
+# neutron S(k) from Faber-Ziman partials: S_N(k) = sum_{a,b} (2-d_ab) c_a c_b b_a b_b A_ab(k) / <b>^2
+neutron_sf = pd.DataFrame({"neutron_sf": np.zeros(len(fz_df))})
+
+for name in fz_df.columns:
+    if name == "k":
+        continue
+    elements = name.split("-")
+    kronecker = 1 if elements[0] == elements[1] else 0
+    weight = (2 - kronecker)
+    for e in elements:
+        weight *= DIFFRACTION_LENGTHS[e] * concentrations[e]
+    neutron_sf["neutron_sf"] += weight * fz_df[name]
+
+neutron_sf = neutron_sf * c2_in
+sf_df = pd.concat([sf_df, fz_df.drop(columns="k"), neutron_sf], axis=1)
+
 print(gr_df)
 print(ba_df)
+print(sf_df)
 
 gr_df.to_csv("gr.csv")
 ba_df.to_csv("ba.csv")
+sf_df.to_csv("sf.csv")
 
 
 
