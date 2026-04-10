@@ -9,8 +9,8 @@ Primary options:
     --remote-path PATH           Analyze a remote trajectory file via SSH/SFTP.
     --frames START END           Optional frame window [START, END).
     --surface-axis {x,y,z}       Axis used to detect the Si-gap interfaces.
-    --surface-thickness FLOAT    Symmetric +/- window (Angstrom) around each
-                                 Si-gap interface for surface filtering.
+    --surface-thickness FLOAT    Depth (Angstrom) into the bulk from each
+                                 Si-gap interface; unrestricted towards the vacuum.
     --no-surface-filter          Disable interface filtering and count all
                                  silanol candidates.
     --type-si/--type-o/--type-h  Optional explicit particle type IDs.
@@ -196,10 +196,15 @@ def _ensure_bonds(
 # PBC helpers
 # ---------------------------------------------------------------------------
 
-def _mic_dist(a: float, b: float, box_length: float) -> float:
-    """Minimum-image distance between two coordinates along a single periodic axis."""
-    d = abs(a - b)
-    return min(d, box_length - d)
+def _signed_mic(ref: float, pos: float, box_length: float) -> float:
+    """Signed minimum-image displacement from ref to pos along one periodic axis.
+
+    Positive: pos is on the vacuum/gap side of si_lo (or away from bulk for si_hi).
+    Negative: pos is on the bulk side of si_lo (or towards bulk for si_hi).
+    """
+    d = pos - ref
+    d -= box_length * round(d / box_length)
+    return d
 
 
 def _si_gap_boundaries(
@@ -351,8 +356,8 @@ def compute_silanols(
                     i
                     for i in matched_indices
                     if (
-                        _mic_dist(float(pos[i, ax]), si_lo, box_length) <= thickness
-                        or _mic_dist(float(pos[i, ax]), si_hi, box_length) <= thickness
+                        _signed_mic(si_lo, float(pos[i, ax]), box_length) >= -thickness
+                        or _signed_mic(si_hi, float(pos[i, ax]), box_length) <= thickness
                     )
                 ]
 
