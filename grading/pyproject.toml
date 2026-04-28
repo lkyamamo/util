@@ -1,0 +1,13 @@
+[project]
+name = "grading-ai"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "nbformat>=5.10.4",
+    "openai>=2.32.0",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.2",
+    "pdfplumber>=0.11.9",
+    "python-docx>=1.1.0",
+    "tqdm>=4.67.3",
+]

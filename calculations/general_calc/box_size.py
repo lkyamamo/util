@@ -61,9 +61,9 @@ filename = 'masses_quantities.dat'
 data = np.loadtxt(filename)
 
 target_density = 1.0
-current_unit_cell_dim = (30.1181,30.1194,38.2032)
-repeat = (1,1,1)
-known_dimensions = (10.0163, 10.0162)
+current_unit_cell_dim = (6.3672,6.3672,6.3672)
+repeat = (1,2,2)
+known_dimensions = (9.9853, 13.8679)
 
 current_density = get_density(data, current_unit_cell_dim)
 print(f"current density: {current_density} g/cm^3")
