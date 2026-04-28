@@ -8,15 +8,24 @@ optionally fill with atoms carved from a second LAMMPS data file.
 Both data files are assumed to share the same coordinate system.
 
 Usage: edit the CONFIG section below and run as a script,
-       or import create_bubble() directly.
+       or import create_bubble() directly. By default the output path is beside
+       the input file, named ``<stem>_bubble<suffix>``.
 """
 
 import numpy as np
 from collections import defaultdict
+from pathlib import Path
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-INPUT_FILE  = "water.data"
-OUTPUT_FILE = "water_bubble.data"
+INPUT_FILE = "water.data"
+# None = same directory as INPUT_FILE, filename stem + "_bubble" + extension (e.g. water.data → water_bubble.data)
+OUTPUT_FILE: str | None = None
+
+
+def default_bubble_output_path(input_file: str) -> str:
+    """Output path beside input: ``<stem>_bubble<suffix>``."""
+    p = Path(input_file)
+    return str(p.with_name(f"{p.stem}_bubble{p.suffix}"))
 
 # (x, y, z) bubble center positions in Angstroms
 BUBBLE_CENTERS: list[tuple[float, float, float]] = [
@@ -521,9 +530,9 @@ def write_lammps_data(data: dict, filename: str) -> None:
 
 def create_bubble(
     input_file:          str,
-    output_file:         str,
     centers:             list[tuple[float, float, float]],
     radius:              float,
+    output_file:         str | None = None,
     water_mol_size:      int            = 3,
     filler_file:         str | None     = None,
     filler_mol_size:     int | None     = None,
@@ -534,11 +543,12 @@ def create_bubble(
 
     Args:
         input_file:        LAMMPS data file (silica slab + water).
-        output_file:       Path for the modified output file.
         centers:           List of (x, y, z) bubble center positions in Angstroms.
                            Each center must lie in the water medium.
         radius:            Bubble radius in Angstroms.
                            Must not reach the silica slab from any center.
+        output_file:       Path for the modified output file. If omitted, writes beside
+                           ``input_file`` as ``<stem>_bubble<suffix>``.
         water_mol_size:    Atoms per water molecule (default 3 for SPC/TIP models).
         filler_file:       Optional LAMMPS data file to carve filler atoms from.
                            Must share the same coordinate system as input_file.
@@ -547,6 +557,9 @@ def create_bubble(
                            None = auto-detect (any atom not in a complete water
                            molecule is treated as silica).
     """
+    if output_file is None:
+        output_file = default_bubble_output_path(input_file)
+
     print(f"Reading {input_file} ...")
     data = parse_lammps_data(input_file)
     print(f"  {len(data['atoms'])} atoms  |  {len(data['bonds'])} bonds  |  "
@@ -599,9 +612,9 @@ def create_bubble(
 if __name__ == '__main__':
     create_bubble(
         input_file=INPUT_FILE,
-        output_file=OUTPUT_FILE,
         centers=BUBBLE_CENTERS,
         radius=BUBBLE_RADIUS,
+        output_file=OUTPUT_FILE,
         water_mol_size=WATER_MOL_SIZE,
         filler_file=FILLER_FILE,
         filler_mol_size=FILLER_MOL_SIZE,

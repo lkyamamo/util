@@ -17,14 +17,27 @@ date
 
 ############################
 # Paths
+#
+# Canonical inputs live in ../input_files/ relative to submit (never copied).
+# Symlinks with the same basenames are created into the run (submit) directory so LAMMPS
+# can resolve the same filenames as before while cwd is the run directory — dumps, restarts,
+# log, etc., go alongside the job submission directory.
 ############################
 
 RUN_DIR=$SLURM_SUBMIT_DIR
-cp $SLURM_SUBMIT_DIR/../input_files/* $RUN_DIR
+INPUT_DIR="$(cd "$RUN_DIR/../input_files" && pwd)"
 
 export lmp="/home1/lkyamamo/executables/lammps/lmp_mpi_2019"
 
-echo "Run directory: $RUN_DIR"
+echo "Run directory (cwd for LAMMPS): $RUN_DIR"
+echo "Input files symlinked from: $INPUT_DIR"
+
+cd "$RUN_DIR"
+shopt -s nullglob
+for entry in "$INPUT_DIR"/*; do
+  ln -sfn "$entry" "$(basename "$entry")"
+done
+shopt -u nullglob
 
 ############################
 # Load modules
@@ -38,11 +51,11 @@ module load fftw
 # Run LAMMPS
 ############################
 
-cd $RUN_DIR
-
 echo "Running in $(pwd)"
 
-srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp -in in.input
+srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp \
+  -log log.lammps \
+  -in in.input
 date
 echo “simulation finished **************************************”
 echo
