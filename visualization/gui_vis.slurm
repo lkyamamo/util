@@ -1,15 +1,16 @@
 #!/bin/bash
 #SBATCH --job-name=paraview_server
 #SBATCH --nodes=2
-#SBATCH --ntasks-per-node=64
+#SBATCH --ntasks-per-node=128
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=0
 #SBATCH --time=02:00:00
 #SBATCH --partition=priya
 #SBATCH --output=paraview_%j.log
-#SBATCH --constraint=epyc-7513
+#SBATCH --constraint=epyc-9554
 
 module purge
+module load legacy/CentOS7
 module load paraview/5.11.1-server
 
 # Print connection info to log file so you know where to tunnel
