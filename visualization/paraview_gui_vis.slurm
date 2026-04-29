@@ -21,6 +21,6 @@ echo "Tunnel command:"
 echo "  ssh -L 11111:$(echo $SLURM_NODELIST | cut -d',' -f1):11111 $USER@<cluster_login_node>"
 echo "============================================"
 
-mpirun -np $SLURM_NTASKS pvserver \
+srun --ntasks=$SLURM_NTASKS pvserver \
     --server-port=11111 \
     --force-offscreen-rendering
