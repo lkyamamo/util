@@ -1,0 +1,28 @@
+# create_bubble.in
+# Remove a spherical bubble of water from a silica/water system.
+# Broken water molecules at the bubble boundary are cleaned up automatically.
+#
+# Usage:
+#   lammps -in create_bubble.in
+#   mpirun -np 8 lammps -in create_bubble.in
+
+# ── settings ──────────────────────────────────────────────────────────────────
+variable  input_file    string  "system.data"
+variable  output_file   string  "system_bubble.data"
+
+# bubble center (Angstroms)
+variable  cx   equal  400.0
+variable  cy   equal  400.0
+variable  cz   equal  881.0
+
+variable  radius  equal  150.0
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+atom_style  full
+read_data   ${input_file}
+
+region       bubble  sphere  ${cx} ${cy} ${cz}  ${radius}  side in
+delete_atoms region  bubble  mol yes
+
+write_data  ${output_file}

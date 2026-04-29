@@ -2,13 +2,13 @@ module stat_mod
 
   implicit none
   real(8),parameter :: pi = 4.d0*datan(1.d0)
-  integer,parameter :: NTABLES = 1000, NTABLES_BA=180, NTABLES_SQ=1000
+  integer,parameter :: NTABLES = 1000, NTABLES_BA=1000, NTABLES_SQ=2000
   !real(8),parameter :: RCUT = 7d0, DRI = NTABLES/RCUT
   !real(8),parameter :: L_orig = 14.69d0
   !real(8),parameter :: RCUT = sqrt(3d0)*L_orig/2d0, DRI = NTABLES/RCUT
-  real(8),parameter :: RCUT = 10.0d0, DRI = NTABLES/RCUT
+  real(8),parameter :: RCUT = 12.0d0, DRI = NTABLES/RCUT
   !real(8),parameter :: RCUT = 7d0, DRI = NTABLES/RCUT
-  real(8),parameter :: QCUT = 10.0d0, DQ = QCUT/NTABLES_SQ
+  real(8),parameter :: QCUT = 20.0d0, DQ = QCUT/NTABLES_SQ
   real(8),parameter :: BA_MAX = 180.0d0, DBA = NTABLES_BA/BA_MAX
   integer,parameter :: MAXNEIGHBS = 2000
 
@@ -460,7 +460,7 @@ contains
      ne = size(c%elems)
      c%num_atom_types = ne
 
-     allocate(c%gr(ne,ne,NTABLES),c%nr(ne,ne,NTABLES),c%sq(ne,ne,NTABLES),c%ba(ne,ne,ne,NTABLES_BA))
+     allocate(c%gr(ne,ne,NTABLES),c%nr(ne,ne,NTABLES),c%sq(ne,ne,NTABLES_SQ),c%ba(ne,ne,ne,NTABLES_BA))
      c%gr=0.d0;  c%nr=0.d0;  c%sq=0.d0; c%ba=0.d0
 
      allocate(c%concentration(ne), c%num_atoms_per_type(ne))
