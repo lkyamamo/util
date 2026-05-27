@@ -3,8 +3,8 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --partition=priya
-#SBATCH --time=01:00:00
-#SBATCH --mem=0
+#SBATCH --time=24:00:00
+#SBATCH --mem=31GB
 #SBATCH --exclusive
 #SBATCH --output=msd_%a.log
 #SBATCH --job-name=MSD_batch
