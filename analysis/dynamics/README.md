@@ -6,7 +6,7 @@
 
 | File | Purpose |
 |------|---------|
-| `msd_submit.slurm` | Batch MSD job on the cluster |
+| `msd_submit.slurm` | Slurm **job array** — one MSD run per temperature |
 | `lammps_custom_to_input_xyz.py` | LAMMPS custom dump → MSD input |
 | `1.robust_lammps_to_input_xyz.py` | Legacy dump converter (hardcoded box) |
 | `2.xyz_split.sh` | Split `calculation.xyz` for `qmd_corr.exe` |
@@ -21,29 +21,75 @@
 Build executables: `make -C src msd` (outputs `src/qmd_msd.exe`).  
 `make -C src corr` requires the Boost module (`BOOST_ROOT`) on the cluster.
 
-Sanity check after layout changes:
-
-```bash
-cd analysis/dynamics
-bash verify_setup.sh
-```
-
 ---
 
 ## `msd_submit.slurm`
 
-Batch Slurm job that runs MSD analysis for multiple temperatures in one submission.
+Submits **one Slurm job array** so each temperature runs as its own parallel task. This is the reliable way to run several `qmd_msd.exe` jobs at once on the cluster (each array task is a separate allocation step).
 
-1. Reads settings from the **edit block** at the top (paths, temperature list, MSD parameters).
-2. Resolves `INPUT_DIR` and `DYNAMICS_DIR` to absolute paths (relative paths are taken from the submit directory).
-3. Builds `src/qmd_msd.exe` via `make msd` in `src/`.
-4. Runs each temperature **in parallel** (up to `MAX_PARALLEL`, default `SLURM_NTASKS`):
-   - Reads `{T}C.custom` from `INPUT_DIR`
-   - Converts it to MSD input with `lammps_custom_to_input_xyz.py`
-   - Runs `qmd_msd.exe` in a dedicated output folder `msd_{T}C/` under the submit directory
-   - Writes `msd.dat`, `dos.dat`, `{T}C_calculation.xyz`, and `run.log` there
+### Slurm resources
 
-Submit from any directory; edit `INPUT_DIR`, `DYNAMICS_DIR`, and the other variables before `sbatch`.
+| Directive | Value | Meaning |
+|-----------|-------|---------|
+| `--array=0-7` | 8 tasks | One task per temperature (must match `TEMPERATURES` length) |
+| `--ntasks=8` | 8 | Tasks per array job (see cluster docs; MSD itself uses one core) |
+| `--output=msd_%a.log` | per task | Log file per array index (`%a` = array task id) |
+| `--exclusive` | node | Full node per array task |
+| `--time=24:00:00` | 24 h | Wall time per array task |
+
+### What each array task does
+
+1. Picks a temperature: `T="${TEMPERATURES[$SLURM_ARRAY_TASK_ID]}"` (e.g. index `3` → `60` → input `60C.custom`).
+2. Reads **`${INPUT_DIR}/${T}C.custom`** (default `../input_files/60C.custom` relative to the submit directory).
+3. Builds **`src/qmd_msd.exe`** (`make msd` in `DYNAMICS_DIR/src`).
+4. Converts the dump → **`${RUN_DIR}/msd_${T}C/${T}C_calculation.xyz`** via `lammps_custom_to_input_xyz.py`.
+5. Runs **`qmd_msd.exe`** in **`msd_${T}C/`** (writes `msd.dat` and `dos.dat` there).
+
+Array tasks do not share output directories, so nothing is overwritten between temperatures.
+
+### What to edit before `sbatch`
+
+At the top of `msd_submit.slurm`:
+
+```bash
+TEMPERATURES=(15 30 45 60 75 90 120 150)   # must match --array=0-7 (N temps → --array=0-(N-1))
+INPUT_DIR="../input_files"
+DYNAMICS_DIR="/path/to/util/analysis/dynamics"
+```
+
+Also set MSD arguments passed to `qmd_msd.exe` (if not set, the script may pass empty values — add these lines before the `qmd_msd.exe` call):
+
+```bash
+CORR_LENGTH=5000
+CORR_INTERVAL=10
+TIME_UNIT=2.5
+MAX_FREQ=0.5
+```
+
+Keep **`#SBATCH --array=0-7`** in sync with **`TEMPERATURES`**: 8 temperatures → `--array=0-7`; 5 temperatures → `--array=0-4`, etc.
+
+### Submit
+
+```bash
+cd /path/to/your/run_directory          # where outputs (msd_*C/) should go
+sbatch /path/to/util/analysis/dynamics/msd_submit.slurm
+```
+
+- **`SLURM_SUBMIT_DIR`** becomes `RUN_DIR` (output folders `msd_15C/`, `msd_30C/`, … are created there).
+- Put **`{T}C.custom`** files in `INPUT_DIR` (or adjust `INPUT_DIR` to point at your dumps).
+- Set **`DYNAMICS_DIR`** to the `analysis/dynamics` folder in this repo (absolute path recommended).
+
+### Outputs (per temperature)
+
+```
+msd_30C/
+  30C_calculation.xyz
+  msd.dat
+  dos.dat
+msd_30.log          # from msd_%a.log (array index, not temperature)
+```
+
+Check **`msd_<array_index>.log`** in the submit directory for Slurm stdout/stderr for each task.
 
 ---
 
@@ -108,7 +154,7 @@ If only the trajectory file is given, defaults are derived from the number of fr
 | `msd.dat` | Time [fs], MSD and VAC per element, sample counts, truncated VAC, current correlation `Jt` |
 | `dos.dat` | Frequency [meV], DOS per element, total DOS, `JDoS` |
 
-`msd_submit.slurm` runs each temperature in its own subdirectory so these fixed filenames do not collide.
+`msd_submit.slurm` runs each temperature in its own `msd_{T}C/` subdirectory so these fixed filenames do not collide.
 
 ### Example
 
