@@ -18,6 +18,9 @@ The project folder should contain:
 Usage:
     python report_reviewer_from_results.py /path/to/project1
     python report_reviewer_from_results.py /path/to/project1 --port 8001
+
+Excel export merges into an existing workbook when present (Sheet N inferred like the
+code reviewer); it does not replace a master gradebook with a minimal sheet.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ if str(_AIDIR) not in sys.path:
     sys.path.insert(0, str(_AIDIR))
 
 from report_grader import _report_file_kind, list_submission_units
-from reviewer_from_results import FeedbackStore
+from reviewer_from_results import FeedbackStore, _resolve_assignment_num_for_report_reviewer
 
 try:
     import openpyxl
@@ -170,19 +173,33 @@ class ReportResultsParser:
         )
 
     def export_to_excel(self):
-        """Write saved feedback to an xlsx file (same behavior as the code reviewer)."""
+        """Merge into an existing gradebook when the output file exists; never replace it blindly."""
         if not _OPENPYXL_AVAILABLE:
             return False, "openpyxl is not installed (pip install openpyxl)"
         if not self.feedback._data:
             return False, "No feedback data to export."
-        output_path = self.grading_xlsx
-        if not output_path:
-            output_path = self.feedback.csv_path.with_suffix(".xlsx")
-        if output_path.exists() and self.assignment_num:
-            return self._merge_into_existing_xlsx(output_path)
+        output_path = Path(self.grading_xlsx) if self.grading_xlsx else self.feedback.csv_path.with_suffix(".xlsx")
+        if output_path.exists():
+            num, reason = _resolve_assignment_num_for_report_reviewer(
+                self.assignment_num,
+                output_path,
+                self.report_json,
+                self.submissions_root,
+            )
+            if num is None:
+                return False, (
+                    f"Refusing to overwrite {output_path.name}: could not infer assignment sheet number. "
+                    f"{reason.capitalize()}. "
+                    "Fix row 1 headers, rename the project folder (e.g. project9), or pass --assignment-num."
+                )
+            ok, msg = self._merge_into_existing_xlsx(output_path, assignment_num=num)
+            if ok:
+                msg = f"{msg} (using Sheet {num}; {reason})"
+            return ok, msg
         return self._create_new_xlsx(output_path)
 
     def _create_new_xlsx(self, output_path: Path):
+        output_path = Path(output_path)
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Grades"
@@ -205,9 +222,10 @@ class ReportResultsParser:
         wb.save(str(output_path))
         return True, f"Exported {row - 2} student(s) to {output_path.name}."
 
-    def _merge_into_existing_xlsx(self, output_path: Path):
-        point_col_name = f"Sheet {self.assignment_num} Point Grade"
-        text_col_name = f"Sheet {self.assignment_num} Text Grade"
+    def _merge_into_existing_xlsx(self, output_path: Path, assignment_num: int):
+        output_path = Path(output_path)
+        point_col_name = f"Sheet {assignment_num} Point Grade"
+        text_col_name = f"Sheet {assignment_num} Text Grade"
         wb = openpyxl.load_workbook(str(output_path))
         ws = wb.active
         header_row = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
@@ -687,7 +705,7 @@ def main() -> None:
         "--assignment-num",
         type=int,
         default=None,
-        help="Sheet number for merge columns in the grading xlsx",
+        help="Optional override for Sheet N when merging (otherwise inferred from workbook or paths)",
     )
     args = ap.parse_args()
 

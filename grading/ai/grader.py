@@ -1,4 +1,55 @@
 #!/usr/bin/env python3
+"""
+AI-assisted assignment grader: build a rubric from an assignment sheet (or load one),
+then score student submissions into CSVs.
+
+Prerequisites:
+  - OPENAI_API_KEY (or other credentials your OpenAI SDK picks up).
+  - Python deps: pdfplumber, pandas, nbformat, tqdm, openai.
+
+Rubric source (pick one path):
+  - --rubric PATH.json
+      JSON with either {"requirements": [{"id","type","description"}, ...]}
+      or flat keys written_requirements / code_requirements / integration_requirements
+      (list of strings; each string becomes id+description).
+  - --assignment_sheet SHEET.pdf
+      Extracts text from the PDF and asks the model to emit a rubric.
+      If --rubric_output is set, saves JSON there; an existing file is reused unless
+      --regrade-all is passed (rubric regeneration: omit grading flags or pass --regrade-all).
+
+Grading (use one of these; omit both for rubric-only runs):
+  - --submissions ROOT
+      One subdirectory per student (folder name = student id). Under each folder, collects:
+      .pdf -> written text; .py and .ipynb -> code text.
+  - --single-submission STUDENT_DIR
+      Path to a single student's folder (same file scan as above). The CSV ``Student`` column
+      is the folder's base name. Existing rows for that student are replaced in the output CSVs.
+
+  - Code-type requirements are evaluated by the model and written to {prefix}_code.csv.
+  - Written and integration requirements are not auto-scored; they appear as NEEDS_REVIEW
+    in {prefix}_written.csv.
+
+Outputs (default prefix ``results``):
+  - {output_prefix}_code.csv
+  - {output_prefix}_written.csv
+
+Incremental runs (batch ``--submissions`` only): if the CSVs already exist, students already
+listed are skipped unless you pass --regrade-all. ``--single-submission`` always grades that folder
+and updates its row(s) in existing CSVs.
+
+Examples:
+  # Generate rubric only
+  python grader.py --assignment_sheet hw1.pdf --rubric_output rubric.json
+
+  # Grade one student folder
+  python grader.py --single-submission ./submissions/alice --rubric rubric.json
+
+  # Grade every student directory under a root
+  python grader.py --submissions ./submissions --rubric rubric.json
+
+  # Sheet -> rubric file -> grade in one go
+  python grader.py --assignment_sheet hw1.pdf --rubric_output rubric.json --submissions ./submissions --output_prefix hw1
+"""
 
 import os
 import re
@@ -334,19 +385,67 @@ Code:
 # ----------------------------
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--submissions")
-    parser.add_argument("--rubric")
-    parser.add_argument("--assignment_sheet")
-    parser.add_argument("--rubric_output")
-    parser.add_argument("--output_prefix", default="results")
-    parser.add_argument("--regrade-all", action="store_true",
-                        help="Re-grade all students even if results already exist")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate a grading rubric from an assignment PDF and/or grade student folders "
+            "against a rubric using the OpenAI API."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Rubric: pass --rubric, or --assignment_sheet (optional --rubric_output). "
+            "Without --submissions or --single-submission, only rubric generation/save runs. "
+            "Use either --submissions or --single-submission, not both. "
+            "See the module docstring for full usage."
+        ),
+    )
+    grade_group = parser.add_mutually_exclusive_group()
+    grade_group.add_argument(
+        "--submissions",
+        metavar="DIR",
+        help=(
+            "Root directory; each immediate subdirectory is one student. "
+            "Scans .pdf (written), .py, .ipynb (code). Omit with --single-submission or for rubric-only."
+        ),
+    )
+    grade_group.add_argument(
+        "--single-submission",
+        metavar="DIR",
+        help=(
+            "Single student's submission directory (same scan as under --submissions). "
+            "Student label is the directory's base name; merges into CSVs by replacing that row."
+        ),
+    )
+    parser.add_argument(
+        "--rubric",
+        metavar="JSON",
+        help="Path to rubric JSON (requirements list or flat *_requirements keys).",
+    )
+    parser.add_argument(
+        "--assignment_sheet",
+        metavar="PDF",
+        help="Assignment handout PDF; text is extracted to auto-generate a rubric.",
+    )
+    parser.add_argument(
+        "--rubric_output",
+        metavar="JSON",
+        help="Write generated rubric here; if it exists, it is reused unless --regrade-all.",
+    )
+    parser.add_argument(
+        "--output_prefix",
+        default="results",
+        metavar="PREFIX",
+        help="Basename for PREFIX_code.csv and PREFIX_written.csv (default: results).",
+    )
+    parser.add_argument(
+        "--regrade-all",
+        action="store_true",
+        help="Ignore existing CSV rows and existing rubric cache; re-grade everyone / regenerate rubric path.",
+    )
 
     args = parser.parse_args()
     rubric, requirements = load_or_generate_rubric(args)
 
-    if not args.submissions:
+    if not args.submissions and not args.single_submission:
         print("Rubric generation complete.")
         return
 
@@ -355,32 +454,57 @@ def main():
         r for r in requirements if r["type"] in ["written", "integration"]
     ]
 
-    students = [
-        s for s in os.listdir(args.submissions)
-        if os.path.isdir(os.path.join(args.submissions, s))
-    ]
+    code_csv_path = f"{args.output_prefix}_code.csv"
+    written_csv_path = f"{args.output_prefix}_written.csv"
 
-    existing_students = set()
-    code_rows = []
-    written_rows = []
-    if not args.regrade_all:
-        code_csv_path = f"{args.output_prefix}_code.csv"
-        written_csv_path = f"{args.output_prefix}_written.csv"
+    if args.single_submission:
+        submission_dir = os.path.abspath(os.path.expanduser(args.single_submission))
+        if not os.path.isdir(submission_dir):
+            raise ValueError(f"Not a directory: {submission_dir}")
+        student_label = os.path.basename(submission_dir.rstrip(os.sep)) or submission_dir
+        code_rows = []
+        written_rows = []
         if os.path.exists(code_csv_path):
-            existing_df = pd.read_csv(code_csv_path)
-            existing_students = set(existing_df["Student"].astype(str).tolist())
-            code_rows = existing_df.to_dict("records")
+            code_rows = [
+                r
+                for r in pd.read_csv(code_csv_path).to_dict("records")
+                if str(r.get("Student", "")) != student_label
+            ]
         if os.path.exists(written_csv_path):
-            written_rows = pd.read_csv(written_csv_path).to_dict("records")
-        if existing_students:
-            print(f"Skipping {len(existing_students)} already-graded student(s).")
+            written_rows = [
+                r
+                for r in pd.read_csv(written_csv_path).to_dict("records")
+                if str(r.get("Student", "")) != student_label
+            ]
+        student_jobs = [(student_label, submission_dir)]
+    else:
+        students = [
+            s for s in os.listdir(args.submissions)
+            if os.path.isdir(os.path.join(args.submissions, s))
+        ]
 
-    students_to_grade = [s for s in students if s not in existing_students]
-    print(f"Grading {len(students_to_grade)} student(s).")
+        existing_students = set()
+        code_rows = []
+        written_rows = []
+        if not args.regrade_all:
+            if os.path.exists(code_csv_path):
+                existing_df = pd.read_csv(code_csv_path)
+                existing_students = set(existing_df["Student"].astype(str).tolist())
+                code_rows = existing_df.to_dict("records")
+            if os.path.exists(written_csv_path):
+                written_rows = pd.read_csv(written_csv_path).to_dict("records")
+            if existing_students:
+                print(f"Skipping {len(existing_students)} already-graded student(s).")
 
-    for student in tqdm(students_to_grade):
+        students_to_grade = [s for s in students if s not in existing_students]
+        student_jobs = [
+            (s, os.path.join(args.submissions, s)) for s in students_to_grade
+        ]
 
-        student_path = os.path.join(args.submissions, student)
+    print(f"Grading {len(student_jobs)} student(s).")
+
+    for student, student_path in tqdm(student_jobs):
+
         written_text, code_text = collect_submission_content(student_path)
 
         # Only evaluate code requirements with AI; written/integration are flagged for manual review.

@@ -11,6 +11,11 @@ The directory must contain:
   - exactly one file matching rubric*.json (or *.json if none start with "rubric")
   - exactly one subdirectory matching *submissions*
 
+Export to Excel: if the output workbook already exists, feedback is merged into
+``Sheet N Point Grade`` / ``Sheet N Text Grade`` columns. ``N`` is inferred from those
+headers (or the highest ``N`` if several exist), else from folder/CSV names, unless you
+pass ``--assignment-num``. Existing workbooks are never replaced with a minimal sheet.
+
 Example:
     python reviewer_from_results.py /path/to/assignment7/
 """
@@ -38,6 +43,114 @@ _NAME_FROM_FOLDER = re.compile(r'^\d[\w-]*\s+-\s+(.+?)\s+-\s+\w+\s+\d+,', re.I)
 
 # Match "Problem N" or "for Problem N" etc. in requirement text
 _PROBLEM_RE = re.compile(r"\bProblem\s*(\d+)\b", re.I)
+
+# Assignment number hints in folder / filename (e.g. assignment7, hw_9, lab3)
+_ASSIGNMENT_IN_NAME = re.compile(
+    r"(?:assignment|hw|homework|lab|project|sheet)\s*[-_]?\s*(\d{1,2})\b",
+    re.I,
+)
+
+_SHEET_POINT_COL_RE = re.compile(r"Sheet\s+(\d+)\s+Point\s+Grade", re.I)
+
+
+def _sheet_point_grade_numbers_from_workbook(path):
+    """Return sorted unique N for each 'Sheet N Point Grade' header in row 1."""
+    if not _OPENPYXL_AVAILABLE or not path.exists():
+        return []
+    try:
+        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    except Exception:
+        return []
+    try:
+        ws = wb.active
+        row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+    finally:
+        wb.close()
+    nums = []
+    for v in row:
+        if v is None:
+            continue
+        m = _SHEET_POINT_COL_RE.search(str(v).strip())
+        if m:
+            nums.append(int(m.group(1)))
+    return sorted(set(nums))
+
+
+def _infer_assignment_num_from_name(name):
+    """Best-effort N from a file or directory name."""
+    if not name:
+        return None
+    m = _ASSIGNMENT_IN_NAME.search(name)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"[_-](\d{1,2})(?:_[^/]*)?$", name)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= 99:
+            return n
+    return None
+
+
+def _resolve_assignment_num_for_code_reviewer(
+    explicit,
+    output_path,
+    code_csv: Path,
+    written_csv: Path,
+    submissions_root: Path,
+):
+    """
+    Choose Sheet N for merge. Returns (n or None, short reason string).
+    explicit: from CLI --assignment-num.
+    """
+    if explicit is not None:
+        return explicit, "--assignment-num"
+
+    nums = _sheet_point_grade_numbers_from_workbook(Path(output_path))
+    if len(nums) == 1:
+        return nums[0], "workbook header"
+    if len(nums) > 1:
+        return max(nums), "workbook header (highest Sheet N)"
+
+    for label, p in (
+        ("code CSV", code_csv),
+        ("written CSV", written_csv),
+        ("folder above submissions", submissions_root.parent),
+        ("submissions folder", submissions_root),
+    ):
+        n = _infer_assignment_num_from_name(p.name)
+        if n is not None:
+            return n, f"{label} {p.name!r}"
+
+    return None, "no Sheet N Point Grade in row 1 and no hw/assignment number in CSV or folder names"
+
+
+def _resolve_assignment_num_for_report_reviewer(
+    explicit,
+    output_path,
+    report_json: Path,
+    submissions_root: Path,
+):
+    """Same as code reviewer but uses report JSON / project paths for name hints."""
+    if explicit is not None:
+        return explicit, "--assignment-num"
+
+    nums = _sheet_point_grade_numbers_from_workbook(Path(output_path))
+    if len(nums) == 1:
+        return nums[0], "workbook header"
+    if len(nums) > 1:
+        return max(nums), "workbook header (highest Sheet N)"
+
+    for label, p in (
+        ("report feedback JSON", report_json),
+        ("project folder", report_json.parent),
+        ("submissions folder", submissions_root),
+        ("folder above submissions", submissions_root.parent),
+    ):
+        n = _infer_assignment_num_from_name(p.name)
+        if n is not None:
+            return n, f"{label} {p.name!r}"
+
+    return None, "no Sheet N Point Grade in row 1 and no assignment number in project paths"
 
 
 def _problem_label(requirement_text):
@@ -200,24 +313,39 @@ class ResultsParser:
         return sorted(pdf_files, key=lambda x: x["name"])
 
     def export_to_excel(self):
-        """Write saved feedback to an xlsx file. Creates a new file if none exists."""
+        """Merge into an existing gradebook when the output file exists; never replace it blindly."""
         if not _OPENPYXL_AVAILABLE:
             return False, "openpyxl is not installed (pip install openpyxl)"
 
         if not self.feedback._data:
             return False, "No feedback data to export."
 
-        output_path = self.grading_xlsx
-        if not output_path:
-            output_path = self.feedback.csv_path.with_suffix(".xlsx")
+        output_path = Path(self.grading_xlsx) if self.grading_xlsx else self.feedback.csv_path.with_suffix(".xlsx")
 
-        if output_path.exists() and self.assignment_num:
-            return self._merge_into_existing_xlsx(output_path)
+        if output_path.exists():
+            num, reason = _resolve_assignment_num_for_code_reviewer(
+                self.assignment_num,
+                output_path,
+                self.code_csv,
+                self.written_csv,
+                self.submissions_root,
+            )
+            if num is None:
+                return False, (
+                    f"Refusing to overwrite {output_path.name}: could not infer assignment sheet number. "
+                    f"{reason.capitalize()}. "
+                    "Fix row 1 headers, rename the project directory (e.g. assignment9), or pass --assignment-num."
+                )
+            ok, msg = self._merge_into_existing_xlsx(output_path, assignment_num=num)
+            if ok:
+                msg = f"{msg} (using Sheet {num}; {reason})"
+            return ok, msg
 
         return self._create_new_xlsx(output_path)
 
     def _create_new_xlsx(self, output_path):
-        """Create a standalone xlsx from feedback data."""
+        """Create a standalone xlsx from feedback data (only when output_path does not exist)."""
+        output_path = Path(output_path)
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Grades"
@@ -244,10 +372,11 @@ class ResultsParser:
         wb.save(str(output_path))
         return True, f"Exported {row - 2} student(s) to {output_path.name}."
 
-    def _merge_into_existing_xlsx(self, output_path):
+    def _merge_into_existing_xlsx(self, output_path, assignment_num):
         """Merge feedback into an existing grading xlsx."""
-        point_col_name = f"Sheet {self.assignment_num} Point Grade"
-        text_col_name  = f"Sheet {self.assignment_num} Text Grade"
+        output_path = Path(output_path)
+        point_col_name = f"Sheet {assignment_num} Point Grade"
+        text_col_name = f"Sheet {assignment_num} Text Grade"
 
         wb = openpyxl.load_workbook(str(output_path))
         ws = wb.active
@@ -894,7 +1023,7 @@ def main():
         "--assignment-num",
         type=int,
         default=None,
-        help="Assignment number (e.g. 9) used to find/create the correct columns in the grading xlsx",
+        help="Optional override for Sheet N when merging into grading.xlsx (otherwise inferred)",
     )
     args = parser_cli.parse_args()
 
