@@ -16,8 +16,8 @@
 TEMPERATURES=(15 30 45 60 75 90 120 150)
 T="${TEMPERATURES[$SLURM_ARRAY_TASK_ID]}"
 
-INPUT_DIR="../input_files"
-DYNAMICS_DIR="/path/to/util/analysis/dynamics"
+INPUT_DIR="/scratch1/lkyamamo/bubble_collapse/runs/bulk/water/6x6x6/2.diffusion/0104/run"
+DYNAMICS_DIR="/home1/lkyamamo/util/analysis/dynamics"
 
 RUN_DIR="${SLURM_SUBMIT_DIR}"
 INPUT="${INPUT_DIR}/${T}C.custom"
