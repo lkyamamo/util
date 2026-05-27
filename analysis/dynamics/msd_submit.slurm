@@ -19,8 +19,8 @@
 
 TEMPERATURES=(15 30 45 60 75 90 120 150)
 
-INPUT_DIR="../input_files"
-DYNAMICS_DIR="/path/to/util/analysis/dynamics"
+INPUT_DIR="/scratch1/lkyamamo/bubble_collapse/runs/bulk/water/6x6x6/2.diffusion/0104/run"
+DYNAMICS_DIR="/home1/lkyamamo/util/analysis/dynamics"
 
 CORR_LENGTH=5000
 CORR_INTERVAL=10
