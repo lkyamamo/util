@@ -9,7 +9,7 @@
 #include <cmath>
 #include <cassert>
 
-std::map<std::string,double> CHARGE{ {"O",-2}, {"Y",2}, {"Mn",4} };
+std::map<std::string,double> CHARGE{ {"O",-2}, {"Y",2}, {"Mn",4}, {"H",1} };
 
 struct MDFrame
 {
