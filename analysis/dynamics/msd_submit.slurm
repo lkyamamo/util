@@ -38,8 +38,11 @@ TEMPERATURES=(
 
 CORR_LENGTH=5000    # correlation length [fs]
 CORR_INTERVAL=10    # interval between reference frames [fs]
-TIME_UNIT=2.5         # time between MD frames [fs]
-MAX_FREQ=0.5          # max frequency for DOS [eV]
+TIME_UNIT=2.5       # time between MD frames [fs]
+MAX_FREQ=0.5        # max frequency for DOS [eV]
+
+# Max temperatures to run at once (default: SLURM_NTASKS)
+MAX_PARALLEL=""
 
 ############################
 # Resolve paths
@@ -63,6 +66,8 @@ if [[ ! -d "${SRC_DIR}" ]] || [[ ! -f "${SRC_DIR}/Makefile" ]]; then
   exit 1
 fi
 
+MAX_PARALLEL="${MAX_PARALLEL:-${SLURM_NTASKS:-8}}"
+
 ############################
 # Load modules and build
 ############################
@@ -75,6 +80,7 @@ module load python
 echo "Run directory (outputs):       ${RUN_DIR}"
 echo "Input directory ({T}C.custom): ${INPUT_DIR}"
 echo "Dynamics directory:            ${DYNAMICS_DIR}"
+echo "Max parallel temperatures:     ${MAX_PARALLEL}"
 
 cd "${SRC_DIR}" || exit 1
 make msd
@@ -85,46 +91,79 @@ if [[ ! -x "${SRC_DIR}/qmd_msd.exe" ]]; then
 fi
 
 export PYTHONPATH="${DYNAMICS_DIR}:${PYTHONPATH:-}"
+export RUN_DIR INPUT_DIR SRC_DIR
+export CORR_LENGTH CORR_INTERVAL TIME_UNIT MAX_FREQ
 
 ############################
-# Process each temperature
+# Per-temperature worker (runs in parallel)
 ############################
 
-for T in "${TEMPERATURES[@]}"; do
-  INPUT="${INPUT_DIR}/${T}C.custom"
-  OUT_DIR="${RUN_DIR}/msd_${T}C"
-  XYZ="${OUT_DIR}/${T}C_calculation.xyz"
-  MSD_OUT="${OUT_DIR}/msd.dat"
-  DOS_OUT="${OUT_DIR}/dos.dat"
-
-  echo "----------------------------------------"
-  echo "Temperature: ${T}C"
-  echo "Input: ${INPUT}"
-  echo "Output directory: ${OUT_DIR}"
-
-  if [[ ! -f "${INPUT}" ]]; then
-    echo "ERROR: missing input file ${INPUT}" >&2
-    exit 1
-  fi
+run_temperature() {
+  local T="$1"
+  local INPUT="${INPUT_DIR}/${T}C.custom"
+  local OUT_DIR="${RUN_DIR}/msd_${T}C"
+  local XYZ="${OUT_DIR}/${T}C_calculation.xyz"
+  local LOG="${OUT_DIR}/run.log"
 
   mkdir -p "${OUT_DIR}"
 
-  python3 -c "
+  {
+    echo "Temperature: ${T}C"
+    echo "Input: ${INPUT}"
+    echo "Output directory: ${OUT_DIR}"
+    date
+
+    python3 -c "
 import lammps_custom_to_input_xyz as m
 m.input_filename = '${INPUT}'
 m.output_filename = '${XYZ}'
 m.main()
 "
 
-  # qmd_msd.exe always writes msd.dat and dos.dat to cwd — run in per-T dir
-  (
     cd "${OUT_DIR}" || exit 1
     "${SRC_DIR}/qmd_msd.exe" "${XYZ}" \
       "${CORR_LENGTH}" "${CORR_INTERVAL}" "${TIME_UNIT}" "${MAX_FREQ}"
-  )
 
-  echo "Wrote ${MSD_OUT} and ${DOS_OUT}"
+    echo "Wrote ${OUT_DIR}/msd.dat and ${OUT_DIR}/dos.dat"
+    date
+  } > "${LOG}" 2>&1
+}
+
+export -f run_temperature
+
+############################
+# Validate inputs, then run in parallel
+############################
+
+for T in "${TEMPERATURES[@]}"; do
+  if [[ ! -f "${INPUT_DIR}/${T}C.custom" ]]; then
+    echo "ERROR: missing input file ${INPUT_DIR}/${T}C.custom" >&2
+    exit 1
+  fi
 done
+
+PIDS=()
+FAILED=0
+
+for T in "${TEMPERATURES[@]}"; do
+  while (( $(jobs -r | wc -l) >= MAX_PARALLEL )); do
+    sleep 2
+  done
+  echo "Launching ${T}C (running: $(jobs -r | wc -l))"
+  run_temperature "${T}" &
+  PIDS+=($!)
+done
+
+for PID in "${PIDS[@]}"; do
+  if ! wait "${PID}"; then
+    FAILED=1
+  fi
+done
+
+if (( FAILED )); then
+  echo "ERROR: one or more temperatures failed (see msd_*/run.log)" >&2
+  exit 1
+fi
 
 date
 echo "MSD batch finished **************************************"

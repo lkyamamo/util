@@ -37,11 +37,11 @@ Batch Slurm job that runs MSD analysis for multiple temperatures in one submissi
 1. Reads settings from the **edit block** at the top (paths, temperature list, MSD parameters).
 2. Resolves `INPUT_DIR` and `DYNAMICS_DIR` to absolute paths (relative paths are taken from the submit directory).
 3. Builds `src/qmd_msd.exe` via `make msd` in `src/`.
-4. For each temperature `T` in `TEMPERATURES`:
+4. Runs each temperature **in parallel** (up to `MAX_PARALLEL`, default `SLURM_NTASKS`):
    - Reads `{T}C.custom` from `INPUT_DIR`
    - Converts it to MSD input with `lammps_custom_to_input_xyz.py`
    - Runs `qmd_msd.exe` in a dedicated output folder `msd_{T}C/` under the submit directory
-   - Writes `msd.dat`, `dos.dat`, and `{T}C_calculation.xyz` there (no cross-temperature overwrites)
+   - Writes `msd.dat`, `dos.dat`, `{T}C_calculation.xyz`, and `run.log` there
 
 Submit from any directory; edit `INPUT_DIR`, `DYNAMICS_DIR`, and the other variables before `sbatch`.
 
