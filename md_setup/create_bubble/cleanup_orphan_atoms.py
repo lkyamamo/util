@@ -100,10 +100,13 @@ def _rewrite_data_file(
 ) -> None:
     """
     Rewrite data_file in-place:
-      - Skip atoms whose atom_id is in delete_ids.
+      - Skip atoms whose atom_id is in delete_ids (Atoms and Velocities sections).
       - Update the atom count in the header.
-      - Renumber remaining atom IDs sequentially (1, 2, 3, …).
-      - Pass all non-Atoms sections through unchanged.
+      - Renumber remaining atom IDs sequentially (1, 2, 3, …) in both sections.
+      - Pass all other sections through unchanged.
+
+    LAMMPS always writes Atoms before Velocities, so the old→new ID mapping
+    built during the Atoms pass is fully available when Velocities is reached.
     """
     path = Path(data_file)
     original_text = path.read_text()
@@ -112,13 +115,15 @@ def _rewrite_data_file(
     n_delete = len(delete_ids)
     new_lines: list[str] = []
     in_atoms = False
+    in_velocities = False
     new_id = 0
+    id_map: dict[int, int] = {}  # old atom-ID → new sequential atom-ID
 
     for line in lines:
         stripped = line.split("#")[0].strip()
 
         # Update atom count in header (e.g. "1234567 atoms")
-        if not in_atoms and stripped.endswith(" atoms") and stripped.split()[0].isdigit():
+        if not in_atoms and not in_velocities and stripped.endswith(" atoms") and stripped.split()[0].isdigit():
             old_count = int(stripped.split()[0])
             new_count = old_count - n_delete
             new_lines.append(line.replace(str(old_count), str(new_count), 1))
@@ -126,6 +131,11 @@ def _rewrite_data_file(
 
         if stripped == "Atoms":
             in_atoms = True
+            new_lines.append(line)
+            continue
+
+        if stripped == "Velocities":
+            in_velocities = True
             new_lines.append(line)
             continue
 
@@ -143,8 +153,26 @@ def _rewrite_data_file(
                 if atom_id in delete_ids:
                     continue
                 new_id += 1
-                # Rebuild line with new sequential ID
+                id_map[atom_id] = new_id
                 new_line = f"{new_id:>8}  " + "  ".join(parts[1:]) + "\n"
+                new_lines.append(new_line)
+                continue
+
+        if in_velocities:
+            if not stripped:
+                new_lines.append(line)
+                continue
+            if stripped[0].isalpha():
+                in_velocities = False
+                new_lines.append(line)
+                continue
+            parts = stripped.split()
+            if len(parts) >= 4:
+                atom_id = int(parts[0])
+                if atom_id in delete_ids:
+                    continue
+                mapped_id = id_map.get(atom_id, atom_id)
+                new_line = f"{mapped_id:>8}  " + "  ".join(parts[1:]) + "\n"
                 new_lines.append(new_line)
                 continue
 
