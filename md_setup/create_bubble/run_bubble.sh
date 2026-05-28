@@ -29,7 +29,7 @@ H_TYPE=3
 SI_TYPE=1
 
 export lmp="/home1/lkyamamo/executables/lammps/lmp_mpi_2019"
-VENV_DIR="/Users/loganyamamoto/util/md_setup/.venv"
+VENV_DIR="/home1/lkyamamo/util/md_setup/.venv"
 # ─────────────────────────────────────────────────────────────────────────────
 # Submit this script from the directory containing INPUT_FILE.
 # All relative paths (INPUT_FILE, OUTPUT_FILE, SCRIPT_FILE) resolve against
