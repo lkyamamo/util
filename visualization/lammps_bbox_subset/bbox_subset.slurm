@@ -37,20 +37,20 @@
 # ── end Slurm directives ────────────────────────────────────────────────────
 
 # ── EDIT: job configuration ──────────────────────────────────────────────────
-INPUT="/path/to/your/trajectory.custom"     # source trajectory (read-only)
-OUT_DIR="/path/to/output/directory"         # part files + merged output written here
-FORMAT="auto"                               # auto | lammps_custom | lammps_xyz
+INPUT="/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis/SiOH.custom"     # source trajectory (read-only)
+OUT_DIR="/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis"         # part files + merged output written here
+FORMAT="lammps_custom"                               # auto | lammps_custom | lammps_xyz
 
 # Bounding box — absolute Cartesian coordinates in Å
-BBOX_XMIN=0.0
-BBOX_XMAX=10.0
+BBOX_XMIN=200.0
+BBOX_XMAX=250.0
 BBOX_YMIN=0.0
-BBOX_YMAX=10.0
+BBOX_YMAX=428.1
 BBOX_ZMIN=0.0
-BBOX_ZMAX=10.0
+BBOX_ZMAX=428.1
 
 # Set to 1 to delete part files after a successful merge; 0 to keep them.
-CLEANUP_PARTS=0
+CLEANUP_PARTS=1
 # ── end job configuration ────────────────────────────────────────────────────
 
 # ── derived (do not edit below this line) ───────────────────────────────────
