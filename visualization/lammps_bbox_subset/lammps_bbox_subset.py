@@ -5,7 +5,21 @@ Subcommands
 -----------
 subset        Filter atoms by Cartesian bbox; write new trajectory file.
 count-frames  Print total frame count for a source trajectory (integer).
+build-index   Scan source and write a byte-offset frame index (.idx).
 merge         Concatenate ordered part files with V1-V7 validation.
+
+Performance notes
+-----------------
+Without a frame index, each Slurm worker skips its start offset via
+readline() — O(start_frame × lines_per_frame) calls.  For N workers the
+total skip work scales as O(N² × CHUNK × lines_per_frame).
+
+With a frame index the Slurm script builds it once (O(file_size), using
+grep at ~1-2 GB/s for lammps_custom), then every worker seeks in O(1).
+
+Typical workflow:
+    python3 lammps_bbox_subset.py build-index INPUT --output INPUT.idx
+    python3 lammps_bbox_subset.py subset INPUT --frame-index INPUT.idx ...
 
 Assumptions (must hold for source trajectories):
   - natoms is constant across all frames (NVT/NVE; grand-canonical not supported).
@@ -20,7 +34,9 @@ import argparse
 import glob
 import os
 import re
+import struct
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -65,6 +81,24 @@ def _abort(msg: str, check_id: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Frame index I/O  (unsigned 64-bit little-endian byte offsets)
+# ---------------------------------------------------------------------------
+
+def _save_index(offsets: list[int], path: str) -> None:
+    """Write frame byte offsets as a compact binary file."""
+    with open(path, "wb") as f:
+        f.write(struct.pack(f"<{len(offsets)}Q", *offsets))
+
+
+def _load_index(path: str) -> list[int]:
+    """Load frame byte offsets from a binary index file."""
+    with open(path, "rb") as f:
+        data = f.read()
+    n = len(data) // 8
+    return list(struct.unpack(f"<{n}Q", data))
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: count-frames
 # ---------------------------------------------------------------------------
 
@@ -73,6 +107,33 @@ def cmd_count_frames(args: argparse.Namespace) -> None:
     spec = adapter.probe(args.input)  # type: ignore[attr-defined]
     n = adapter.count_frames(args.input, spec)  # type: ignore[attr-defined]
     print(n)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: build-index
+# ---------------------------------------------------------------------------
+
+def cmd_build_index(args: argparse.Namespace) -> None:
+    """Scan the source trajectory and write a binary frame byte-offset index.
+
+    The index allows Slurm workers to seek directly to their start frame
+    (O(1)) instead of skipping via readline() (O(start * lines_per_frame)).
+    For lammps_custom the scan uses grep at ~1-2 GB/s.  For lammps_xyz it
+    falls back to a Python binary readline scan.
+
+    Index format: packed little-endian uint64 values, one per frame.
+    """
+    adapter = fmt_registry.resolve_adapter(args.format, args.input)
+    spec = adapter.probe(args.input)  # type: ignore[attr-defined]
+
+    if not hasattr(adapter, "build_index"):
+        _abort(f"format adapter for {args.input!r} does not support build-index")
+
+    offsets = adapter.build_index(args.input, spec)  # type: ignore[attr-defined]
+
+    out_path = args.output if args.output else args.input + ".idx"
+    _save_index(offsets, out_path)
+    print(f"build-index: {len(offsets)} frames → {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -108,27 +169,59 @@ def cmd_subset(args: argparse.Namespace) -> None:
     if start_frame >= end_frame:
         _abort(f"--frames START ({start_frame}) must be less than END ({end_frame})")
 
+    # Load byte-offset index for O(1) seeking, if provided
+    frame_offsets: Optional[list[int]] = None
+    if args.frame_index:
+        frame_offsets = _load_index(args.frame_index)
+
+    stride: int = args.stride
+    verbose: bool = args.verbose
+
+    frames_read = 0
     frames_written = 0
     atoms_kept_total = 0
     atoms_total = 0
+    t0 = time.perf_counter()
 
     with open(input_path, "r") as infile, open(output_path, "w") as outfile:
         if start_frame > 0:
-            adapter.skip_frames(infile, spec, start_frame)  # type: ignore[attr-defined]
+            if frame_offsets is not None:
+                # O(1) seek — the entire point of the index
+                infile.seek(frame_offsets[start_frame])
+            else:
+                # Fallback: O(start * lines_per_frame) readline skip
+                adapter.skip_frames(infile, spec, start_frame)  # type: ignore[attr-defined]
 
         for frame_idx in range(start_frame, end_frame):
             frame = adapter.read_frame(infile, spec)  # type: ignore[attr-defined]
             if frame is None:
                 break
+
+            frames_read += 1
+            atoms_total += frame.natoms
+
+            # Stride: skip frames that don't fall on the stride boundary
+            if (frame_idx - start_frame) % stride != 0:
+                continue
+
             filtered = filter_by_bbox(frame, bbox)
             adapter.write_frame(outfile, filtered, spec)  # type: ignore[attr-defined]
             atoms_kept_total += filtered.natoms
-            atoms_total += frame.natoms
             frames_written += 1
 
+            if verbose:
+                print(
+                    f"  frame {frame_idx:>6d}  ts={frame.timestep!s:>10s}  "
+                    f"kept {filtered.natoms:>8,d} / {frame.natoms:,d}",
+                    flush=True,
+                )
+
+    elapsed = time.perf_counter() - t0
+    fps = frames_written / elapsed if elapsed > 0 else 0
     print(
-        f"subset: {frames_written} frames written to {output_path} "
-        f"({atoms_kept_total}/{atoms_total * frames_written} atom-slots kept)"
+        f"subset: {frames_written} frames written to {output_path}  "
+        f"({atoms_kept_total:,}/{atoms_total:,} atom-slots kept)  "
+        f"[{elapsed:.1f}s  {fps:.1f} frames/s  stride={stride}]"
     )
 
 
@@ -320,6 +413,14 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Output path (default: {stem}_bbox{ext} beside input).")
     p_sub.add_argument("--frames", nargs=2, type=int, metavar=("START", "END"),
                        help="Process only frames [START, END). Used by Slurm workers.")
+    p_sub.add_argument("--frame-index", default=None, dest="frame_index", metavar="PATH",
+                       help="Binary frame-offset index (.idx) produced by build-index. "
+                            "Enables O(1) seek to start frame instead of O(n) readline skip.")
+    p_sub.add_argument("--stride", type=int, default=1,
+                       help="Write every Nth frame (default: 1 = all frames). "
+                            "Frames are still read sequentially; only writing is skipped.")
+    p_sub.add_argument("--verbose", action="store_true",
+                       help="Print per-frame atom counts and timing.")
     _add_bbox_args(p_sub)
 
     # count-frames
@@ -328,6 +429,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_count.add_argument("input", help="Source trajectory file.")
     p_count.add_argument("--format", default="auto",
                          choices=["auto", "lammps_custom", "lammps_xyz"])
+
+    # build-index
+    p_idx = sub.add_parser(
+        "build-index",
+        help="Scan source trajectory and write a binary byte-offset frame index (.idx). "
+             "Pass the resulting file to subset via --frame-index for O(1) seeking.",
+    )
+    p_idx.add_argument("input", help="Source trajectory file.")
+    p_idx.add_argument("--format", default="auto",
+                       choices=["auto", "lammps_custom", "lammps_xyz"])
+    p_idx.add_argument("--output", default=None,
+                       help="Index output path (default: INPUT.idx).")
 
     # merge
     p_merge = sub.add_parser("merge",
@@ -354,6 +467,8 @@ def main() -> None:
         cmd_subset(args)
     elif args.command == "count-frames":
         cmd_count_frames(args)
+    elif args.command == "build-index":
+        cmd_build_index(args)
     elif args.command == "merge":
         cmd_merge(args)
 

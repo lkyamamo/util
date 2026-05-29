@@ -35,6 +35,12 @@ from frame_filter import Frame
 HEADER_LINES = 9       # lines before atom data
 TIMESTEP_LINE = 1      # 0-indexed line within frame containing the timestep value
 
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    _HAS_NUMPY = False
+
 
 def detect(path: str) -> bool:
     with open(path, "r") as f:
@@ -98,6 +104,46 @@ def probe(path: str) -> FrameSpec:
     )
 
 
+def build_index(path: str, spec: FrameSpec) -> list[int]:
+    """Return byte offset of each frame start in path.
+
+    Uses 'grep -b ^ITEM: TIMESTEP' (C-level SIMD search, ~1-2 GB/s) when
+    available.  Falls back to a Python binary readline scan if grep is absent
+    or returns a non-zero exit code.
+
+    The index is built once and shared by all Slurm workers, replacing the
+    O(i * lines_per_frame) readline skip each worker previously had to perform
+    before reaching its start frame.
+    """
+    try:
+        result = subprocess.run(
+            ["grep", "-b", "^ITEM: TIMESTEP", path],
+            capture_output=True, text=True,
+        )
+        if result.returncode in (0, 1):  # 1 = no matches (empty file)
+            offsets = []
+            for line in result.stdout.splitlines():
+                if line:
+                    offsets.append(int(line.split(":", 1)[0]))
+            return offsets
+    except FileNotFoundError:
+        pass  # grep not available; fall through to Python scan
+
+    # Python fallback: binary readline scan, O(total_lines)
+    offsets = []
+    with open(path, "rb") as f:
+        while True:
+            pos = f.tell()
+            first = f.readline()
+            if not first:
+                break
+            offsets.append(pos)
+            for _ in range(spec.lines_per_frame - 1):
+                if f.readline() == b"":
+                    return offsets
+    return offsets
+
+
 def read_frame(f: TextIO, spec: FrameSpec) -> Optional[Frame]:
     """Stream one frame from f.  Returns None at EOF."""
     line0 = f.readline()
@@ -147,7 +193,7 @@ def read_frame(f: TextIO, spec: FrameSpec) -> Optional[Frame]:
         atoms_hdr_line,
     ]
 
-    positions: list[tuple[float, float, float]] = []
+    # Read all atom lines upfront
     atom_lines: list[str] = []
     for _ in range(natoms):
         atom_line = f.readline()
@@ -156,13 +202,20 @@ def read_frame(f: TextIO, spec: FrameSpec) -> Optional[Frame]:
                 f"lammps_custom read_frame: unexpected EOF while reading atoms "
                 f"(expected {natoms})"
             )
-        parts = atom_line.split()
-        positions.append((
-            float(parts[spec.x_col]),
-            float(parts[spec.y_col]),
-            float(parts[spec.z_col]),
-        ))
         atom_lines.append(atom_line)
+
+    # Extract positions — numpy batch parse is ~5x faster than per-line float()
+    # for large natoms; falls back to pure Python if numpy is unavailable.
+    x_col, y_col, z_col = spec.x_col, spec.y_col, spec.z_col
+    if _HAS_NUMPY:
+        tokens = [line.split() for line in atom_lines]
+        arr = np.array(tokens, dtype=object)[:, [x_col, y_col, z_col]].astype(np.float64)
+        positions = list(map(tuple, arr.tolist()))
+    else:
+        positions = []
+        for line in atom_lines:
+            parts = line.split()
+            positions.append((float(parts[x_col]), float(parts[y_col]), float(parts[z_col])))
 
     return Frame(
         timestep=timestep,
@@ -207,7 +260,12 @@ def read_frame_header(f: TextIO) -> Optional[tuple[int, Optional[int]]]:
 
 
 def skip_frames(f: TextIO, spec: FrameSpec, n: int) -> None:
-    """Skip n complete frames using fast readline() — no float parsing."""
+    """Skip n complete frames using fast readline() — no float parsing.
+
+    Prefer the byte-offset index + f.seek() approach when available
+    (see lammps_bbox_subset.py cmd_subset).  This fallback is retained
+    for single-process runs without a pre-built index.
+    """
     total_lines = n * spec.lines_per_frame
     for _ in range(total_lines):
         if f.readline() == "":

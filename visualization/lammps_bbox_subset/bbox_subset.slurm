@@ -7,18 +7,20 @@
 #
 # What this script does:
 #   1. Counts total frames in INPUT.
-#   2. Launches N_WORKERS (= $SLURM_NTASKS) parallel Python subset workers,
+#   2. Builds a binary byte-offset frame index (INPUT.idx) using grep — fast
+#      sequential scan at ~1-2 GB/s.  Workers use this to seek directly to
+#      their start frame (O(1)) instead of the previous O(n*lines_per_frame)
+#      readline skip.
+#   3. Launches N_WORKERS (= $SLURM_NTASKS) parallel Python subset workers,
 #      each handling a disjoint frame range and writing a part file.
-#   3. Waits for all workers; checks each exit code individually.
-#   4. Runs merge with V1-V7 validation in the same allocation.
-#   5. (Optional) Removes part files after a successful merge.
+#   4. Waits for all workers; checks each exit code individually.
+#   5. Runs merge with V1-V7 validation in the same allocation.
+#   6. (Optional) Removes part files after a successful merge.
 #
 # Worker parallelism note:
-#   All workers share one node and each re-read the source file from the start,
-#   skipping to their frame range with fast readline() calls (no coordinate
-#   parsing). Acceptable on shared filesystems for typical trajectory sizes.
-#   For multi-node parallelism, a Slurm array variant can be added later
-#   without changing the Python tool.
+#   All workers share one node.  With the frame index each worker seeks in
+#   O(1) to its start frame.  For multi-node parallelism, a Slurm array
+#   variant can be added later without changing the Python tool.
 #
 # Edit the two sections marked ── EDIT ── before submitting.
 # =============================================================================
@@ -85,12 +87,20 @@ echo "============================================================"
 
 mkdir -p "${OUT_DIR}"
 
-# Count total frames (uses line-count arithmetic via wc -l — no parsing)
+# Count total frames (uses wc -l — no parsing)
 TOTAL=$(python3 "${SCRIPT}" count-frames --format "${FORMAT}" "${INPUT}")
 echo "Total frames in source: ${TOTAL}"
 
 CHUNK=$(( (TOTAL + N_WORKERS - 1) / N_WORKERS ))
 echo "Chunk size per worker:  ${CHUNK}"
+
+# Build a byte-offset frame index so every worker can seek in O(1) to its
+# start frame.  Without this, worker i would do i*CHUNK*lines_per_frame
+# readline() calls just for positioning before any useful work.
+# For lammps_custom the index build uses grep (~1-2 GB/s).
+INDEX="${OUT_DIR}/source.idx"
+echo "Building frame index..."
+python3 "${SCRIPT}" build-index --format "${FORMAT}" "${INPUT}" --output "${INDEX}"
 
 # ── parallel subset workers ──────────────────────────────────────────────────
 pids=()
@@ -106,6 +116,7 @@ for (( i=0; i<N_WORKERS; i++ )); do
 
     python3 "${SCRIPT}" subset "${INPUT}" \
         --format "${FORMAT}" \
+        --frame-index "${INDEX}" \
         --frames "${START}" "${END}" \
         --xmin "${BBOX_XMIN}" --xmax "${BBOX_XMAX}" \
         --ymin "${BBOX_YMIN}" --ymax "${BBOX_YMAX}" \
