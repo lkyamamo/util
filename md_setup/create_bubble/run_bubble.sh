@@ -36,7 +36,7 @@ VENV_DIR="/home1/lkyamamo/util/md_setup/.venv"
 # SLURM_SUBMIT_DIR, which is the cwd for all three steps.
 # ─────────────────────────────────────────────────────────────────────────────
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$SLURM_SUBMIT_DIR"
 
 echo "starting bubble creation **************************************"
 date
