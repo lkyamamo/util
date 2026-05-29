@@ -59,9 +59,15 @@ set -euo pipefail
 N_WORKERS=$SLURM_NTASKS
 EXT="${INPUT##*.}"
 STEM="$(basename "${INPUT%.*}")"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT="${SCRIPT_DIR}/lammps_bbox_subset.py"
 OUTPUT="${OUT_DIR}/${STEM}_bbox.${EXT}"
+
+# SLURM_SUBMIT_DIR is the directory from which sbatch was invoked — i.e. where
+# the .slurm file and all sibling Python files (lammps_bbox_subset.py,
+# frame_filter.py, formats/) live.  Slurm stages the script into its own spool
+# directory, so BASH_SOURCE[0] would resolve there instead; do not use it.
+# Submit from visualization/lammps_bbox_subset/ so SCRIPT_DIR is correct.
+SCRIPT_DIR="${SLURM_SUBMIT_DIR}"
+SCRIPT="${SCRIPT_DIR}/lammps_bbox_subset.py"
 
 module purge
 module load python
