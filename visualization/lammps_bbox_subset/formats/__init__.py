@@ -7,7 +7,7 @@ under formats/, then register it in ADAPTERS below.
 from __future__ import annotations
 
 from formats import lammps_custom, lammps_xyz
-from formats.base import FrameSpec, TrajectoryAdapter
+from formats.base import FrameSpec
 
 # Order matters for auto-detection: more-specific detectors first.
 # lammps_custom must come before lammps_xyz because some .xyz files are

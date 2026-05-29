@@ -44,7 +44,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 import formats as fmt_registry
-from frame_filter import BBox, filter_by_bbox
+from frame_filter import BBox
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +176,7 @@ def cmd_subset(args: argparse.Namespace) -> None:
 
     stride: int = args.stride
     verbose: bool = args.verbose
+    batch_size: int = args.batch_size
 
     frames_read = 0
     frames_written = 0
@@ -193,35 +194,37 @@ def cmd_subset(args: argparse.Namespace) -> None:
                 adapter.skip_frames(infile, spec, start_frame)  # type: ignore[attr-defined]
 
         for frame_idx in range(start_frame, end_frame):
-            frame = adapter.read_frame(infile, spec)  # type: ignore[attr-defined]
-            if frame is None:
+            # Pass f_out=None for strided frames — reads and discards atom data
+            # without filtering or writing (bare readline(), no numpy).
+            should_write = (frame_idx - start_frame) % stride == 0
+            f_out = outfile if should_write else None
+
+            result = adapter.stream_filter_frame(  # type: ignore[attr-defined]
+                infile, f_out, spec, bbox, batch_size
+            )
+            if result is None:
                 break
 
+            n_kept, timestep = result
             frames_read += 1
-            atoms_total += frame.natoms
+            atoms_total += spec.natoms
 
-            # Stride: skip frames that don't fall on the stride boundary
-            if (frame_idx - start_frame) % stride != 0:
-                continue
-
-            filtered = filter_by_bbox(frame, bbox)
-            adapter.write_frame(outfile, filtered, spec)  # type: ignore[attr-defined]
-            atoms_kept_total += filtered.natoms
-            frames_written += 1
-
-            if verbose:
-                print(
-                    f"  frame {frame_idx:>6d}  ts={frame.timestep!s:>10s}  "
-                    f"kept {filtered.natoms:>8,d} / {frame.natoms:,d}",
-                    flush=True,
-                )
+            if should_write:
+                atoms_kept_total += n_kept
+                frames_written += 1
+                if verbose:
+                    print(
+                        f"  frame {frame_idx:>6d}  ts={timestep!s:>10s}  "
+                        f"kept {n_kept:>8,d} / {spec.natoms:,d}",
+                        flush=True,
+                    )
 
     elapsed = time.perf_counter() - t0
     fps = frames_written / elapsed if elapsed > 0 else 0
     print(
         f"subset: {frames_written} frames written to {output_path}  "
         f"({atoms_kept_total:,}/{atoms_total:,} atom-slots kept)  "
-        f"[{elapsed:.1f}s  {fps:.1f} frames/s  stride={stride}]"
+        f"[{elapsed:.1f}s  {fps:.1f} frames/s  stride={stride}  batch={batch_size:,}]"
     )
 
 
@@ -418,9 +421,14 @@ def build_parser() -> argparse.ArgumentParser:
                             "Enables O(1) seek to start frame instead of O(n) readline skip.")
     p_sub.add_argument("--stride", type=int, default=1,
                        help="Write every Nth frame (default: 1 = all frames). "
-                            "Frames are still read sequentially; only writing is skipped.")
+                            "Skipped frames are read and discarded without numpy parsing.")
     p_sub.add_argument("--verbose", action="store_true",
                        help="Print per-frame atom counts and timing.")
+    p_sub.add_argument("--batch-size", type=int, default=100_000, dest="batch_size",
+                       metavar="N",
+                       help="Atom lines read per batch (default: 100000). "
+                            "Peak memory ≈ 44 MB × N/100000 per worker. "
+                            "Increase for fewer batches; decrease to reduce peak RAM.")
     _add_bbox_args(p_sub)
 
     # count-frames
