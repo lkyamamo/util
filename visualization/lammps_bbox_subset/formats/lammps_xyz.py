@@ -17,7 +17,6 @@ Requires: numpy
 
 from __future__ import annotations
 
-import subprocess
 from typing import Optional, TextIO
 
 import numpy as np
@@ -66,49 +65,16 @@ def probe(path: str) -> FrameSpec:
 def build_index(path: str, spec: FrameSpec) -> list[int]:
     """Return byte offset of each frame start.
 
-    Greps for '^Atoms. Timestep:' lines and subtracts the fixed natoms-line
-    byte length (constant because natoms is constant in the source).
-    Falls back to Python binary readline scan.
+    Delegates to build_index_from_line_count: because natoms is constant,
+    lines_per_frame is fixed, and every lines_per_frame-th newline marks a
+    frame boundary.  No subprocess or regex needed.
     """
-    natoms_line_len = len(f"{spec.natoms}\n".encode())
-
-    try:
-        result = subprocess.run(
-            ["grep", "-b", r"^Atoms\. Timestep:", path],
-            capture_output=True, text=True,
-        )
-        if result.returncode in (0, 1):
-            return [
-                int(line.split(":", 1)[0]) - natoms_line_len
-                for line in result.stdout.splitlines()
-                if line
-            ]
-    except FileNotFoundError:
-        pass
-
-    offsets: list[int] = []
-    with open(path, "rb") as f:
-        while True:
-            pos = f.tell()
-            if not f.readline():
-                break
-            offsets.append(pos)
-            for _ in range(spec.lines_per_frame - 1):
-                if f.readline() == b"":
-                    return offsets
-    return offsets
+    from formats.base import build_index_from_line_count
+    return build_index_from_line_count(path, spec.lines_per_frame)
 
 
 def count_frames(path: str, spec: FrameSpec) -> int:
-    try:
-        result = subprocess.run(
-            ["wc", "-l", path], capture_output=True, text=True, check=True,
-        )
-        total_lines = int(result.stdout.split()[0])
-    except Exception:
-        with open(path, "r") as f:
-            total_lines = sum(1 for _ in f)
-    return total_lines // spec.lines_per_frame
+    return len(build_index(path, spec))
 
 
 def skip_frames(f: TextIO, spec: FrameSpec, n: int) -> None:

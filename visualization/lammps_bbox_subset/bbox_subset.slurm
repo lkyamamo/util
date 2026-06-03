@@ -3,32 +3,32 @@
 # bbox_subset.slurm — LAMMPS trajectory bounding-box subset (parallel)
 #
 # Usage:
+#   cd visualization/lammps_bbox_subset/
 #   sbatch bbox_subset.slurm
 #
 # What this script does:
-#   1. Counts total frames in INPUT.
-#   2. Builds a binary byte-offset frame index (INPUT.idx) using grep — fast
-#      sequential scan at ~1-2 GB/s.  Workers use this to seek directly to
-#      their start frame (O(1)) instead of the previous O(n*lines_per_frame)
-#      readline skip.
-#   3. Launches N_WORKERS (= $SLURM_NTASKS) parallel Python subset workers,
-#      each handling a disjoint frame range and writing a part file.
-#   4. Waits for all workers; checks each exit code individually.
-#   5. Runs merge with V1-V7 validation in the same allocation.
-#   6. (Optional) Removes part files after a successful merge.
+#   1. Builds a binary byte-offset frame index (source.idx) — O(1) seeking.
+#   2. Counts total frames (TOTAL) in the source trajectory.
+#   3. Launches N_WORKERS parallel subset workers (round-robin assignment):
+#        worker W processes frames W, W+N, W+2N, …
+#        each frame written to FRAMES_DIR/frame_{i:07d}.{ext}
+#   4. Waits for all workers; checks exit codes individually.
+#   5. Merges: sorts frame files by index, validates, concatenates → OUTPUT.
+#   6. (Optional) Removes per-frame files after a successful merge.
 #
-# Worker parallelism note:
-#   All workers share one node.  With the frame index each worker seeks in
-#   O(1) to its start frame.  For multi-node parallelism, a Slurm array
-#   variant can be added later without changing the Python tool.
+# Parallelism model:
+#   Workers are assigned frames mod N_WORKERS (round-robin).  Because the
+#   frame index already gives every worker O(1) seek to any frame, there is
+#   no sequential skip overhead regardless of frame number.
 #
-# Edit the two sections marked ── EDIT ── before submitting.
+# Submit from visualization/lammps_bbox_subset/ so $SLURM_SUBMIT_DIR resolves
+# to the directory containing lammps_bbox_subset.py and its siblings.
 # =============================================================================
 
 # ── EDIT: Slurm resource directives ─────────────────────────────────────────
 #SBATCH --job-name=bbox_subset
 #SBATCH --nodes=1
-#SBATCH --ntasks=8              # <── number of parallel workers; also sets N_WORKERS below
+#SBATCH --ntasks=8              # <── number of parallel workers
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=04:00:00
@@ -39,9 +39,9 @@
 # ── end Slurm directives ────────────────────────────────────────────────────
 
 # ── EDIT: job configuration ──────────────────────────────────────────────────
-INPUT="/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis/SiOH.custom"     # source trajectory (read-only)
-OUT_DIR="/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis"         # part files + merged output written here
-FORMAT="lammps_custom"                               # auto | lammps_custom | lammps_xyz
+INPUT="/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis/SiOH.custom"
+OUT_DIR="/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis"
+FORMAT="lammps_custom"                # auto | lammps_custom | lammps_xyz
 
 # Bounding box — absolute Cartesian coordinates in Å
 BBOX_XMIN=200.0
@@ -51,11 +51,10 @@ BBOX_YMAX=428.1
 BBOX_ZMIN=0.0
 BBOX_ZMAX=428.1
 
-# Set to 1 to delete part files after a successful merge; 0 to keep them.
+# Set to 1 to delete per-frame files after a successful merge; 0 to keep them.
 CLEANUP_PARTS=1
 # ── end job configuration ────────────────────────────────────────────────────
 
-# ── derived (do not edit below this line) ───────────────────────────────────
 set -euo pipefail
 
 N_WORKERS=$SLURM_NTASKS
@@ -63,13 +62,16 @@ EXT="${INPUT##*.}"
 STEM="$(basename "${INPUT%.*}")"
 OUTPUT="${OUT_DIR}/${STEM}_bbox.${EXT}"
 
-# SLURM_SUBMIT_DIR is the directory from which sbatch was invoked — i.e. where
-# the .slurm file and all sibling Python files (lammps_bbox_subset.py,
-# frame_filter.py, formats/) live.  Slurm stages the script into its own spool
-# directory, so BASH_SOURCE[0] would resolve there instead; do not use it.
-# Submit from visualization/lammps_bbox_subset/ so SCRIPT_DIR is correct.
+# SLURM_SUBMIT_DIR is the directory from which sbatch was invoked.  Slurm
+# stages the script into a spool directory, so BASH_SOURCE[0] would resolve
+# there.  Submit from visualization/lammps_bbox_subset/ so SCRIPT_DIR is set
+# correctly and all Python siblings (lammps_bbox_subset.py, formats/, …) are
+# reachable.
 SCRIPT_DIR="${SLURM_SUBMIT_DIR}"
 SCRIPT="${SCRIPT_DIR}/lammps_bbox_subset.py"
+
+# Per-frame output files live in a subdirectory to keep OUT_DIR tidy.
+FRAMES_DIR="${OUT_DIR}/frames_${SLURM_JOB_ID}"
 
 module purge
 module load python
@@ -78,59 +80,63 @@ echo "============================================================"
 echo "bbox_subset — job ${SLURM_JOB_ID}"
 echo "Input:    ${INPUT}"
 echo "Output:   ${OUTPUT}"
-echo "Out dir:  ${OUT_DIR}"
+echo "Frames:   ${FRAMES_DIR}"
 echo "Format:   ${FORMAT}"
 echo "Workers:  ${N_WORKERS}"
 echo "Bbox:     x[${BBOX_XMIN}, ${BBOX_XMAX}]  y[${BBOX_YMIN}, ${BBOX_YMAX}]  z[${BBOX_ZMIN}, ${BBOX_ZMAX}]"
 echo "Start:    $(date)"
 echo "============================================================"
 
-mkdir -p "${OUT_DIR}"
+mkdir -p "${OUT_DIR}" "${FRAMES_DIR}"
 
-# Count total frames (uses wc -l — no parsing)
+# ── Step 1: build byte-offset frame index ────────────────────────────────────
+# The index is a compact binary file of uint64 byte offsets — one per frame.
+# Building it requires a full sequential pass over the source file (O(file_size)),
+# but the source trajectory never changes, so we store the index next to the
+# source file and reuse it across all subsequent bbox runs.  The bottleneck is
+# paid exactly once.
+#
+# Naming: ${INPUT}.idx  — stable across jobs, keyed to the source file.
+# To force a rebuild (e.g. after the source changes), delete this file first.
+INDEX="${INPUT}.idx"
+
+if [ -f "${INDEX}" ]; then
+    echo "Reusing existing frame index: ${INDEX}"
+else
+    echo "Building frame index (one-time cost for this source file)..."
+    python3 "${SCRIPT}" build-index --format "${FORMAT}" "${INPUT}" --output "${INDEX}"
+fi
+
+# ── Step 2: count total frames ────────────────────────────────────────────────
+# count-frames reads the pre-built index (O(1) — just byte-counts the .idx file)
+# rather than re-scanning the source.
 TOTAL=$(python3 "${SCRIPT}" count-frames --format "${FORMAT}" "${INPUT}")
-echo "Total frames in source: ${TOTAL}"
+echo "Total frames: ${TOTAL}"
 
-CHUNK=$(( (TOTAL + N_WORKERS - 1) / N_WORKERS ))
-echo "Chunk size per worker:  ${CHUNK}"
-
-# Build a byte-offset frame index so every worker can seek in O(1) to its
-# start frame.  Without this, worker i would do i*CHUNK*lines_per_frame
-# readline() calls just for positioning before any useful work.
-# For lammps_custom the index build uses grep (~1-2 GB/s).
-INDEX="${OUT_DIR}/source.idx"
-echo "Building frame index..."
-python3 "${SCRIPT}" build-index --format "${FORMAT}" "${INPUT}" --output "${INDEX}"
-
-# ── parallel subset workers ──────────────────────────────────────────────────
+# ── Step 3: launch parallel round-robin workers ──────────────────────────────
+# Worker W writes frames W, W+N_WORKERS, W+2*N_WORKERS, … each to its own
+# file: FRAMES_DIR/frame_{i:07d}.{ext}.  No chunk math required.
 pids=()
 worker_info=()
 
-for (( i=0; i<N_WORKERS; i++ )); do
-    START=$(( i * CHUNK ))
-    END=$(( START + CHUNK ))
-    (( END > TOTAL )) && END=$TOTAL
-    (( START >= END )) && continue      # last chunk may be empty if TOTAL % N_WORKERS == 0
-
-    PART="${OUT_DIR}/part$(printf '%04d' ${i}).${EXT}"
-
+for (( W=0; W<N_WORKERS; W++ )); do
     python3 "${SCRIPT}" subset "${INPUT}" \
-        --format "${FORMAT}" \
+        --format  "${FORMAT}" \
         --frame-index "${INDEX}" \
-        --frames "${START}" "${END}" \
+        --worker  "${W}" \
+        --num-workers "${N_WORKERS}" \
+        --output-dir  "${FRAMES_DIR}" \
         --xmin "${BBOX_XMIN}" --xmax "${BBOX_XMAX}" \
         --ymin "${BBOX_YMIN}" --ymax "${BBOX_YMAX}" \
-        --zmin "${BBOX_ZMIN}" --zmax "${BBOX_ZMAX}" \
-        --output "${PART}" &
+        --zmin "${BBOX_ZMIN}" --zmax "${BBOX_ZMAX}" &
 
     pids+=($!)
-    worker_info+=("worker ${i} frames ${START}-${END} → $(basename "${PART}")")
-    echo "Launched: ${worker_info[-1]} (PID ${pids[-1]})"
+    worker_info+=("worker ${W}/${N_WORKERS}")
+    echo "Launched: ${worker_info[-1]}  (PID ${pids[-1]})"
 done
 
 echo "Waiting for ${#pids[@]} workers..."
 
-# Check each worker's exit code individually — do not use 'wait -n'
 failed=0
 for j in "${!pids[@]}"; do
     if wait "${pids[$j]}"; then
@@ -142,30 +148,36 @@ for j in "${!pids[@]}"; do
 done
 
 if [ "${failed}" -ne 0 ]; then
-    echo "One or more workers failed — aborting merge. Part files kept in ${OUT_DIR}." >&2
+    echo "One or more workers failed — aborting merge. Frame files kept in ${FRAMES_DIR}." >&2
     exit 1
 fi
 
 echo "All workers completed successfully."
 
-# ── merge with V1-V7 validation ──────────────────────────────────────────────
+# ── Step 4: merge ────────────────────────────────────────────────────────────
+# Frame files are named frame_{i:07d}.{ext}; sorting by filename gives the
+# correct temporal order.  Merge validates file count (V1), non-empty files
+# (V2), and strict timestep monotonicity (V7) of the merged output.
 echo "Running merge..."
 
 python3 "${SCRIPT}" merge \
     --format "${FORMAT}" \
-    --parts "${OUT_DIR}"/part*.${EXT} \
-    --output "${OUTPUT}" \
-    --expected-parts "${N_WORKERS}"
+    --parts-dir "${FRAMES_DIR}" \
+    --output    "${OUTPUT}" \
+    --expected-frames "${TOTAL}"
 
 echo "Merge complete: ${OUTPUT}"
 
-# ── optional part cleanup ─────────────────────────────────────────────────────
+# ── Step 5: optional cleanup ─────────────────────────────────────────────────
+# Per-frame files are transient — always safe to remove after a successful merge.
+# The index (${INPUT}.idx) is intentionally kept: it is reused by future runs
+# against the same source trajectory, so the O(file_size) build cost is paid once.
 if [ "${CLEANUP_PARTS}" -eq 1 ]; then
-    echo "Removing part files..."
-    rm -f "${OUT_DIR}"/part*.${EXT}
-    echo "Part files removed."
+    echo "Removing per-frame files..."
+    rm -rf "${FRAMES_DIR}"
+    echo "Done. Index retained at: ${INDEX}"
 else
-    echo "Part files retained in ${OUT_DIR} (set CLEANUP_PARTS=1 to remove)."
+    echo "Per-frame files retained in ${FRAMES_DIR} (set CLEANUP_PARTS=1 to remove)."
 fi
 
 echo "============================================================"

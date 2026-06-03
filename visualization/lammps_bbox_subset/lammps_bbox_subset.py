@@ -3,29 +3,27 @@
 
 Subcommands
 -----------
-subset        Filter atoms by Cartesian bbox; write new trajectory file.
-count-frames  Print total frame count for a source trajectory (integer).
-build-index   Scan source and write a byte-offset frame index (.idx).
-merge         Concatenate ordered part files with V1-V7 validation.
+subset        Filter atoms by Cartesian bbox.
 
-Performance notes
------------------
-Without a frame index, each Slurm worker skips its start offset via
-readline() — O(start_frame × lines_per_frame) calls.  For N workers the
-total skip work scales as O(N² × CHUNK × lines_per_frame).
+              Single-process:
+                  --output PATH  → all frames written to one file.
 
-With a frame index the Slurm script builds it once (O(file_size), using
-grep at ~1-2 GB/s for lammps_custom), then every worker seeks in O(1).
+              Parallel worker (round-robin, one file per frame):
+                  --worker W --num-workers N --output-dir DIR --frame-index IDX
+                  Worker W processes frames W, W+N, W+2N, …
+                  Each frame written to DIR/frame_{i:07d}.{ext}.
+                  Requires --frame-index for O(1) per-frame seeking.
 
-Typical workflow:
-    python3 lammps_bbox_subset.py build-index INPUT --output INPUT.idx
-    python3 lammps_bbox_subset.py subset INPUT --frame-index INPUT.idx ...
+count-frames  Print total source frame count to stdout.
+build-index   Scan source and write a binary byte-offset frame index (.idx).
+merge         Sort frame files in --parts-dir by index, validate, concatenate.
 
 Assumptions (must hold for source trajectories):
-  - natoms is constant across all frames (NVT/NVE; grand-canonical not supported).
+  - natoms is constant across all frames (NVT/NVE).
   - Every bbox-filtered frame contains at least one atom.
-  - lammps_custom: ITEM: BOX BOUNDS is always written unchanged (floating-sliver
-    semantics — full simulation cell preserved, only atoms outside bbox deleted).
+  - lammps_custom: ITEM: BOX BOUNDS written unchanged (floating-sliver).
+
+Requires: numpy
 """
 
 from __future__ import annotations
@@ -40,7 +38,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-# Allow running from the lammps_bbox_subset/ directory directly.
 sys.path.insert(0, str(Path(__file__).parent))
 
 import formats as fmt_registry
@@ -55,18 +52,10 @@ def _resolve(path: str) -> Path:
     return Path(path).resolve()
 
 
-def _numeric_sort_key(p: str) -> int:
-    m = re.search(r"(\d+)", Path(p).stem)
-    return int(m.group(1)) if m else 0
-
-
-def _sorted_parts(pattern_or_list) -> list[str]:
-    """Glob a pattern or sort an explicit list, both by numeric stem."""
-    if isinstance(pattern_or_list, str):
-        paths = glob.glob(pattern_or_list)
-    else:
-        paths = list(pattern_or_list)
-    return sorted(paths, key=_numeric_sort_key)
+def _abort(msg: str, check_id: str = "") -> None:
+    prefix = f"merge validation failed: {check_id} — " if check_id else ""
+    print(f"ERROR: {prefix}{msg}", file=sys.stderr)
+    sys.exit(1)
 
 
 def _default_output(input_path: str) -> Path:
@@ -74,24 +63,20 @@ def _default_output(input_path: str) -> Path:
     return p.parent / f"{p.stem}_bbox{p.suffix}"
 
 
-def _abort(msg: str, check_id: str = "") -> None:
-    prefix = f"merge validation failed: {check_id} — " if check_id else ""
-    print(f"ERROR: {prefix}{msg}", file=sys.stderr)
-    sys.exit(1)
+def _input_ext(input_path: str) -> str:
+    return Path(input_path).suffix.lstrip(".")
 
 
 # ---------------------------------------------------------------------------
-# Frame index I/O  (unsigned 64-bit little-endian byte offsets)
+# Frame index I/O
 # ---------------------------------------------------------------------------
 
 def _save_index(offsets: list[int], path: str) -> None:
-    """Write frame byte offsets as a compact binary file."""
     with open(path, "wb") as f:
         f.write(struct.pack(f"<{len(offsets)}Q", *offsets))
 
 
 def _load_index(path: str) -> list[int]:
-    """Load frame byte offsets from a binary index file."""
     with open(path, "rb") as f:
         data = f.read()
     n = len(data) // 8
@@ -103,10 +88,15 @@ def _load_index(path: str) -> list[int]:
 # ---------------------------------------------------------------------------
 
 def cmd_count_frames(args: argparse.Namespace) -> None:
+    # If the index already exists alongside the source, read its length directly
+    # (O(1) stat + small binary read) rather than re-scanning the source file.
+    default_idx = args.input + ".idx"
+    if Path(default_idx).exists():
+        print(len(_load_index(default_idx)))
+        return
     adapter = fmt_registry.resolve_adapter(args.format, args.input)
-    spec = adapter.probe(args.input)  # type: ignore[attr-defined]
-    n = adapter.count_frames(args.input, spec)  # type: ignore[attr-defined]
-    print(n)
+    spec = adapter.probe(args.input)
+    print(adapter.count_frames(args.input, spec))
 
 
 # ---------------------------------------------------------------------------
@@ -114,24 +104,10 @@ def cmd_count_frames(args: argparse.Namespace) -> None:
 # ---------------------------------------------------------------------------
 
 def cmd_build_index(args: argparse.Namespace) -> None:
-    """Scan the source trajectory and write a binary frame byte-offset index.
-
-    The index allows Slurm workers to seek directly to their start frame
-    (O(1)) instead of skipping via readline() (O(start * lines_per_frame)).
-    For lammps_custom the scan uses grep at ~1-2 GB/s.  For lammps_xyz it
-    falls back to a Python binary readline scan.
-
-    Index format: packed little-endian uint64 values, one per frame.
-    """
     adapter = fmt_registry.resolve_adapter(args.format, args.input)
-    spec = adapter.probe(args.input)  # type: ignore[attr-defined]
-
-    if not hasattr(adapter, "build_index"):
-        _abort(f"format adapter for {args.input!r} does not support build-index")
-
-    offsets = adapter.build_index(args.input, spec)  # type: ignore[attr-defined]
-
-    out_path = args.output if args.output else args.input + ".idx"
+    spec = adapter.probe(args.input)
+    offsets = adapter.build_index(args.input, spec)
+    out_path = args.output or (args.input + ".idx")
     _save_index(offsets, out_path)
     print(f"build-index: {len(offsets)} frames → {out_path}")
 
@@ -146,197 +122,111 @@ def cmd_subset(args: argparse.Namespace) -> None:
         ymin=args.ymin, ymax=args.ymax,
         zmin=args.zmin, zmax=args.zmax,
     )
-    try:
-        bbox.validate()
-    except ValueError as e:
-        _abort(str(e))
+    bbox.validate()
 
     input_path = _resolve(args.input)
-    output_path = _resolve(args.output) if args.output else _resolve(str(_default_output(args.input)))
-
-    if input_path == output_path:
-        _abort(f"input and output paths are the same file: {input_path}")
-
     adapter = fmt_registry.resolve_adapter(args.format, str(input_path))
-    spec = adapter.probe(str(input_path))  # type: ignore[attr-defined]
+    spec = adapter.probe(str(input_path))
+    total = adapter.count_frames(str(input_path), spec)
 
-    start_frame: int = args.frames[0] if args.frames else 0
-    end_frame: Optional[int] = args.frames[1] if args.frames else None
-    total = adapter.count_frames(str(input_path), spec)  # type: ignore[attr-defined]
-    if end_frame is None:
-        end_frame = total
-
-    if start_frame >= end_frame:
-        _abort(f"--frames START ({start_frame}) must be less than END ({end_frame})")
-
-    # Load byte-offset index for O(1) seeking, if provided
-    frame_offsets: Optional[list[int]] = None
-    if args.frame_index:
-        frame_offsets = _load_index(args.frame_index)
-
-    stride: int = args.stride
-    verbose: bool = args.verbose
     batch_size: int = args.batch_size
-
-    frames_read = 0
-    frames_written = 0
-    atoms_kept_total = 0
-    atoms_total = 0
+    verbose: bool = args.verbose
     t0 = time.perf_counter()
 
-    with open(input_path, "r") as infile, open(output_path, "w") as outfile:
-        if start_frame > 0:
-            if frame_offsets is not None:
-                # O(1) seek — the entire point of the index
-                infile.seek(frame_offsets[start_frame])
-            else:
-                # Fallback: O(start * lines_per_frame) readline skip
-                adapter.skip_frames(infile, spec, start_frame)  # type: ignore[attr-defined]
+    if args.worker is not None:
+        # ── Parallel round-robin mode ────────────────────────────────────────
+        # Worker W processes frames W, W+N, W+2N, …
+        # Each frame → output_dir/frame_{i:07d}.{ext}
+        worker: int = args.worker
+        num_workers: int = args.num_workers
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        ext = _input_ext(str(input_path))
 
-        for frame_idx in range(start_frame, end_frame):
-            # Pass f_out=None for strided frames — reads and discards atom data
-            # without filtering or writing (bare readline(), no numpy).
-            should_write = (frame_idx - start_frame) % stride == 0
-            f_out = outfile if should_write else None
+        if not args.frame_index:
+            _abort("--frame-index is required in worker mode (needed for O(1) per-frame seek)")
+        frame_offsets = _load_index(args.frame_index)
 
-            result = adapter.stream_filter_frame(  # type: ignore[attr-defined]
-                infile, f_out, spec, bbox, batch_size
-            )
-            if result is None:
-                break
+        frames_written = 0
+        atoms_kept_total = 0
 
-            n_kept, timestep = result
-            frames_read += 1
-            atoms_total += spec.natoms
-
-            if should_write:
-                atoms_kept_total += n_kept
+        with open(input_path, "r") as infile:
+            for frame_idx in range(worker, total, num_workers):
+                out_path = output_dir / f"frame_{frame_idx:07d}.{ext}"
+                infile.seek(frame_offsets[frame_idx])
+                with open(out_path, "w") as outfile:
+                    result = adapter.stream_filter_frame(
+                        infile, outfile, spec, bbox, batch_size
+                    )
+                if result is None:
+                    break
+                n_kept, timestep = result
                 frames_written += 1
+                atoms_kept_total += n_kept
                 if verbose:
                     print(
-                        f"  frame {frame_idx:>6d}  ts={timestep!s:>10s}  "
-                        f"kept {n_kept:>8,d} / {spec.natoms:,d}",
+                        f"  frame {frame_idx:>7d}  ts={timestep!s:>10s}  "
+                        f"kept {n_kept:>10,d} / {spec.natoms:,d}",
                         flush=True,
                     )
 
-    elapsed = time.perf_counter() - t0
-    fps = frames_written / elapsed if elapsed > 0 else 0
-    print(
-        f"subset: {frames_written} frames written to {output_path}  "
-        f"({atoms_kept_total:,}/{atoms_total:,} atom-slots kept)  "
-        f"[{elapsed:.1f}s  {fps:.1f} frames/s  stride={stride}  batch={batch_size:,}]"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Merge validation helpers (V1-V7)
-# ---------------------------------------------------------------------------
-
-def _stream_frame_headers(path: str, adapter) -> list[tuple[int, Optional[int]]]:
-    """Stream all frame headers from path; return list of (natoms, timestep).
-    Uses read_frame_header — never parses atom coordinates.
-    """
-    results = []
-    with open(path, "r") as f:
-        while True:
-            hdr = adapter.read_frame_header(f)  # type: ignore[attr-defined]
-            if hdr is None:
-                break
-            results.append(hdr)
-    return results
-
-
-def _validate_parts_pre(
-    sorted_part_paths: list[str],
-    expected_parts: Optional[int],
-    output_path: Path,
-    adapter,
-) -> dict[str, list[tuple[int, Optional[int]]]]:
-    """Run V1–V5.  Returns per-part header lists (cached from V3 pass)."""
-
-    # V5: output path safety
-    for p in sorted_part_paths:
-        if _resolve(p) == output_path:
-            _abort(f"output path {output_path} matches part file {p}", "V5")
-
-    # V1: part file count
-    if expected_parts is not None and len(sorted_part_paths) != expected_parts:
-        found_ids = [Path(p).stem for p in sorted_part_paths]
-        _abort(
-            f"expected {expected_parts} parts, found {len(sorted_part_paths)}. "
-            f"Found stems: {found_ids}",
-            "V1",
+        elapsed = time.perf_counter() - t0
+        fps = frames_written / elapsed if elapsed > 0 else 0
+        print(
+            f"subset worker {worker}/{num_workers}: {frames_written} frames written  "
+            f"({atoms_kept_total:,} atoms kept)  [{elapsed:.1f}s  {fps:.1f} frames/s]"
         )
 
-    # V2: non-empty parts
-    for p in sorted_part_paths:
-        if not os.path.exists(p) or os.path.getsize(p) == 0:
-            _abort(f"part file is missing or zero-byte: {p}", "V2")
+    else:
+        # ── Single-process mode ──────────────────────────────────────────────
+        output_path = _resolve(args.output) if args.output else _resolve(str(_default_output(args.input)))
+        if input_path == output_path:
+            _abort(f"input and output resolve to the same file: {input_path}")
 
-    # V3 + V4 combined: stream frame headers per part
-    part_headers: dict[str, list[tuple[int, Optional[int]]]] = {}
-    for i, part in enumerate(sorted_part_paths):
-        try:
-            headers = _stream_frame_headers(part, adapter)
-        except Exception as e:
-            _abort(f"part {part} failed frame-header validation: {e}", "V3")
-        if not headers:
-            _abort(f"part {part} contains no frames", "V3")
-        part_headers[part] = headers
+        frame_offsets: Optional[list[int]] = None
+        if args.frame_index:
+            frame_offsets = _load_index(args.frame_index)
 
-    # V4: boundary timestep sanity — last(part_i) <= first(part_i+1)
-    for i in range(len(sorted_part_paths) - 1):
-        part_a = sorted_part_paths[i]
-        part_b = sorted_part_paths[i + 1]
-        headers_a = part_headers[part_a]
-        headers_b = part_headers[part_b]
-        last_ts = headers_a[-1][1]
-        first_ts = headers_b[0][1]
-        if last_ts is None or first_ts is None:
-            # lammps_xyz can have None if comment line was unparseable; skip
-            continue
-        if last_ts > first_ts:
-            _abort(
-                f"boundary violation between {Path(part_a).name} "
-                f"(last timestep {last_ts}) and {Path(part_b).name} "
-                f"(first timestep {first_ts})",
-                "V4",
-            )
+        stride: int = args.stride
+        frames_written = 0
+        atoms_kept_total = 0
 
-    return part_headers
+        with open(input_path, "r") as infile, open(output_path, "w") as outfile:
+            for frame_idx in range(total):
+                should_write = frame_idx % stride == 0
+                f_out = outfile if should_write else None
 
+                if frame_offsets is not None:
+                    infile.seek(frame_offsets[frame_idx])
+                    result = adapter.stream_filter_frame(
+                        infile, f_out, spec, bbox, batch_size
+                    )
+                else:
+                    result = adapter.stream_filter_frame(
+                        infile, f_out, spec, bbox, batch_size
+                    )
 
-def _validate_merged_post(
-    output_path: Path,
-    part_headers: dict[str, list[tuple[int, Optional[int]]]],
-    sorted_part_paths: list[str],
-    adapter,
-) -> None:
-    """Run V6 and V7 in a single header-stream pass over the merged output."""
-    expected_frame_count = sum(len(part_headers[p]) for p in sorted_part_paths)
+                if result is None:
+                    break
+                n_kept, timestep = result
 
-    merged_headers = _stream_frame_headers(str(output_path), adapter)
+                if should_write:
+                    frames_written += 1
+                    atoms_kept_total += n_kept
+                    if verbose:
+                        print(
+                            f"  frame {frame_idx:>7d}  ts={timestep!s:>10s}  "
+                            f"kept {n_kept:>10,d} / {spec.natoms:,d}",
+                            flush=True,
+                        )
 
-    # V6: frame count accounting
-    if len(merged_headers) != expected_frame_count:
-        _abort(
-            f"merged output has {len(merged_headers)} frames; "
-            f"expected {expected_frame_count} (sum of part frame counts)",
-            "V6",
+        elapsed = time.perf_counter() - t0
+        fps = frames_written / elapsed if elapsed > 0 else 0
+        print(
+            f"subset: {frames_written} frames → {output_path}  "
+            f"({atoms_kept_total:,} atoms kept)  "
+            f"[{elapsed:.1f}s  {fps:.1f} frames/s  stride={stride}]"
         )
-
-    # V7: strict global monotonic timesteps
-    prev_ts: Optional[int] = None
-    for frame_idx, (_, ts) in enumerate(merged_headers):
-        if ts is None:
-            continue  # format doesn't carry timestep; skip ordering check
-        if prev_ts is not None and ts <= prev_ts:
-            _abort(
-                f"timestep ordering violation at merged frame {frame_idx}: "
-                f"timestep {ts} follows {prev_ts} (must be strictly increasing)",
-                "V7",
-            )
-        prev_ts = ts
 
 
 # ---------------------------------------------------------------------------
@@ -344,47 +234,79 @@ def _validate_merged_post(
 # ---------------------------------------------------------------------------
 
 def cmd_merge(args: argparse.Namespace) -> None:
-    # Resolve and numerically sort parts
-    raw = args.parts if args.parts else []
-    sorted_part_paths = _sorted_parts(raw)
-
-    if not sorted_part_paths:
-        _abort("no part files found — check --parts argument")
-
+    parts_dir = Path(args.parts_dir)
     output_path = _resolve(args.output)
     temp_path = output_path.parent / (output_path.name + ".merging")
 
-    # Resolve adapter from first part file
-    adapter = fmt_registry.resolve_adapter(args.format, sorted_part_paths[0])
-
-    # --- Pre-merge validation (V1–V5) ---
-    part_headers = _validate_parts_pre(
-        sorted_part_paths,
-        args.expected_parts,
-        output_path,
-        adapter,
+    # Detect extension from output path, find frame files
+    ext = output_path.suffix.lstrip(".")
+    pattern = str(parts_dir / f"frame_*.{ext}")
+    frame_files = sorted(
+        glob.glob(pattern),
+        key=lambda p: int(re.search(r"frame_(\d+)", Path(p).name).group(1)),
     )
 
-    # --- Concatenate to temp file ---
+    if not frame_files:
+        _abort(f"no frame files found matching {pattern}")
+
+    # V5: output not inside parts_dir under a colliding name
+    if _resolve(str(parts_dir)) == output_path.parent and output_path.name.startswith("frame_"):
+        _abort(f"output {output_path} would collide with frame files in {parts_dir}", "V5")
+
+    # V1: expected frame count
+    if args.expected_frames is not None and len(frame_files) != args.expected_frames:
+        _abort(
+            f"expected {args.expected_frames} frames, found {len(frame_files)}",
+            "V1",
+        )
+
+    # V2: non-empty files
+    for p in frame_files:
+        if os.path.getsize(p) == 0:
+            _abort(f"frame file is zero-byte: {p}", "V2")
+
+    # Concatenate to temp, then atomically replace
     try:
-        with open(temp_path, "w") as outfile:
-            for part in sorted_part_paths:
-                with open(part, "r") as infile:
-                    for chunk in iter(lambda: infile.read(1 << 20), ""):
-                        outfile.write(chunk)
+        with open(temp_path, "w") as out:
+            for p in frame_files:
+                with open(p) as f:
+                    for chunk in iter(lambda: f.read(1 << 20), ""):
+                        out.write(chunk)
     except Exception as e:
         if temp_path.exists():
             temp_path.unlink()
         _abort(f"concatenation failed: {e}")
 
-    # Atomically replace output
     temp_path.replace(output_path)
 
-    # --- Post-merge validation (V6, V7) ---
-    _validate_merged_post(output_path, part_headers, sorted_part_paths, adapter)
+    # V7: strict global timestep monotonicity (single pass over merged output)
+    adapter = fmt_registry.resolve_adapter(args.format, str(output_path))
+    prev_ts: Optional[int] = None
+    frame_count = 0
+    with open(output_path) as f:
+        while True:
+            hdr = adapter.read_frame_header(f)
+            if hdr is None:
+                break
+            _, ts = hdr
+            frame_count += 1
+            if ts is not None:
+                if prev_ts is not None and ts <= prev_ts:
+                    _abort(
+                        f"timestep disorder at frame {frame_count}: "
+                        f"{ts} follows {prev_ts} (must be strictly increasing)",
+                        "V7",
+                    )
+                prev_ts = ts
 
-    total_frames = sum(len(part_headers[p]) for p in sorted_part_paths)
-    print(f"merge: {total_frames} frames → {output_path}")
+    # V6: merged frame count matches file count
+    if frame_count != len(frame_files):
+        _abort(
+            f"merged output has {frame_count} frames; expected {len(frame_files)}",
+            "V6",
+        )
+
+    print(f"merge: {frame_count} frames → {output_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -393,10 +315,8 @@ def cmd_merge(args: argparse.Namespace) -> None:
 
 def _add_bbox_args(p: argparse.ArgumentParser) -> None:
     for axis in ("x", "y", "z"):
-        p.add_argument(f"--{axis}min", type=float, required=True,
-                       help=f"Minimum {axis} coordinate (Å)")
-        p.add_argument(f"--{axis}max", type=float, required=True,
-                       help=f"Maximum {axis} coordinate (Å)")
+        p.add_argument(f"--{axis}min", type=float, required=True)
+        p.add_argument(f"--{axis}max", type=float, required=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -406,71 +326,71 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # subset
-    p_sub = sub.add_parser("subset", help="Filter atoms by bbox and write new trajectory.")
-    p_sub.add_argument("input", help="Source trajectory file (read-only).")
+    # ── subset ────────────────────────────────────────────────────────────────
+    p_sub = sub.add_parser("subset",
+                            help="Filter atoms by bbox.")
+    p_sub.add_argument("input")
     p_sub.add_argument("--format", default="auto",
-                       choices=["auto", "lammps_custom", "lammps_xyz"],
-                       help="File format (default: auto-detect).")
-    p_sub.add_argument("--output", default=None,
-                       help="Output path (default: {stem}_bbox{ext} beside input).")
-    p_sub.add_argument("--frames", nargs=2, type=int, metavar=("START", "END"),
-                       help="Process only frames [START, END). Used by Slurm workers.")
-    p_sub.add_argument("--frame-index", default=None, dest="frame_index", metavar="PATH",
-                       help="Binary frame-offset index (.idx) produced by build-index. "
-                            "Enables O(1) seek to start frame instead of O(n) readline skip.")
-    p_sub.add_argument("--stride", type=int, default=1,
-                       help="Write every Nth frame (default: 1 = all frames). "
-                            "Skipped frames are read and discarded without numpy parsing.")
-    p_sub.add_argument("--verbose", action="store_true",
-                       help="Print per-frame atom counts and timing.")
+                       choices=["auto", "lammps_custom", "lammps_xyz"])
+    p_sub.add_argument("--frame-index", default=None, dest="frame_index",
+                       metavar="PATH",
+                       help="Binary frame-offset index (.idx) from build-index.")
     p_sub.add_argument("--batch-size", type=int, default=100_000, dest="batch_size",
                        metavar="N",
-                       help="Atom lines read per batch (default: 100000). "
-                            "Peak memory ≈ 44 MB × N/100000 per worker. "
-                            "Increase for fewer batches; decrease to reduce peak RAM.")
+                       help="Atom lines per batch (default 100000). "
+                            "Peak RAM ≈ 27 MB × N/100000 per worker.")
+
+    # Single-process options
+    p_sub.add_argument("--output", default=None,
+                       help="Single-process: output file path.")
+    p_sub.add_argument("--stride", type=int, default=1,
+                       help="Single-process: write every Nth frame (default 1).")
+    p_sub.add_argument("--verbose", action="store_true")
+
+    # Parallel worker options
+    p_sub.add_argument("--worker", type=int, default=None, metavar="W",
+                       help="Parallel: worker index (0-based).")
+    p_sub.add_argument("--num-workers", type=int, default=None, metavar="N",
+                       help="Parallel: total number of workers.")
+    p_sub.add_argument("--output-dir", default=None, dest="output_dir",
+                       metavar="DIR",
+                       help="Parallel: directory for per-frame output files "
+                            "(frame_{i:07d}.{ext}).")
     _add_bbox_args(p_sub)
 
-    # count-frames
-    p_count = sub.add_parser("count-frames",
-                              help="Print total frame count to stdout.")
-    p_count.add_argument("input", help="Source trajectory file.")
+    # ── count-frames ──────────────────────────────────────────────────────────
+    p_count = sub.add_parser("count-frames")
+    p_count.add_argument("input")
     p_count.add_argument("--format", default="auto",
                          choices=["auto", "lammps_custom", "lammps_xyz"])
 
-    # build-index
-    p_idx = sub.add_parser(
-        "build-index",
-        help="Scan source trajectory and write a binary byte-offset frame index (.idx). "
-             "Pass the resulting file to subset via --frame-index for O(1) seeking.",
-    )
-    p_idx.add_argument("input", help="Source trajectory file.")
+    # ── build-index ───────────────────────────────────────────────────────────
+    p_idx = sub.add_parser("build-index")
+    p_idx.add_argument("input")
     p_idx.add_argument("--format", default="auto",
                        choices=["auto", "lammps_custom", "lammps_xyz"])
     p_idx.add_argument("--output", default=None,
-                       help="Index output path (default: INPUT.idx).")
+                       help="Index path (default: INPUT.idx).")
 
-    # merge
+    # ── merge ─────────────────────────────────────────────────────────────────
     p_merge = sub.add_parser("merge",
-                              help="Concatenate part files with V1-V7 validation.")
-    p_merge.add_argument("--parts", nargs="+", required=True,
-                         help="Part files to merge (numerically sorted).")
-    p_merge.add_argument("--output", required=True,
-                         help="Output merged trajectory path.")
+                              help="Concatenate per-frame files → single trajectory.")
+    p_merge.add_argument("--parts-dir", required=True, dest="parts_dir",
+                         metavar="DIR",
+                         help="Directory containing frame_*.{ext} files.")
+    p_merge.add_argument("--output", required=True)
     p_merge.add_argument("--format", default="auto",
                          choices=["auto", "lammps_custom", "lammps_xyz"])
-    p_merge.add_argument("--expected-parts", type=int, default=None,
-                         dest="expected_parts",
-                         help="Expected number of part files (V1 check). "
-                              "Set to $SLURM_NTASKS in Slurm scripts.")
+    p_merge.add_argument("--expected-frames", type=int, default=None,
+                         dest="expected_frames",
+                         help="Expected number of frame files (= total source frames). "
+                              "Pass $TOTAL from Slurm script.")
 
     return parser
 
 
 def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
-
+    args = build_parser().parse_args()
     if args.command == "subset":
         cmd_subset(args)
     elif args.command == "count-frames":
