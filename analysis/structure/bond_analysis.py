@@ -28,6 +28,9 @@ FILE_PATH = "/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized
 SURFACE_DIST = 1.2   # Å from top/bottom surfaces
 BOND_CUTOFF  = 1.1   # Å pairwise O–H cutoff
 REFIT_BOX    = True  # Shift atoms so min == 0 and resize box to atom extent
+REFIT_BOX_PAD = 0.01  # Å of padding added to each face of the non-periodic axis after refit
+                     # (prevents atoms from sitting exactly on xlo/xhi, which LAMMPS rejects)
+ATOM_TYPES = (2,3)
 
 # Non-periodic direction: 'x', 'y', or 'z' (slab normal / confined axis)
 DIRECTION = "x"
@@ -65,7 +68,7 @@ def main():
 
     def make_bond_modifier(cutoff=BOND_CUTOFF):
         m = CreateBondsModifier(mode=CreateBondsModifier.Mode.Pairwise)
-        m.set_pairwise_cutoff(1, 2, cutoff)
+        m.set_pairwise_cutoff(ATOM_TYPES[0], ATOM_TYPES[1], cutoff)
         return m
 
     # ── Export a subset of particles ─────────────────────────────────────────
@@ -190,11 +193,14 @@ def main():
     def shift_and_resize_box(frame, data):
         pos = np.copy(data.particles.positions)
         axis_min_val = pos[:, axis].min()
-        pos[:, axis] -= axis_min_val
+        pos[:, axis] -= axis_min_val          # shift so atom min == 0
         axis_range = pos[:, axis].max()
         data.particles_.positions_ = pos
-        data.cell_[axis, 3] = 0.0
-        data.cell_[axis, axis] = axis_range
+
+        # Expand box by PAD on each face so no atom sits exactly on xlo/xhi.
+        # LAMMPS rejects atoms at exactly xhi during domain decomposition.
+        data.cell_[axis, 3] = -REFIT_BOX_PAD
+        data.cell_[axis, axis] = axis_range + 2 * REFIT_BOX_PAD
 
     pipeline.modifiers.append(shift_top_along_axis)
     n_extra = 1
@@ -202,7 +208,7 @@ def main():
         pipeline.modifiers.append(shift_and_resize_box)
         n_extra += 1
 
-    export_file(pipeline, str(shifted_path), "lammps/data")
+    export_file(pipeline, str(shifted_path), "lammps/data", restricted_triclinic=True)
     for _ in range(n_extra):
         pipeline.modifiers.pop()
     print(f"Saved modified structure → {shifted_path}")
@@ -240,10 +246,14 @@ def main():
     axis_all   = data_final.particles.positions[:, axis]
     box_origin = data_final.cell[axis, 3]
     box_size   = data_final.cell[axis, axis]
+    box_lo     = box_origin
+    box_hi     = box_origin + box_size
     print(f"\nGeometry check on {shifted_path.name}:")
     print(f"  {DIRECTION} range (particles): {axis_all.min():.6f} → {axis_all.max():.6f}")
-    print(f"  Box origin={box_origin:.6f}  size={box_size:.6f}")
-    print(f"  {DIRECTION} axis length: {axis_all.max() - axis_all.min():.6f} Å")
+    print(f"  Box {DIRECTION}lo={box_lo:.6f}  {DIRECTION}hi={box_hi:.6f}")
+    print(f"  Clearance to lo={axis_all.min() - box_lo:.6f} Å  to hi={box_hi - axis_all.max():.6f} Å")
+    assert axis_all.min() > box_lo, "Atom(s) at or below box lower face — LAMMPS will reject."
+    assert axis_all.max() < box_hi, "Atom(s) at or above box upper face — LAMMPS will reject."
 
     # ── Double-shift guard ────────────────────────────────────────────────────
     double_shifted = bottom_mask & top_mask
