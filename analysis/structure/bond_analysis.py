@@ -24,13 +24,13 @@ from ovito.modifiers import (
 )
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-FILE_PATH = "/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bubble-collapse/structures/water/0013_19x1x1.data"
+FILE_PATH = "/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bubble-collapse/structures/water/0013_21x1x1.data"
 SURFACE_DIST = 1.2   # Å from top/bottom surfaces
 BOND_CUTOFF  = 1.1   # Å pairwise O–H cutoff
 REFIT_BOX    = True  # Shift atoms so min == 0 and resize box to atom extent
 REFIT_BOX_PAD = 0.01  # Å of padding added to each face of the non-periodic axis after refit
                      # (prevents atoms from sitting exactly on xlo/xhi, which LAMMPS rejects)
-ATOM_TYPES = (2,3)
+ATOM_TYPES = (1,2)
 
 # Non-periodic direction: 'x', 'y', or 'z' (slab normal / confined axis)
 DIRECTION = "x"

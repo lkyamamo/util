@@ -1,8 +1,8 @@
 # Unit cell edge lengths lx ly lz (Angstrom)
 unit_cell_lengths_A 37.2514 37.2514 37.2514
 # Supercell repeats nx ny nz
-repeat 15 11 11
+repeat 1 1 1
 # Target mass density (g/cm^3)
 target_density_g_cm3 1.0
 # Two known supercell edge lengths (Angstrom); the third is computed from density
-known_supercell_lengths_A 428.1 428.1
+known_supercell_lengths_A 42.81 42.81
