@@ -1,0 +1,128 @@
+in voxel
+- density
+- pressure (full mechanical: kinetic + virial)
+- virial pressure (virial term only)
+- temperature
+- average atom velocity
+- water or silica voxel (if no Si in it call it water voxel)
+
+full pseudocode:
+
+given variables:
+voxel size (1 nm cubes)
+type mapping (atom type to element)
+
+1. input file with following assumptions
+    1.1 lammps custom dump format with the following header block structure:
+        ITEM: TIMESTEP
+        <timestep int>
+        ITEM: NUMBER OF ATOMS
+        <N int>
+        ITEM: BOX BOUNDS <boundary flags>
+        <xlo float> <xhi float>
+        <ylo float> <yhi float>
+        <zlo float> <zhi float>
+        ITEM: ATOMS id type x y z vx vy vz fx fy fz
+        <atom lines follow, one atom per line, all values numeric>
+    1.2 assume lammps file sorted in terms of x position (enforce via dump_modify sort x)
+    1.3 shockwave will be moving in positive x direction
+2. open file and read header block line by line
+3. process header
+    3.1 read line after "ITEM: TIMESTEP" -> store timestep
+    3.2 read line after "ITEM: NUMBER OF ATOMS" -> store N (int)
+    3.3 read line containing "ITEM: BOX BOUNDS" -> skip boundary flags on same line
+        read next 3 lines:
+            line 1: xlo xhi -> Lx = xhi - xlo
+            line 2: ylo yhi -> Ly = yhi - ylo
+            line 3: zlo zhi -> Lz = zhi - zlo
+        system volume = Lx * Ly * Lz
+    3.4 read line containing "ITEM: ATOMS" -> confirm columns are: id type x y z vx vy vz fx fy fz
+        column indices (0-indexed): id=0, type=1, x=2, y=3, z=4, vx=5, vy=6, vz=7, fx=8, fy=9, fz=10
+    3.5 build type_to_mass array from given type mapping and element masses
+        type_to_mass[type_int] = mass_in_amu
+    3.6 compute voxel grid dimensions:
+        nx = ceil(Lx / voxel_size), ny = ceil(Ly / voxel_size), nz = ceil(Lz / voxel_size)
+        voxel index for atom at (x, y, z): ix = floor(x / voxel_size), clamped to [0, nx-1]
+                                           iy = floor(y / voxel_size), clamped to [0, ny-1]
+                                           iz = floor(z / voxel_size), clamped to [0, nz-1]
+4. split system into respective voxels
+    4.1 read atom lines one at a time after the header:
+        split line by whitespace -> [id, type, x, y, z, vx, vy, vz, fx, fy, fz] all parsed as float64
+        append row to the buffer numpy array for the voxel layer at ix = floor(x / voxel_size)
+    4.2 boundary atoms (x == xhi, y == yhi, z == zhi) clamp to ix=nx-1, iy=ny-1, iz=nz-1
+    4.3 once x of the incoming atom passes into the next ix layer, the previous ix layer is complete:
+        flush all voxels in that layer (process each voxel's buffer array then discard it)
+        4.3.1 for each voxel in the layer:
+            check number of atoms in voxel buffer (N_vox = len(buffer))
+            if N_vox == 0: mark voxel as empty, skip all computation, save NaN for all quantities
+            if N_vox > 0: process voxel calculating following quantities:
+                density
+                pressure (full mechanical)
+                virial pressure
+                temperature
+                average atom velocity
+                if there is any Si type in the voxel call it a silica voxel otherwise it is a water voxel
+5. save voxel grid to HDF5 file via h5py
+    5.1 file attributes (metadata): timestep, voxel_size, Lx, Ly, Lz, nx, ny, nz
+    5.2 datasets (all float32 except voxel_type):
+        density          (nx, ny, nz) float32, chunk=(1, ny, nz)
+        pressure         (nx, ny, nz) float32, chunk=(1, ny, nz)
+        virial_pressure  (nx, ny, nz) float32, chunk=(1, ny, nz)
+        temperature      (nx, ny, nz) float32, chunk=(1, ny, nz)
+        avg_speed        (nx, ny, nz) float32, chunk=(1, ny, nz)
+        avg_O_speed      (nx, ny, nz) float32, chunk=(1, ny, nz)
+        voxel_type       (nx, ny, nz) uint8,   chunk=(1, ny, nz)  (0=empty, 1=water, 2=silica)
+        v_COM            (nx, ny, nz, 3) float32, chunk=(1, ny, nz, 3)
+    5.3 write strategy: pre-allocate all datasets at the start with fillvalue=NaN (or 0 for uint8)
+        after each x-layer flush in step 4.3, write results directly into slice [ix, :, :]
+        this matches the chunk shape so each write is one chunk — no full grid held in memory
+
+# calculations:
+pressure (full mechanical / virial pressure)
+    1. calculate center of mass position for voxel: r_COM = sum(m_i * r_i) / sum(m_i)
+    2. get atomic distances from center of mass as r'_i = r_i - r_COM for the i'th atom
+    3. calculate virial sum: sum over all atoms of r'_i . f_i
+    4. calculate kinetic term: sum over all atoms of m_i * |v_i|^2  (lab-frame velocities)
+    5. virial pressure P_vir = virial sum / (3V)  (save)
+    6. pressure P = (kinetic term + virial sum) / (3V)  (save)
+    note: kinetic term = 2 * KE_total (lab frame), same running sum used for pressure and temperature differs only in which velocities are used (see temperature note)
+
+average atom velocity
+    1. get velocity magnitude of each atom
+    2. average all magnitudes
+
+average oxygen velocity (water velocity)
+    1. get velocity magnitude of all oxygens
+    2. average all magnitudes
+
+temperature
+    1. compute voxel COM velocity: v_COM = sum(m_i * v_i) / sum(m_i)
+    2. compute thermal velocity for each atom: v_i_th = v_i - v_COM
+       (subtracting bulk flow so shock ram velocity does not inflate temperature)
+    3. thermal KE: KE_th = sum(m_i * |v_i_th|^2)
+    4. T = KE_th / (3 * N * k_B)
+       equivalently: T = sum(m_i * |v_i_th|^2) / (3 * N * k_B)
+
+# process voxel
+operate directly on the numpy array from step 4.1 (shape: N x 11, columns: id type x y z vx vy vz fx fy fz, all float64)
+0. if len(arr) == 0: store NaN for all quantities, return early
+slice into named views: types=arr[:,1], positions=arr[:,2:5], velocities=arr[:,5:8], forces=arr[:,8:11]
+masses = type_to_mass lookup array indexed by types column (precomputed from header mapping in step 3.2)
+1. r_COM = np.average(positions, axis=0, weights=masses)
+2. v_COM = np.average(velocities, axis=0, weights=masses)
+3. r_prime = positions - r_COM
+4. virial_sum = np.sum(r_prime * forces)
+5. kinetic_term = np.dot(masses, np.sum(velocities**2, axis=1))
+6. virial pressure = virial_sum / (3V)  (save as float32)
+7. pressure = (kinetic_term + virial_sum) / (3V)  (save as float32)
+8. v_th = velocities - v_COM
+9. thermal_KE = np.dot(masses, np.sum(v_th**2, axis=1))
+10. temperature = thermal_KE / (3 * N * k_B)  (save as float32)
+11. avg_speed = np.mean(np.linalg.norm(velocities, axis=1))  (save as float32)
+12. voxel_type: check Si_type in types -> 2 (silica), else 1 (water)  (save as uint8)
+if voxel is water (voxel_type == 1):
+    13. O_mask = (types == O_type); avg_O_speed = np.mean(np.linalg.norm(velocities[O_mask], axis=1))  (save as float32)
+    else: avg_O_speed = NaN
+14. save v_COM as float32 velocity vector of the voxel
+note: all intermediate computation stays float64; cast to float32 only at the point of writing to HDF5
+
