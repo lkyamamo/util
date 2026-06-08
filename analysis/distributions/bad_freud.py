@@ -1,0 +1,340 @@
+import itertools
+
+import numpy as np
+import freud
+import matplotlib.pyplot as plt
+
+# =============================================================================
+# CONFIGURATION — edit these variables between runs
+# =============================================================================
+
+# Input trajectory file
+DUMP_FILE = "dump.lammpstrj"
+
+# Output plot file
+OUTPUT_PLOT = "bads.png"
+
+# Output data table (CSV); set to None to skip
+OUTPUT_CSV = "bads.csv"
+
+# Elements present in the simulation.
+# The code trusts this list and never auto-detects species from the trajectory.
+# Order does not matter — code sorts internally.
+ELEMENTS = ['Si', 'O', 'H']
+
+# Pairwise upper neighbor cutoff radii in Angstroms.
+# Keys must be "El1-El2" with elements sorted alphabetically.
+R_CUTOFF = {
+    'H-H':   2.0,
+    'H-O':   1.4,
+    'H-Si':  2.0,
+    'O-O':   2.8,
+    'O-Si':  2.2,
+    'Si-Si': 3.2,
+}
+
+# Pairwise lower neighbor cutoff radii in Angstroms.
+# Pairs closer than this are excluded (removes self-interactions and unphysical contacts).
+R_MINCUT = {
+    'H-H':   0.5,
+    'H-O':   0.5,
+    'H-Si':  0.5,
+    'O-O':   0.5,
+    'O-Si':  0.5,
+    'Si-Si': 0.5,
+}
+
+# Number of bins spanning 0–180°
+BINS = 180
+
+# Plot layout
+PLOT_NCOLS = 3
+PLOT_DPI   = 150
+
+# Column indices in the ITEM: ATOMS line (0-indexed).
+# Default matches: id element x y z vx vy vz
+COL_ELEMENT = 1
+COL_X       = 2
+COL_Y       = 3
+COL_Z       = 4
+
+# =============================================================================
+# END CONFIGURATION
+# =============================================================================
+
+
+def _pair_key(el1, el2):
+    """Return canonical pairwise key with elements sorted alphabetically."""
+    return '-'.join(sorted([el1, el2]))
+
+
+def _query_neighbors(aq, query_pos, r_max, r_min):
+    """
+    Query wing-atom positions against a pre-built AABBQuery over B atoms.
+
+    Parameters
+    ----------
+    aq        : freud.locality.AABBQuery built over pos_b
+    query_pos : positions of A or C atoms (shape N_wing x 3)
+    r_max     : upper cutoff for this pair (from R_CUTOFF)
+    r_min     : lower cutoff for this pair (from R_MINCUT)
+
+    Returns
+    -------
+    neighbors : list of length len(pos_b); neighbors[b_idx] is a list of
+                indices into query_pos that are within [r_min, r_max] of
+                that B atom.
+    """
+    if len(query_pos) == 0:
+        n_b = aq.npoints
+        return [[] for _ in range(n_b)]
+
+    result = aq.query(query_pos, {'r_max': r_max, 'r_min': r_min, 'exclude_ii': False})
+
+    n_b = aq.npoints
+    neighbors = [[] for _ in range(n_b)]
+    for bond in result:
+        # bond.point_idx     → index into pos_b (reference set passed to AABBQuery)
+        # bond.query_point_idx → index into query_pos (A or C atoms)
+        neighbors[bond.point_idx].append(bond.query_point_idx)
+    return neighbors
+
+
+def read_lammps_dump(filename):
+    frames = []
+
+    with open(filename) as f:
+        while True:
+            line = f.readline()
+            if not line:
+                break  # EOF
+
+            # TIMESTEP
+            timestep = int(f.readline().strip())
+
+            # NUMBER OF ATOMS
+            f.readline()
+            n_atoms = int(f.readline().strip())
+
+            # BOX BOUNDS
+            f.readline()
+            xlo, xhi = map(float, f.readline().split())
+            ylo, yhi = map(float, f.readline().split())
+            zlo, zhi = map(float, f.readline().split())
+
+            # ATOMS header line
+            f.readline()
+
+            elements, positions = [], []
+            for _ in range(n_atoms):
+                parts = f.readline().split()
+                elements.append(parts[COL_ELEMENT])
+                positions.append([
+                    float(parts[COL_X]),
+                    float(parts[COL_Y]),
+                    float(parts[COL_Z]),
+                ])
+
+            box = freud.box.Box(
+                Lx=xhi - xlo,
+                Ly=yhi - ylo,
+                Lz=zhi - zlo,
+            )
+            positions = np.array(positions)
+
+            # wrap positions into [-L/2, L/2] as freud expects
+            center = np.array([(xlo + xhi) / 2, (ylo + yhi) / 2, (zlo + zhi) / 2])
+            positions -= center
+
+            frames.append({
+                'timestep': timestep,
+                'box':      box,
+                'positions': positions,
+                'elements': np.array(elements),
+            })
+
+    return frames
+
+
+def build_triplet_labels(elements):
+    """
+    Return all unique (el_a, el_b, el_c) triplets where el_b is the central atom.
+    Wings use combinations_with_replacement so el_a <= el_c alphabetically,
+    exploiting θ(A-B-C) = θ(C-B-A).
+    For N elements this gives N * N*(N+1)/2 unique triplets.
+    """
+    els = sorted(elements)
+    triplets = []
+    for el_b in els:
+        for el_a, el_c in itertools.combinations_with_replacement(els, 2):
+            triplets.append((el_a, el_b, el_c))
+    return triplets
+
+
+def compute_bad(frames, el_a, el_b, el_c):
+    """
+    Compute the bond angle distribution for A-B-C triplets (B is the central atom).
+
+    Only A-B and C-B distances within their respective pairwise [R_MINCUT, R_CUTOFF]
+    are included. Each frame's histogram is normalized to unit-area probability
+    density, then the mean is taken across frames.
+
+    Returns
+    -------
+    bin_centers : ndarray, shape (BINS,) — angles in degrees
+    histogram   : ndarray, shape (BINS,) — mean P(θ), integrates to 1
+    """
+    key_ab   = _pair_key(el_a, el_b)
+    key_cb   = _pair_key(el_c, el_b)
+    r_max_ab = R_CUTOFF[key_ab]
+    r_min_ab = R_MINCUT[key_ab]
+    r_max_cb = R_CUTOFF[key_cb]
+    r_min_cb = R_MINCUT[key_cb]
+    same_wing = (el_a == el_c)
+
+    bin_edges     = np.linspace(0.0, 180.0, BINS + 1)
+    bin_width     = bin_edges[1] - bin_edges[0]
+    hist_accum    = np.zeros(BINS)
+    n_frames_used = 0
+
+    for frame in frames:
+        els = frame['elements']
+        pos = frame['positions']
+        box = frame['box']
+
+        pos_b = pos[els == el_b]
+        pos_a = pos[els == el_a]
+        pos_c = pos[els == el_c]
+
+        if len(pos_b) == 0 or len(pos_a) == 0 or len(pos_c) == 0:
+            continue
+
+        aq = freud.locality.AABBQuery(box, pos_b)
+
+        # ---- same-wing (A == C, e.g. O-Si-O) --------------------------------
+        if same_wing:
+            a_neighbors = _query_neighbors(aq, pos_a, r_max_ab, r_min_ab)
+            # no second query — c_neighbors = a_neighbors
+
+            frame_angles = []
+            for b_idx in range(len(pos_b)):
+                a_nbrs = a_neighbors[b_idx]
+                if len(a_nbrs) < 2:
+                    continue
+
+                v_a = box.wrap(pos_a[a_nbrs] - pos_b[b_idx])  # (n_a, 3) MIC vectors
+
+                i, j = np.triu_indices(len(a_nbrs), k=1)      # unique pairs, no self-pairs
+                v1, v2 = v_a[i], v_a[j]
+
+                cos_theta = (
+                    np.einsum('ij,ij->i', v1, v2)
+                    / (np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1))
+                )
+                frame_angles.append(
+                    np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+                )
+
+        # ---- different-wing (A != C, e.g. H-Si-O) ---------------------------
+        else:
+            a_neighbors = _query_neighbors(aq, pos_a, r_max_ab, r_min_ab)
+            c_neighbors = _query_neighbors(aq, pos_c, r_max_cb, r_min_cb)
+
+            frame_angles = []
+            for b_idx in range(len(pos_b)):
+                a_nbrs = a_neighbors[b_idx]
+                c_nbrs = c_neighbors[b_idx]
+                if len(a_nbrs) == 0 or len(c_nbrs) == 0:
+                    continue
+
+                v_a = box.wrap(pos_a[a_nbrs] - pos_b[b_idx])  # (n_a, 3) MIC vectors
+                v_c = box.wrap(pos_c[c_nbrs] - pos_b[b_idx])  # (n_c, 3) MIC vectors
+
+                i = np.repeat(np.arange(len(a_nbrs)), len(c_nbrs))
+                j = np.tile(np.arange(len(c_nbrs)), len(a_nbrs))
+                v1, v2 = v_a[i], v_c[j]                       # full A x C Cartesian product
+
+                cos_theta = (
+                    np.einsum('ij,ij->i', v1, v2)
+                    / (np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1))
+                )
+                frame_angles.append(
+                    np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
+                )
+
+        if not frame_angles:
+            continue
+
+        all_angles = np.concatenate(frame_angles)
+        h, _ = np.histogram(all_angles, bins=bin_edges)
+        total = h.sum()
+        if total > 0:
+            # normalize so that Σ P(θᵢ) · Δθ = 1
+            hist_accum += h / (total * bin_width)
+            n_frames_used += 1
+
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+    if n_frames_used == 0:
+        return bin_centers, np.zeros(BINS)
+    return bin_centers, hist_accum / n_frames_used
+
+
+def save_csv(results, filename):
+    """Save results dict {label: (angles, hist)} to CSV with one column per label."""
+    angles = next(iter(results.values()))[0]
+    header = 'angle_deg,' + ','.join(results.keys())
+    data   = np.column_stack([angles] + [h for _, h in results.values()])
+    np.savetxt(filename, data, delimiter=',', header=header, comments='', fmt='%.6f')
+    print(f"Data table saved to {filename}")
+
+
+def plot_bads(results):
+    n     = len(results)
+    ncols = PLOT_NCOLS
+    nrows = (n + ncols - 1) // ncols
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), squeeze=False)
+    axes = axes.flatten()
+
+    for ax, (name, (angles, hist)) in zip(axes, results.items()):
+        ax.plot(angles, hist)
+        ax.set_xlabel('Angle (degrees)')
+        ax.set_ylabel('P(θ)')
+        ax.set_title(name)
+        ax.set_xlim(0, 180)
+
+    for ax in axes[n:]:
+        ax.set_visible(False)
+
+    plt.tight_layout()
+    plt.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
+    plt.show()
+    print(f"Plot saved to {OUTPUT_PLOT}")
+
+
+if __name__ == '__main__':
+    print(f"Reading trajectory: {DUMP_FILE}")
+    frames = read_lammps_dump(DUMP_FILE)
+
+    atom_counts = [len(f['positions']) for f in frames]
+    print(f"Frames read: {len(frames)}")
+    print(f"Atoms range: {min(atom_counts)} – {max(atom_counts)}")
+    print(f"Atoms mean:  {np.mean(atom_counts):.1f}")
+
+    elements = sorted(ELEMENTS)
+    print(f"Elements (from config): {elements}")
+
+    triplets = build_triplet_labels(elements)
+    print(f"Triplets to compute: {len(triplets)}")
+
+    results = {}
+    for el_a, el_b, el_c in triplets:
+        label = f'{el_a}-{el_b}-{el_c}'
+        print(f"Computing BAD: {label}...")
+        angles, hist = compute_bad(frames, el_a, el_b, el_c)
+        results[label] = (angles, hist)
+
+    if OUTPUT_CSV is not None:
+        save_csv(results, OUTPUT_CSV)
+
+    plot_bads(results)

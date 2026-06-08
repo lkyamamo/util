@@ -1,0 +1,5 @@
+input: full h5 file that contains all timesteps of voxel data
+
+interactive window that will allow me to look at each timestep of these voxels. 
+there should be multiple different view methods depending on the quantity that wants to be observed.
+for all quantities it should use something like a pooling method to smooth out the data for visualization
