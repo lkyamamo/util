@@ -1,12 +1,13 @@
 import math
+import sys
 from collections import defaultdict
 
 import numpy as np
 import h5py
 
 # --- Configuration ---
-DUMP_FILE   = "shock_analysis_test.dump"
-OUTPUT_FILE = "output.h5"
+# DUMP_FILE and OUTPUT_FILE are passed as CLI args (for SLURM job arrays)
+# Usage: python voxel_analysis.py <dump_file> <output_file>
 VOXEL_SIZE  = 10.0      # Å (10 Å = 1 nm)
 
 # Atom type IDs (1-based, must match LAMMPS dump)
@@ -200,7 +201,10 @@ def streaming_loop(file, attrs, h5file):
 
 
 def main():
-    with open(DUMP_FILE, "r") as f:
+    dump_file   = sys.argv[1]
+    output_file = sys.argv[2]
+
+    with open(dump_file, "r") as f:
         timestep, N, xlo, xhi, ylo, yhi, zlo, zhi = parse_header(f)
 
         nx = math.ceil((xhi - xlo) / VOXEL_SIZE)
@@ -220,7 +224,7 @@ def main():
             'h_type': H_TYPE
         }
 
-        h5file = preallocate_hdf5(OUTPUT_FILE, nx, ny, nz, attrs)
+        h5file = preallocate_hdf5(output_file, nx, ny, nz, attrs)
         streaming_loop(f, attrs, h5file)
         h5file.close()
 
