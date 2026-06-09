@@ -1,3 +1,27 @@
+"""
+rdf_freud.py — Radial Distribution Function and Coordination Number calculator using freud
+
+QUICK START
+-----------
+1. Set DUMP_FILE to your LAMMPS custom dump trajectory.
+2. Verify COL_ELEMENT / COL_X / COL_Y / COL_Z match your dump's ITEM: ATOMS column order.
+3. Set R_MAX to less than half the shortest box dimension.
+4. Run:  python rdf_freud.py
+
+OUTPUT
+------
+- rdfs.png  — g(r) subplot grid, one panel per element pair + total + neutron-weighted
+- rdfs.csv  — r (Å), g(r) per pair, total, neutron-weighted  (set OUTPUT_CSV=None to skip)
+- nrs.png   — cumulative coordination number n(r) plots       (set OUTPUT_NR_PLOT=None to skip)
+- nrs.csv   — r (Å), n(r) per pair                            (set OUTPUT_NR_CSV=None to skip)
+
+COLUMN LAYOUT
+-------------
+Adjust COL_ELEMENT / COL_X / COL_Y / COL_Z if your dump's ITEM: ATOMS columns differ
+from the default layout:  id  element  x  y  z  vx  vy  vz
+                          0   1        2  3  4  5   6   7
+"""
+
 import itertools
 
 import numpy as np
@@ -252,10 +276,11 @@ def plot_rdfs(results):
     for ax in axes[n:]:
         ax.set_visible(False)
 
-    plt.tight_layout()
-    plt.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
+    fig.tight_layout()
+    if OUTPUT_PLOT is not None:
+        fig.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
+        print(f"Plot saved to {OUTPUT_PLOT}")
     plt.show()
-    print(f"Plot saved to {OUTPUT_PLOT}")
 
 
 def plot_nrs(nr_results):
@@ -275,10 +300,11 @@ def plot_nrs(nr_results):
     for ax in axes[n:]:
         ax.set_visible(False)
 
-    plt.tight_layout()
-    plt.savefig(OUTPUT_NR_PLOT, dpi=PLOT_DPI)
+    fig.tight_layout()
+    if OUTPUT_NR_PLOT is not None:
+        fig.savefig(OUTPUT_NR_PLOT, dpi=PLOT_DPI)
+        print(f"n(r) plot saved to {OUTPUT_NR_PLOT}")
     plt.show()
-    print(f"n(r) plot saved to {OUTPUT_NR_PLOT}")
 
 
 if __name__ == '__main__':
