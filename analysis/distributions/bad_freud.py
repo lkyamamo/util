@@ -1,3 +1,37 @@
+"""
+bad_freud.py — Bond Angle Distribution calculator using freud
+
+QUICK START
+-----------
+1. Set DUMP_FILE to your LAMMPS custom dump trajectory.
+2. Set ELEMENTS to the list of element symbols present in the simulation.
+3. Set R_CUTOFF and R_MINCUT pairwise cutoffs for every element pair.
+4. Run:  python bad_freud.py
+
+OUTPUT
+------
+- A PNG plot of all BAD curves  (OUTPUT_PLOT)
+- A CSV table of angle vs P(θ)  (OUTPUT_CSV; set to None to skip)
+
+COMPUTING SPECIFIC TRIPLETS
+---------------------------
+By default all unique (A-B-C) triplets from ELEMENTS are computed.
+To restrict to specific triplets, set TRIPLETS in the config, e.g.:
+
+    TRIPLETS = [('H', 'O', 'H')]           # H-O-H only
+    TRIPLETS = [('H', 'O', 'H'),
+                ('O', 'Si', 'O')]           # two specific BADs
+
+B is always the central atom.  Wing elements (A, C) are sorted
+alphabetically so ('H', 'O', 'H') and ('H', 'O', 'H') are the same.
+Set TRIPLETS = None to restore the full combinatorial sweep.
+
+COLUMN LAYOUT
+-------------
+Adjust COL_ELEMENT / COL_X / COL_Y / COL_Z if your dump's ITEM: ATOMS
+columns differ from the default (id element x y z vx vy vz).
+"""
+
 import itertools
 
 import numpy as np
@@ -44,6 +78,11 @@ R_MINCUT = {
     'Si-Si': 0.5,
 }
 
+# Restrict which triplets to compute.
+# Set to a list of (el_a, el_b, el_c) tuples to compute only those BADs.
+# Leave as None to compute all combinations derived from ELEMENTS.
+TRIPLETS = None
+
 # Number of bins spanning 0–180°
 BINS = 180
 
@@ -85,18 +124,17 @@ def _query_neighbors(aq, query_pos, r_max, r_min):
                 indices into query_pos that are within [r_min, r_max] of
                 that B atom.
     """
+    n_b = len(aq.points)
     if len(query_pos) == 0:
-        n_b = aq.npoints
         return [[] for _ in range(n_b)]
 
     result = aq.query(query_pos, {'r_max': r_max, 'r_min': r_min, 'exclude_ii': False})
-
-    n_b = aq.npoints
     neighbors = [[] for _ in range(n_b)]
     for bond in result:
-        # bond.point_idx     → index into pos_b (reference set passed to AABBQuery)
-        # bond.query_point_idx → index into query_pos (A or C atoms)
-        neighbors[bond.point_idx].append(bond.query_point_idx)
+        # bond = (query_point_index, point_index, distance)
+        # bond[0] → index into query_pos (A or C atoms)
+        # bond[1] → index into pos_b (B reference atoms)
+        neighbors[bond[1]].append(bond[0])
     return neighbors
 
 
@@ -324,7 +362,7 @@ if __name__ == '__main__':
     elements = sorted(ELEMENTS)
     print(f"Elements (from config): {elements}")
 
-    triplets = build_triplet_labels(elements)
+    triplets = TRIPLETS if TRIPLETS is not None else build_triplet_labels(elements)
     print(f"Triplets to compute: {len(triplets)}")
 
     results = {}
