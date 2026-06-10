@@ -33,7 +33,7 @@ import matplotlib.pyplot as plt
 # =============================================================================
 
 # Input trajectory file
-DUMP_FILE = "dump.lammpstrj"
+DUMP_FILE = "../int_dump.lammpstrj"
 
 # Output plot file
 OUTPUT_PLOT = "rdfs.png"
