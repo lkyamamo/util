@@ -8,6 +8,18 @@ la = float(sys.argv[3])
 lb = float(sys.argv[4])
 lc = float(sys.argv[5])
 
+# Averaging method: optional 6th argument, default 'binned'
+# Choices: 'windowed', 'cumulative', 'hybrid', 'binned'
+VALID_METHODS = ('windowed', 'cumulative', 'hybrid', 'binned')
+if len(sys.argv) > 6:
+    AVERAGING_METHOD = sys.argv[6]
+    if AVERAGING_METHOD not in VALID_METHODS:
+        print(f"ERROR: Unknown averaging method '{AVERAGING_METHOD}'. "
+              f"Valid options: {VALID_METHODS}", file=sys.stderr)
+        sys.exit(1)
+else:
+    AVERAGING_METHOD = 'binned'
+
 # units of K A^3/(e^2 m^2)
 PREFACTOR = (2.56*(10**7))/(1.38*8.85*T*la*lb*lc)
 
@@ -20,13 +32,6 @@ BIN_SIZE = 100
 # Pre-compute constants for better performance
 WINDOW_SIZE_FLOAT = float(WINDOW_SIZE)
 DEBYE_CONVERSION_FACTOR = 4.8032**2  # Pre-compute the conversion factor
-
-# Choose averaging method: 'windowed', 'cumulative', 'hybrid', or 'binned'
-# 'windowed': Only calculate averages when window is full (10,000 frames)
-# 'cumulative': Calculate averages over all frames up to current point
-# 'hybrid': Use cumulative averaging until window is full, then switch to windowed
-# 'binned': Use standalone binned averaging (every 100 frames)
-AVERAGING_METHOD = 'binned'  # Change to 'cumulative', 'hybrid', or 'binned' if desired
 
 # Timing configuration for large datasets
 TIMING_CHECKPOINT_INTERVAL = 50000  # Progress updates every N frames (adjust for dataset size)

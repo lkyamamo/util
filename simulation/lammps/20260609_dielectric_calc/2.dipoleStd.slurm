@@ -8,11 +8,12 @@
 #SBATCH --output=logs/dipoleStd_%j.out
 
 # --- Required environment variables (set by submit_pipeline.sh via --export) ---
-# OUTPUT_DIR   : directory containing dipole_output.txt (written by 1.aggregate.py)
-# SCRIPT_DIR   : directory containing 2.dipoleStd.py
-# TEMPERATURE  : simulation temperature in Kelvin
-# LA, LB, LC   : box dimensions in Angstroms
-# VENV_PATH    : (optional) path to the virtualenv to activate
+# OUTPUT_DIR       : directory containing dipole_output.txt (written by 1.aggregate.py)
+# SCRIPT_DIR       : directory containing 2.dipoleStd.py
+# TEMPERATURE      : simulation temperature in Kelvin
+# LA, LB, LC       : box dimensions in Angstroms
+# AVERAGING_METHOD : windowed | cumulative | hybrid | binned (default: binned)
+# VENV_PATH        : (optional) path to the virtualenv to activate
 
 # --- Environment setup ---
 module purge
@@ -31,13 +32,14 @@ fi
 
 echo "dipoleStd job starting at $(date)"
 echo "Input : $DIPOLE_FILE"
-echo "T=$TEMPERATURE  la=$LA  lb=$LB  lc=$LC"
+echo "T=$TEMPERATURE  la=$LA  lb=$LB  lc=$LC  method=${AVERAGING_METHOD:-binned}"
 
 python "$SCRIPT_DIR/2.dipoleStd.py" \
     "$DIPOLE_FILE" \
     "$TEMPERATURE" \
     "$LA" \
     "$LB" \
-    "$LC"
+    "$LC" \
+    "${AVERAGING_METHOD:-binned}"
 
 echo "dipoleStd job finished at $(date)"

@@ -25,10 +25,11 @@ TYPE_O=1       # LAMMPS atom type for oxygen
 TYPE_H=2       # LAMMPS atom type for hydrogen
 
 # Step 2 (2.dipoleStd.py) parameters
-TEMPERATURE=298.0   # simulation temperature in Kelvin
-LA=37.2514          # box dimension a in Angstroms
-LB=37.2514          # box dimension b in Angstroms
-LC=37.2514          # box dimension c in Angstroms
+TEMPERATURE=298.0     # simulation temperature in Kelvin
+LA=37.2514            # box dimension a in Angstroms
+LB=37.2514            # box dimension b in Angstroms
+LC=37.2514            # box dimension c in Angstroms
+AVERAGING_METHOD=binned  # windowed | cumulative | hybrid | binned
 
 VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
 
@@ -99,7 +100,7 @@ echo "Aggregate job ID: $MERGE_JOB (runs after array completes)"
 
 DIPOLE_STD_JOB=$(sbatch --parsable \
     --dependency=afterok:$MERGE_JOB \
-    --export=OUTPUT_DIR="$OUTPUT_DIR",SCRIPT_DIR="$SCRIPT_DIR",VENV_PATH="$VENV_PATH",TEMPERATURE="$TEMPERATURE",LA="$LA",LB="$LB",LC="$LC" \
+    --export=OUTPUT_DIR="$OUTPUT_DIR",SCRIPT_DIR="$SCRIPT_DIR",VENV_PATH="$VENV_PATH",TEMPERATURE="$TEMPERATURE",LA="$LA",LB="$LB",LC="$LC",AVERAGING_METHOD="$AVERAGING_METHOD" \
     "$SCRIPT_DIR/2.dipoleStd.slurm")
 
 echo "dipoleStd job ID: $DIPOLE_STD_JOB (runs after aggregate completes)"
@@ -107,4 +108,4 @@ echo ""
 echo "Monitor with: squeue -j $ARRAY_JOB,$MERGE_JOB,$DIPOLE_STD_JOB"
 echo "Dipole output : $OUTPUT_DIR/dipole_output.txt"
 echo "Warnings log  : $OUTPUT_DIR/dipole_warnings.log"
-echo "Dielectric CSV: $OUTPUT_DIR/dipole_output_timestep_data_binned.csv"
+echo "Dielectric CSV: $OUTPUT_DIR/dipole_output_timestep_data_${AVERAGING_METHOD}.csv"
