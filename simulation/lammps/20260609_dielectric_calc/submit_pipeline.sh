@@ -13,8 +13,8 @@
 # =============================================================================
 
 # --- Configuration ---
-DUMP_DIR="/path/to/dump/dir"      # directory containing LAMMPS dump files
-DUMP_GLOB="dump.*.lammpstrj"      # glob matching your dump file names
+DUMP_DIR="../dumps"      # directory containing LAMMPS dump files
+DUMP_GLOB="dielectric.*.custom"      # glob matching your dump file names
 OUTPUT_DIR="$DUMP_DIR/dipole_output"
 
 CUTOFF=1.2     # O-H bond cutoff in Angstroms
