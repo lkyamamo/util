@@ -1,10 +1,13 @@
 #!/bin/bash
 
 # =============================================================================
-# Dielectric constant pipeline — step 1 submission
+# Dielectric constant pipeline — full pipeline submission
 #
-# Submits a SLURM job array (one task per dump file) then chains the
-# aggregate step to run automatically when all array tasks finish.
+# Step 1 : SLURM job array  — one task per dump file, computes per-frame dipole
+# Step 1b: Aggregate job    — combines per-frame outputs into dipole_output.txt
+# Step 2 : dipoleStd job    — computes dielectric constant from dipole_output.txt
+#
+# All three steps are chained automatically via SLURM dependencies.
 #
 # Usage:
 #   bash submit_pipeline.sh
@@ -13,18 +16,24 @@
 # =============================================================================
 
 # --- Configuration ---
-DUMP_DIR="../dumps"      # directory containing LAMMPS dump files
-DUMP_GLOB="dielectric.*.custom"      # glob matching your dump file names
+DUMP_DIR="../dumps"              # directory containing LAMMPS dump files
+DUMP_GLOB="dielectric.*.custom" # glob matching your dump file names
 OUTPUT_DIR="$DUMP_DIR/dipole_output"
 
 CUTOFF=1.2     # O-H bond cutoff in Angstroms
 TYPE_O=1       # LAMMPS atom type for oxygen
 TYPE_H=2       # LAMMPS atom type for hydrogen
 
+# Step 2 (2.dipoleStd.py) parameters
+TEMPERATURE=298.0   # simulation temperature in Kelvin
+LA=37.2514          # box dimension a in Angstroms
+LB=37.2514          # box dimension b in Angstroms
+LC=37.2514          # box dimension c in Angstroms
+
 VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
 
 # Maximum simultaneous array tasks (throttle to avoid overwhelming the scheduler)
-MAX_SIMULTANEOUS=50
+MAX_SIMULTANEOUS=64
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # ---------------------
@@ -87,7 +96,15 @@ MERGE_JOB=$(sbatch --parsable \
     "$SCRIPT_DIR/1.aggregate.slurm")
 
 echo "Aggregate job ID: $MERGE_JOB (runs after array completes)"
+
+DIPOLE_STD_JOB=$(sbatch --parsable \
+    --dependency=afterok:$MERGE_JOB \
+    --export=OUTPUT_DIR="$OUTPUT_DIR",SCRIPT_DIR="$SCRIPT_DIR",VENV_PATH="$VENV_PATH",TEMPERATURE="$TEMPERATURE",LA="$LA",LB="$LB",LC="$LC" \
+    "$SCRIPT_DIR/2.dipoleStd.slurm")
+
+echo "dipoleStd job ID: $DIPOLE_STD_JOB (runs after aggregate completes)"
 echo ""
-echo "Monitor with: squeue -j $ARRAY_JOB,$MERGE_JOB"
-echo "Final output: $OUTPUT_DIR/dipole_output.txt"
-echo "Warnings log: $OUTPUT_DIR/dipole_warnings.log"
+echo "Monitor with: squeue -j $ARRAY_JOB,$MERGE_JOB,$DIPOLE_STD_JOB"
+echo "Dipole output : $OUTPUT_DIR/dipole_output.txt"
+echo "Warnings log  : $OUTPUT_DIR/dipole_warnings.log"
+echo "Dielectric CSV: $OUTPUT_DIR/dipole_output_timestep_data_binned.csv"
