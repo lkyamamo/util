@@ -10,6 +10,15 @@
 # --- Required environment variables (set by submit_pipeline.sh via --export) ---
 # OUTPUT_DIR  : directory containing per-frame dipole_*.txt and warn_*.log files
 # SCRIPT_DIR  : directory containing 1.aggregate.py
+# VENV_PATH   : (optional) path to the uv/virtualenv to activate
+
+# --- Environment setup ---
+module purge
+module load usc
+
+if [ -n "$VENV_PATH" ]; then
+    source "$VENV_PATH/bin/activate"
+fi
 
 echo "Aggregate job starting at $(date)"
 echo "OUTPUT_DIR: $OUTPUT_DIR"

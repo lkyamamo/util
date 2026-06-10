@@ -15,6 +15,15 @@
 # CUTOFF       : O-H bond cutoff in Angstroms (e.g. 1.2)
 # TYPE_O       : LAMMPS atom type integer for oxygen (e.g. 1)
 # TYPE_H       : LAMMPS atom type integer for hydrogen (e.g. 2)
+# VENV_PATH    : (optional) path to the uv/virtualenv to activate
+
+# --- Environment setup ---
+module purge
+module load usc
+
+if [ -n "$VENV_PATH" ]; then
+    source "$VENV_PATH/bin/activate"
+fi
 
 mkdir -p "$OUTPUT_DIR"
 
