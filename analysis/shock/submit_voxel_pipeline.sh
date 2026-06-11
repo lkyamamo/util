@@ -6,6 +6,7 @@ DUMP_GLOB="dump.*"              # adjust to match your dump file naming
 OUTPUT_DIR="$DUMP_DIR/voxel_output"
 FINAL_H5="$DUMP_DIR/trajectory.h5"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV_PATH="$SCRIPT_DIR/venv"    # path to virtual environment
 
 N=$(ls "$DUMP_DIR"/$DUMP_GLOB | wc -l)
 ARRAY_MAX=$((N - 1))
@@ -14,7 +15,7 @@ echo "Found $N dump files in $DUMP_DIR, submitting array 0-${ARRAY_MAX}"
 
 ARRAY_JOB=$(sbatch --parsable \
     --array=0-${ARRAY_MAX}%20 \
-    --export=DUMP_DIR=$DUMP_DIR,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR \
+    --export=DUMP_DIR=$DUMP_DIR,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH \
     "$SCRIPT_DIR/voxel_analysis.slurm")
 
 echo "Array job ID: $ARRAY_JOB"

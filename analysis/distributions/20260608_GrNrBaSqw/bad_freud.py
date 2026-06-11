@@ -233,7 +233,14 @@ def compute_bad(frames, el_a, el_b, el_c, r_max_ab, r_min_ab, r_max_cb, r_min_cb
     bin_centers : ndarray, shape (BINS,) — angles in degrees
     histogram   : ndarray, shape (BINS,) — mean P(θ), integrates to 1
     """
-    same_wing = (el_a == el_c)
+    # Use the symmetric same-wing branch only when both element and cutoffs match.
+    # If the cutoffs differ (e.g. O-H--O), fall through to the different-wing
+    # branch so each arm is queried independently.
+    same_wing = (
+        el_a == el_c
+        and r_max_ab == r_max_cb
+        and r_min_ab == r_min_cb
+    )
 
     bin_edges     = np.linspace(0.0, 180.0, BINS + 1)
     bin_width     = bin_edges[1] - bin_edges[0]
@@ -254,10 +261,9 @@ def compute_bad(frames, el_a, el_b, el_c, r_max_ab, r_min_ab, r_max_cb, r_min_cb
 
         aq = freud.locality.AABBQuery(box, pos_b)
 
-        # ---- same-wing (A == C, e.g. O-Si-O) --------------------------------
+        # ---- same-wing (A == C, same cutoffs, e.g. O-Si-O) ------------------
         if same_wing:
             a_neighbors = _query_neighbors(aq, pos_a, r_max_ab, r_min_ab)
-            # no second query — c_neighbors = a_neighbors
 
             frame_angles = []
             for b_idx in range(len(pos_b)):
@@ -278,24 +284,34 @@ def compute_bad(frames, el_a, el_b, el_c, r_max_ab, r_min_ab, r_max_cb, r_min_cb
                     np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
                 )
 
-        # ---- different-wing (A != C, e.g. H-Si-O) ---------------------------
+        # ---- different-wing (A != C, or same element with different cutoffs) -
         else:
             a_neighbors = _query_neighbors(aq, pos_a, r_max_ab, r_min_ab)
             c_neighbors = _query_neighbors(aq, pos_c, r_max_cb, r_min_cb)
 
             frame_angles = []
             for b_idx in range(len(pos_b)):
-                a_nbrs = a_neighbors[b_idx]
-                c_nbrs = c_neighbors[b_idx]
+                a_nbrs = np.array(a_neighbors[b_idx])
+                c_nbrs = np.array(c_neighbors[b_idx])
                 if len(a_nbrs) == 0 or len(c_nbrs) == 0:
                     continue
 
                 v_a = box.wrap(pos_a[a_nbrs] - pos_b[b_idx])  # (n_a, 3) MIC vectors
                 v_c = box.wrap(pos_c[c_nbrs] - pos_b[b_idx])  # (n_c, 3) MIC vectors
 
-                i = np.repeat(np.arange(len(a_nbrs)), len(c_nbrs))
-                j = np.tile(np.arange(len(c_nbrs)), len(a_nbrs))
-                v1, v2 = v_a[i], v_c[j]                       # full A x C Cartesian product
+                ii = np.repeat(np.arange(len(a_nbrs)), len(c_nbrs))
+                jj = np.tile(np.arange(len(c_nbrs)), len(a_nbrs))
+
+                # When wings are the same element, exclude self-pairs (same atom
+                # appearing on both arms gives a spurious 0° angle).
+                if el_a == el_c:
+                    mask = a_nbrs[ii] != c_nbrs[jj]
+                    ii, jj = ii[mask], jj[mask]
+
+                if len(ii) == 0:
+                    continue
+
+                v1, v2 = v_a[ii], v_c[jj]                     # A x C Cartesian product
 
                 cos_theta = (
                     np.einsum('ij,ij->i', v1, v2)
