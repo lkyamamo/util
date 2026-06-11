@@ -5,34 +5,33 @@ QUICK START
 -----------
 1. Set DUMP_FILE to your LAMMPS custom dump trajectory.
 2. Set ELEMENTS to the list of element symbols present in the simulation.
-3. Set R_CUTOFF and R_MINCUT pairwise cutoffs for every element pair.
-4. Run:  python bad_freud.py
+3. Set R_CUTOFF and R_MINCUT pairwise cutoff radii for every element pair.
+4. Populate TRIPLET_CUTOFFS with the BADs to compute and their per-arm cutoffs.
+5. Run:  python bad_freud.py
 
 OUTPUT
 ------
 - A PNG plot of all BAD curves  (OUTPUT_PLOT)
 - A CSV table of angle vs P(θ)  (OUTPUT_CSV; set to None to skip)
 
-COMPUTING SPECIFIC TRIPLETS
----------------------------
-By default all unique (A-B-C) triplets from ELEMENTS are computed.
-To restrict to specific triplets, set TRIPLETS in the config, e.g.:
+TRIPLET_CUTOFFS
+---------------
+Each entry in TRIPLET_CUTOFFS is a dict specifying one BAD:
+    'triplet' : (el_a, el_b, el_c)  — B is the central atom; wings sorted alphabetically
+    'label'   : str                 — column name in the CSV / plot title (unique per triplet)
+    'r_max_ab', 'r_min_ab'          — radial cutoffs for the A-B bond
+    'r_max_cb', 'r_min_cb'          — radial cutoffs for the C-B bond
+                                      (any omitted value falls back to R_CUTOFF/R_MINCUT)
 
-    TRIPLETS = [('H', 'O', 'H')]           # H-O-H only
-    TRIPLETS = [('H', 'O', 'H'),
-                ('O', 'Si', 'O')]           # two specific BADs
-
-B is always the central atom.  Wing elements (A, C) are sorted
-alphabetically so ('H', 'O', 'H') and ('H', 'O', 'H') are the same.
-Set TRIPLETS = None to restore the full combinatorial sweep.
+The same triplet may appear more than once under different labels to compute
+the BAD with different cutoff windows; each entry is an independent calculation.
+Two entries sharing the same (triplet, label) raise a ValueError at startup.
 
 COLUMN LAYOUT
 -------------
 Adjust COL_ELEMENT / COL_X / COL_Y / COL_Z if your dump's ITEM: ATOMS
 columns differ from the default (id element x y z vx vy vz).
 """
-
-import itertools
 
 import numpy as np
 import freud
@@ -43,7 +42,7 @@ import matplotlib.pyplot as plt
 # =============================================================================
 
 # Input trajectory file
-DUMP_FILE = "dump.lammpstrj"
+DUMP_FILE = "../OH.lammpstrj"
 
 # Output plot file
 OUTPUT_PLOT = "bads.png"
@@ -78,10 +77,19 @@ R_MINCUT = {
     'Si-Si': 0.5,
 }
 
-# Restrict which triplets to compute.
-# Set to a list of (el_a, el_b, el_c) tuples to compute only those BADs.
-# Leave as None to compute all combinations derived from ELEMENTS.
-TRIPLETS = None
+# List of BADs to compute. Each entry is a dict with:
+#   'triplet' : (el_a, el_b, el_c)  — B is the central atom; wings sorted alphabetically
+#   'label'   : str                 — output label (must be unique per triplet)
+#   'r_max_ab', 'r_min_ab'          — cutoffs for the A-B bond (fall back to R_CUTOFF/R_MINCUT)
+#   'r_max_cb', 'r_min_cb'          — cutoffs for the C-B bond (fall back to R_CUTOFF/R_MINCUT)
+#
+# The same triplet may appear more than once with different labels and cutoffs;
+# each entry is treated as an independent BAD.
+# Two entries with identical (triplet, label) raise a ValueError at startup.
+TRIPLET_CUTOFFS = [
+    {'triplet': ('O', 'Si', 'O'), 'label': 'O-Si-O',
+     'r_max_ab': 2.2, 'r_min_ab': 0.5, 'r_max_cb': 2.2, 'r_min_cb': 0.5},
+]
 
 # Number of bins spanning 0–180°
 BINS = 180
@@ -105,6 +113,19 @@ COL_Z       = 4
 def _pair_key(el1, el2):
     """Return canonical pairwise key with elements sorted alphabetically."""
     return '-'.join(sorted([el1, el2]))
+
+
+def _validate_triplet_cutoffs(entries):
+    """Raise ValueError if any (triplet, label) pair appears more than once."""
+    seen = set()
+    for entry in entries:
+        key = (tuple(entry['triplet']), entry['label'])
+        if key in seen:
+            raise ValueError(
+                f"Duplicate (triplet, label) in TRIPLET_CUTOFFS: "
+                f"triplet={entry['triplet']}, label={entry['label']!r}"
+            )
+        seen.add(key)
 
 
 def _query_neighbors(aq, query_pos, r_max, r_min):
@@ -194,40 +215,24 @@ def read_lammps_dump(filename):
     return frames
 
 
-def build_triplet_labels(elements):
-    """
-    Return all unique (el_a, el_b, el_c) triplets where el_b is the central atom.
-    Wings use combinations_with_replacement so el_a <= el_c alphabetically,
-    exploiting θ(A-B-C) = θ(C-B-A).
-    For N elements this gives N * N*(N+1)/2 unique triplets.
-    """
-    els = sorted(elements)
-    triplets = []
-    for el_b in els:
-        for el_a, el_c in itertools.combinations_with_replacement(els, 2):
-            triplets.append((el_a, el_b, el_c))
-    return triplets
-
-
-def compute_bad(frames, el_a, el_b, el_c):
+def compute_bad(frames, el_a, el_b, el_c, r_max_ab, r_min_ab, r_max_cb, r_min_cb):
     """
     Compute the bond angle distribution for A-B-C triplets (B is the central atom).
 
-    Only A-B and C-B distances within their respective pairwise [R_MINCUT, R_CUTOFF]
+    Only A-B and C-B distances within their respective pairwise [r_min, r_max]
     are included. Each frame's histogram is normalized to unit-area probability
     density, then the mean is taken across frames.
+
+    Parameters
+    ----------
+    r_max_ab, r_min_ab : upper/lower cutoff for the A-B bond
+    r_max_cb, r_min_cb : upper/lower cutoff for the C-B bond
 
     Returns
     -------
     bin_centers : ndarray, shape (BINS,) — angles in degrees
     histogram   : ndarray, shape (BINS,) — mean P(θ), integrates to 1
     """
-    key_ab   = _pair_key(el_a, el_b)
-    key_cb   = _pair_key(el_c, el_b)
-    r_max_ab = R_CUTOFF[key_ab]
-    r_min_ab = R_MINCUT[key_ab]
-    r_max_cb = R_CUTOFF[key_cb]
-    r_min_cb = R_MINCUT[key_cb]
     same_wing = (el_a == el_c)
 
     bin_edges     = np.linspace(0.0, 180.0, BINS + 1)
@@ -351,6 +356,8 @@ def plot_bads(results):
 
 
 if __name__ == '__main__':
+    _validate_triplet_cutoffs(TRIPLET_CUTOFFS)
+
     print(f"Reading trajectory: {DUMP_FILE}")
     frames = read_lammps_dump(DUMP_FILE)
 
@@ -359,17 +366,21 @@ if __name__ == '__main__':
     print(f"Atoms range: {min(atom_counts)} – {max(atom_counts)}")
     print(f"Atoms mean:  {np.mean(atom_counts):.1f}")
 
-    elements = sorted(ELEMENTS)
-    print(f"Elements (from config): {elements}")
-
-    triplets = TRIPLETS if TRIPLETS is not None else build_triplet_labels(elements)
-    print(f"Triplets to compute: {len(triplets)}")
+    print(f"BADs to compute: {len(TRIPLET_CUTOFFS)}")
 
     results = {}
-    for el_a, el_b, el_c in triplets:
-        label = f'{el_a}-{el_b}-{el_c}'
+    for entry in TRIPLET_CUTOFFS:
+        el_a, el_b, el_c = entry['triplet']
+        label    = entry['label']
+        key_ab   = _pair_key(el_a, el_b)
+        key_cb   = _pair_key(el_c, el_b)
+        r_max_ab = entry.get('r_max_ab', R_CUTOFF[key_ab])
+        r_min_ab = entry.get('r_min_ab', R_MINCUT[key_ab])
+        r_max_cb = entry.get('r_max_cb', R_CUTOFF[key_cb])
+        r_min_cb = entry.get('r_min_cb', R_MINCUT[key_cb])
         print(f"Computing BAD: {label}...")
-        angles, hist = compute_bad(frames, el_a, el_b, el_c)
+        angles, hist = compute_bad(frames, el_a, el_b, el_c,
+                                   r_max_ab, r_min_ab, r_max_cb, r_min_cb)
         results[label] = (angles, hist)
 
     if OUTPUT_CSV is not None:

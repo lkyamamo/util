@@ -42,8 +42,8 @@ OUTPUT_PLOT = "rdfs.png"
 OUTPUT_CSV = "rdfs.csv"
 
 # RDF parameters
-R_MAX = 10.0        # maximum r in Angstroms; must be < half shortest box dimension
-BINS  = 200         # number of bins
+R_MAX = 20.0        # maximum r in Angstroms; must be < half shortest box dimension
+BINS  = 2000         # number of bins
 
 # Column indices in the ITEM: ATOMS line (0-indexed)
 # Default matches: id element x y z vx vy vz
