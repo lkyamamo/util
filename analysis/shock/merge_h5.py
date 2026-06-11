@@ -1,10 +1,12 @@
 import sys
 import glob
+import re
 import numpy as np
 import h5py
 
 def merge(output_dir, final_h5):
-    files = sorted(glob.glob(f"{output_dir}/output_*.h5"))
+    files = sorted(glob.glob(f"{output_dir}/output_*.h5"),
+                   key=lambda f: int(re.search(r'output_(\d+)\.h5$', f).group(1)))
     if not files:
         raise FileNotFoundError(f"No output_*.h5 files found in {output_dir}")
 

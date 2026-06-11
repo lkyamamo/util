@@ -7,4 +7,6 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=logs/merge_%j.out
 
+source "$VENV_PATH/bin/activate"
+
 python "$SCRIPT_DIR/merge_h5.py" "$OUTPUT_DIR" "$FINAL_H5"

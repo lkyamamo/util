@@ -4,25 +4,65 @@
 DUMP_DIR="/path/to/dump/dir"    # directory containing dump files
 DUMP_GLOB="dump.*"              # adjust to match your dump file naming
 OUTPUT_DIR="$DUMP_DIR/voxel_output"
-FINAL_H5="$DUMP_DIR/trajectory.h5"
+FINAL_H5="$SCRIPT_DIR/trajectory.h5"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PATH="$SCRIPT_DIR/venv"    # path to virtual environment
+BATCH_SIZE=64
 
-N=$(ls "$DUMP_DIR"/$DUMP_GLOB | wc -l)
-ARRAY_MAX=$((N - 1))
+N=$(ls "$DUMP_DIR"/$DUMP_GLOB 2>/dev/null | wc -l)
 
-echo "Found $N dump files in $DUMP_DIR, submitting array 0-${ARRAY_MAX}"
+if [ "$N" -eq 0 ]; then
+    echo "ERROR: No files matching '$DUMP_GLOB' found in '$DUMP_DIR'" >&2
+    exit 1
+fi
+
+mkdir -p "$SCRIPT_DIR/logs"
+mkdir -p "$OUTPUT_DIR"
+
+# --- Build list of unprocessed dump files ---
+DUMP_PREFIX="${DUMP_GLOB%%\**}"
+DUMP_SUFFIX="${DUMP_GLOB##*\*}"
+PENDING_FILE="$SCRIPT_DIR/pending_dumps.txt"
+> "$PENDING_FILE"
+
+skipped=0
+for DUMP in $(ls "$DUMP_DIR"/$DUMP_GLOB | sort); do
+    BASENAME=$(basename "$DUMP")
+    FRAME_ID="${BASENAME#$DUMP_PREFIX}"
+    FRAME_ID="${FRAME_ID%$DUMP_SUFFIX}"
+    if [ -f "$OUTPUT_DIR/output_${FRAME_ID}.h5" ]; then
+        skipped=$((skipped + 1))
+    else
+        echo "$DUMP" >> "$PENDING_FILE"
+    fi
+done
+
+N_PENDING=$(wc -l < "$PENDING_FILE")
+echo "Found $N dump files total — $skipped already processed, $N_PENDING pending"
+
+if [ "$N_PENDING" -eq 0 ]; then
+    echo "All frames already processed. Nothing to submit."
+    exit 0
+fi
+
+ARRAY_MAX=$((N_PENDING - 1))
+echo "Submitting array 0-${ARRAY_MAX} (max ${BATCH_SIZE} simultaneous)"
 
 ARRAY_JOB=$(sbatch --parsable \
-    --array=0-${ARRAY_MAX}%20 \
-    --export=DUMP_DIR=$DUMP_DIR,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH \
+    --array=0-${ARRAY_MAX}%${BATCH_SIZE} \
+    --export=PENDING_FILE=$PENDING_FILE,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH \
     "$SCRIPT_DIR/voxel_analysis.slurm")
+
+if [ -z "$ARRAY_JOB" ]; then
+    echo "ERROR: Array job submission failed" >&2
+    exit 1
+fi
 
 echo "Array job ID: $ARRAY_JOB"
 
 MERGE_JOB=$(sbatch --parsable \
     --dependency=afterok:$ARRAY_JOB \
-    --export=OUTPUT_DIR=$OUTPUT_DIR,FINAL_H5=$FINAL_H5,SCRIPT_DIR=$SCRIPT_DIR \
+    --export=OUTPUT_DIR=$OUTPUT_DIR,FINAL_H5=$FINAL_H5,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH \
     "$SCRIPT_DIR/merge_h5.slurm")
 
 echo "Merge job ID: $MERGE_JOB (runs after array completes)"

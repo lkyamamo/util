@@ -1,6 +1,4 @@
 import sys
-import tkinter as tk
-from tkinter import simpledialog
 
 import numpy as np
 import h5py
@@ -81,15 +79,11 @@ def read_meta(h5file):
 # Clip plane dialog  (ax + by + cz = d)
 # ---------------------------------------------------------------------------
 def ask_clip_plane(state):
-    root = tk.Tk()
-    root.withdraw()
-    raw = simpledialog.askstring(
-        "Clip plane",
-        "Enter plane equation coefficients:\n  a  b  c  d   (for ax+by+cz=d)",
-        parent=root,
-    )
-    root.destroy()
-    if raw is None:
+    try:
+        raw = input("Clip plane — enter coefficients a b c d (for ax+by+cz=d): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if not raw:
         return
     try:
         a, b, c, d = map(float, raw.split())
@@ -117,7 +111,7 @@ def main():
     T      = meta['T']
 
     plotter = pv.Plotter(title="Shock Voxel Visualizer")
-    plotter.set_background("black")
+    plotter.set_background("#1a1a2e")
 
     # ---- render helper ----
     def refresh():
@@ -148,7 +142,20 @@ def main():
             f"[p]   set clip plane  (ax+by+cz=d)\n"
             f"[c]   toggle clip\n"
             f"[r]   reset clip",
-            position="upper_left", font_size=9, color="white",
+            position="upper_left", font_size=9, color="#e0e0e0",
+        )
+        plotter.add_axes(
+            xlabel='X', ylabel='Y', zlabel='Z',
+            color='white',
+            line_width=3,
+        )
+        plotter.show_bounds(
+            grid='back',
+            location='outer',
+            ticks='outside',
+            font_size=10,
+            color='white',
+            fmt='%.0f',
         )
         plotter.render()
 
