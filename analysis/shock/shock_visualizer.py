@@ -6,6 +6,10 @@ import h5py
 import numpy as np
 import pyvista as pv
 from scipy.ndimage import uniform_filter
+from vtkmodules.vtkCommonDataModel import vtkPiecewiseFunction
+from vtkmodules.vtkRenderingCore import vtkColorTransferFunction, vtkVolume, vtkVolumeProperty
+from vtkmodules.vtkRenderingVolume import vtkSmartVolumeMapper
+from vtkmodules.util import numpy_support
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -30,10 +34,6 @@ CMAPS = {
 SMOOTH_KERNEL   = 3
 VIEW_TYPES      = ['all', 'water', 'silica']
 PLAY_FPS_STEPS  = [1, 2, 5, 10, 15, 24, 30, 60]
-
-# Sentinel value written to invisible cells. Must be below any real data value.
-# Using float32 min ensures no physical quantity can ever equal it.
-INVISIBLE = np.finfo(np.float32).min
 
 
 # ---------------------------------------------------------------------------
@@ -193,9 +193,9 @@ def _build_clip_mask(meta, clip_axis, clip_position, clip_side):
 
 class FrameCache:
     def __init__(self, T, N):
-        # Single scalar: visible cells = actual value, invisible = INVISIBLE sentinel.
-        # OTF maps sentinel → 0 opacity, actual data range → linear.
-        self.color    = np.full((T, N), INVISIBLE, dtype=np.float32)
+        # 2-component array per frame: col 0 = color scalar, col 1 = opacity (0 or 1).
+        # Stored interleaved as (T, N*2) for fast VTK array updates.
+        self.frames   = np.zeros((T, N * 2), dtype=np.float32)
         self.progress = set()
         self.ready    = False
         self.params   = None
@@ -252,11 +252,17 @@ class FrameCache:
                 num      = uniform_filter(data,                        size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 den      = uniform_filter(has_data.astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 smoothed = np.where(den > 0, num / den, 0.0)
-                color_t  = np.where(filled, smoothed, INVISIBLE)
+                color_t = np.where(filled, smoothed, 0.0)
             else:
-                color_t  = np.where(filled, data, INVISIBLE)
+                color_t = np.where(filled, data, 0.0)
 
-            self.color[t] = color_t.flatten(order='F')
+            opacity_t = filled.astype(np.float32)
+
+            # interleave as [c0, o0, c1, o1, ...] for VTK 2-component array
+            frame = np.empty(N * 2, dtype=np.float32)
+            frame[0::2] = color_t.flatten(order='F')
+            frame[1::2] = opacity_t.flatten(order='F')
+            self.frames[t] = frame
             self.progress.add(t)
 
         self.ready = True
@@ -311,30 +317,70 @@ def main():
     plotter.set_background("#1a1a2e")
 
     grid = _make_grid(meta)
-    grid.cell_data['color'] = np.full(N, INVISIBLE, dtype=np.float32)
 
-    dmin, dmax = trajectory.data_range[params.quantity]
-    vol_actor = plotter.add_volume(
-        grid,
-        scalars='color',
-        opacity='linear',
-        clim=[dmin, dmax],
-        cmap=CMAPS.get(params.quantity, 'viridis'),
-        shade=False,
-        show_scalar_bar=True,
+    # 2-component VTK array: component 0 = color scalar, component 1 = opacity mask
+    vtk_arr = numpy_support.numpy_to_vtk(
+        np.zeros(N * 2, dtype=np.float32), deep=True
     )
+    vtk_arr.SetNumberOfComponents(2)
+    vtk_arr.SetNumberOfTuples(N)
+    vtk_arr.SetName('display')
+    grid.GetCellData().AddArray(vtk_arr)
+    grid.GetCellData().SetActiveScalars('display')
 
-    def _update_otf(dmin, dmax):
-        """Set OTF: sentinel → transparent, [dmin, dmax] → linear 0→1."""
-        from vtkmodules.vtkCommonDataModel import vtkPiecewiseFunction
-        otf = vtkPiecewiseFunction()
-        otf.AddPoint(INVISIBLE,      0.0)   # sentinel → transparent
-        otf.AddPoint(dmin - 1.0,     0.0)   # gap below real data → transparent
-        otf.AddPoint(dmin,           0.0)   # data floor → transparent start
-        otf.AddPoint(dmax,           1.0)   # data ceiling → fully opaque
-        vol_actor.GetProperty().SetScalarOpacity(otf)
+    def _build_ctf(quantity):
+        dmin, dmax = trajectory.data_range[quantity]
+        cmap_name  = CMAPS.get(quantity, 'viridis')
+        lut        = pv.LookupTable(cmap=cmap_name, n_colors=256)
+        lut.SetRange(dmin, dmax)
+        ctf = vtkColorTransferFunction()
+        for i in range(256):
+            t   = dmin + i * (dmax - dmin) / 255.0
+            rgb = lut.map_value(t)[:3]
+            ctf.AddRGBPoint(t, *[c / 255.0 for c in rgb])
+        return ctf, dmin, dmax
 
-    _update_otf(dmin, dmax)
+    def _setup_volume(quantity):
+        ctf, dmin, dmax = _build_ctf(quantity)
+
+        prop = vtkVolumeProperty()
+        prop.IndependentComponentsOn()
+
+        # component 0: color, flat opacity 1 (visibility driven by component 1)
+        prop.SetColor(0, ctf)
+        otf0 = vtkPiecewiseFunction()
+        otf0.AddPoint(dmin, 1.0)
+        otf0.AddPoint(dmax, 1.0)
+        prop.SetScalarOpacity(0, otf0)
+        prop.SetComponentWeight(0, 1.0)
+
+        # component 1: no color contribution, opacity 0→transparent 1→opaque
+        ctf1 = vtkColorTransferFunction()
+        ctf1.AddRGBPoint(0.0, 0.0, 0.0, 0.0)
+        ctf1.AddRGBPoint(1.0, 0.0, 0.0, 0.0)
+        prop.SetColor(1, ctf1)
+        otf1 = vtkPiecewiseFunction()
+        otf1.AddPoint(0.0, 0.0)
+        otf1.AddPoint(1.0, 1.0)
+        prop.SetScalarOpacity(1, otf1)
+        prop.SetComponentWeight(1, 0.0)
+
+        return prop
+
+    mapper = vtkSmartVolumeMapper()
+    mapper.SetInputData(grid)
+    mapper.SetBlendModeToComposite()
+
+    vol_prop   = _setup_volume(params.quantity)
+    vol_volume = vtkVolume()
+    vol_volume.SetMapper(mapper)
+    vol_volume.SetProperty(vol_prop)
+    plotter.renderer.AddVolume(vol_volume)
+
+    def _update_volume_quantity(quantity):
+        nonlocal vol_prop
+        vol_prop = _setup_volume(quantity)
+        vol_volume.SetProperty(vol_prop)
 
     plotter.add_axes(xlabel='X', ylabel='Y', zlabel='Z', color='white', line_width=3)
     plotter.show_bounds(
@@ -368,17 +414,19 @@ def main():
         _hud_text(), position='upper_left', font_size=9, color='#e0e0e0'
     )
 
+    # keep a numpy view into the VTK array's memory for zero-copy updates
+    vtk_np_view = numpy_support.vtk_to_numpy(vtk_arr)
+
     def _fast_update(t):
         if t not in cache.progress:
             return
-        grid.cell_data['color'] = cache.color[t]
-        grid.Modified()
+        vtk_np_view[:] = cache.frames[t]   # in-place write → VTK sees it immediately
+        grid.GetCellData().Modified()
         hud.SetText(2, _hud_text())
         plotter.render_window.Render()
 
     def _on_param_change():
-        dmin, dmax = trajectory.data_range[params.quantity]
-        _update_otf(dmin, dmax)
+        _update_volume_quantity(params.quantity)
         cache.build(trajectory, params, start_t=state['t'])
         _fast_update(state['t'])
 
