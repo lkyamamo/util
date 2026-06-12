@@ -326,7 +326,7 @@ def main():
 
     def _update_otf(dmin, dmax):
         """Set OTF: sentinel → transparent, [dmin, dmax] → linear 0→1."""
-        from vtkmodules.vtkRenderingCore import vtkPiecewiseFunction
+        from vtkmodules.vtkCommonDataModel import vtkPiecewiseFunction
         otf = vtkPiecewiseFunction()
         otf.AddPoint(INVISIBLE,      0.0)   # sentinel → transparent
         otf.AddPoint(dmin - 1.0,     0.0)   # gap below real data → transparent
