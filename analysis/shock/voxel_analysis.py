@@ -124,7 +124,7 @@ def process_voxel(arr, masses, V):
     avg_O_speed = all_speeds[o_mask].mean() if o_mask.any() else np.nan
 
     voxel_type = 2 if SI_TYPE in types else 1
-    number_density = N / V   # atoms/Å³
+    number_density = N / V   # atoms/Å³, unnormalized — normalization done at visualization time
 
     return density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, number_density
 
