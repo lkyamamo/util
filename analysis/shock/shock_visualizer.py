@@ -1,6 +1,6 @@
 import sys
 import threading
-import warnings
+import time
 
 import h5py
 import numpy as np
@@ -31,9 +31,9 @@ CMAPS = {
     'voxel_type':      'tab10',
 }
 
-SMOOTH_KERNEL   = 3
-VIEW_TYPES      = ['all', 'water', 'silica']
-PLAY_FPS_STEPS  = [1, 2, 5, 10, 15, 24, 30, 60]
+SMOOTH_KERNEL  = 3
+VIEW_TYPES     = ['all', 'water', 'silica']
+PLAY_FPS_STEPS = [1, 2, 5, 10, 15, 24, 30, 60]
 
 
 # ---------------------------------------------------------------------------
@@ -50,9 +50,21 @@ class TrajectoryData:
             for qty in QUANTITIES:
                 if qty not in f:
                     continue
-                self.data[qty] = f[qty][:].astype(np.float32)   # NaN preserved
+                self.data[qty] = f[qty][:].astype(np.float32)
 
             self.voxel_type = f['voxel_type'][:] if 'voxel_type' in f else None
+
+            # opacity from number_density, normalized to [0, 1] globally
+            if 'number_density' in f:
+                nd = f['number_density'][:].astype(np.float32)
+                np.nan_to_num(nd, nan=0.0, copy=False)
+                nd_max = nd.max()
+                self.opacity = nd / nd_max if nd_max > 0 else nd
+            else:
+                # fallback: binary mask from voxel_type
+                self.opacity = (self.voxel_type != 0).astype(np.float32) \
+                    if self.voxel_type is not None \
+                    else np.ones_like(self.data[QUANTITIES[0]], dtype=np.float32)
 
             if 'timesteps' in f:
                 self.timestep_labels = f['timesteps'][:]
@@ -63,11 +75,20 @@ class TrajectoryData:
 
         self.available = [q for q in QUANTITIES if q in self.data]
 
-        # global data range per quantity — nanmin/nanmax ignores empty cells
+        self.type_ids = {
+            'water':  int(attrs.get('h_type',  3)),
+            'silica': int(attrs.get('si_type', 1)),
+        }
+
+        # data range over filled cells only
+        filled_mask = self.opacity > 0
         self.data_range = {}
         for q in self.available:
-            d = self.data[q]
-            self.data_range[q] = (float(np.nanmin(d)), float(np.nanmax(d)))
+            vals = self.data[q][filled_mask]
+            if vals.size > 0:
+                self.data_range[q] = (float(vals.min()), float(vals.max()))
+            else:
+                self.data_range[q] = (0.0, 1.0)
 
         # grid metadata
         first = self.data[self.available[0]]
@@ -77,12 +98,12 @@ class TrajectoryData:
         ylo = float(attrs.get('ylo', 0.0))
         zlo = float(attrs.get('zlo', 0.0))
         self.meta = {
-            'T':    T,
-            'nx':   nx,   'ny':   ny,   'nz':   nz,
-            'xlo':  xlo,  'ylo':  ylo,  'zlo':  zlo,
-            'xhi':  float(attrs.get('xhi', xlo + nx * voxel_size)),
-            'yhi':  float(attrs.get('yhi', ylo + ny * voxel_size)),
-            'zhi':  float(attrs.get('zhi', zlo + nz * voxel_size)),
+            'T':   T,
+            'nx':  nx,  'ny':  ny,  'nz':  nz,
+            'xlo': xlo, 'ylo': ylo, 'zlo': zlo,
+            'xhi': float(attrs.get('xhi', xlo + nx * voxel_size)),
+            'yhi': float(attrs.get('yhi', ylo + ny * voxel_size)),
+            'zhi': float(attrs.get('zhi', zlo + nz * voxel_size)),
         }
         print(
             f"Loaded: {T} timesteps, "
@@ -92,12 +113,13 @@ class TrajectoryData:
         )
 
     def get(self, quantity, t):
-        return self.data[quantity][t]   # NaN intact
+        return self.data[quantity][t]          # (nx, ny, nz)
 
     def get_voxel_type(self, t):
-        if self.voxel_type is None:
-            return None
-        return self.voxel_type[t]
+        return self.voxel_type[t] if self.voxel_type is not None else None
+
+    def get_opacity(self, t):
+        return self.opacity[t]                 # (nx, ny, nz) float [0, 1]
 
     def timestep_label(self, t):
         if self.timestep_labels is not None and t < len(self.timestep_labels):
@@ -108,14 +130,6 @@ class TrajectoryData:
     def T(self):
         return self.meta['T']
 
-    @property
-    def voxel_type_ids(self):
-        """Map of name → integer id read from h5 attrs."""
-        return {
-            'water':  int(self.meta.get('h_type', 3)) if hasattr(self, '_raw_attrs') else 3,
-            'silica': int(self.meta.get('si_type', 1)) if hasattr(self, '_raw_attrs') else 1,
-        }
-
 
 # ---------------------------------------------------------------------------
 # Parameter layer
@@ -123,10 +137,10 @@ class TrajectoryData:
 class ViewParams:
     def __init__(self, first_quantity):
         self.quantity      = first_quantity
-        self.view_type     = 'all'     # 'all' / 'water' / 'silica'
-        self.clip_axis     = None      # 'x' / 'y' / 'z' / None
+        self.view_type     = 'all'
+        self.clip_axis     = None
         self.clip_position = 0.0
-        self.clip_side     = 'below'   # 'below' / 'above'
+        self.clip_side     = 'below'
         self.smoothing     = False
 
     def copy(self):
@@ -138,23 +152,10 @@ class ViewParams:
         p.smoothing     = self.smoothing
         return p
 
-    def __eq__(self, other):
-        return (
-            self.quantity      == other.quantity
-            and self.view_type     == other.view_type
-            and self.clip_axis     == other.clip_axis
-            and self.clip_position == other.clip_position
-            and self.clip_side     == other.clip_side
-            and self.smoothing     == other.smoothing
-        )
-
 
 # ---------------------------------------------------------------------------
-# Cache layer
+# Helpers
 # ---------------------------------------------------------------------------
-_VOXEL_TYPE_IDS = {'water': 3, 'silica': 1}
-
-
 def _build_clip_mask(meta, clip_axis, clip_position, clip_side):
     nx, ny, nz = meta['nx'], meta['ny'], meta['nz']
     xlo, ylo, zlo = meta['xlo'], meta['ylo'], meta['zlo']
@@ -179,14 +180,27 @@ def _build_clip_mask(meta, clip_axis, clip_position, clip_side):
         return np.ones((nx, ny, nz), dtype=bool)
 
 
+def _build_ctf(quantity, trajectory):
+    dmin, dmax   = trajectory.data_range[quantity]
+    cmap_name    = CMAPS.get(quantity, 'viridis')
+    lut          = pv.LookupTable(cmap=cmap_name, n_colors=256)
+    lut.SetRange(dmin, dmax)
+    ctf = vtkColorTransferFunction()
+    for i in range(256):
+        t   = dmin + i * (dmax - dmin) / 255.0 if dmax > dmin else dmin
+        rgb = lut.map_value(t)[:3]
+        ctf.AddRGBPoint(t, rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
+    return ctf, dmin, dmax
+
+
+# ---------------------------------------------------------------------------
+# Cache layer
+# ---------------------------------------------------------------------------
 class FrameCache:
     def __init__(self, T, N):
-        # 2-component array per frame: col 0 = color scalar, col 1 = opacity (0 or 1).
-        # Stored interleaved as (T, N*2) for fast VTK array updates.
-        self.frames   = np.zeros((T, N * 2), dtype=np.float32)
+        self.frames   = np.zeros((T, N, 2), dtype=np.float32)
         self.progress = set()
         self.ready    = False
-        self.params   = None
         self._thread  = None
         self._cancel  = threading.Event()
 
@@ -197,7 +211,6 @@ class FrameCache:
         self._cancel.clear()
         self.progress = set()
         self.ready    = False
-        self.params   = params.copy()
 
         self._thread = threading.Thread(
             target=self._worker,
@@ -209,7 +222,6 @@ class FrameCache:
     def _worker(self, trajectory, params, start_t):
         meta = trajectory.meta
         T    = trajectory.T
-        N    = meta['nx'] * meta['ny'] * meta['nz']
 
         clip_mask = _build_clip_mask(
             meta, params.clip_axis, params.clip_position, params.clip_side
@@ -219,39 +231,36 @@ class FrameCache:
             if self._cancel.is_set():
                 return
 
-            data     = trajectory.get(params.quantity, t)
-            has_data = ~np.isnan(data)
+            data      = trajectory.get(params.quantity, t)    # (nx, ny, nz)
+            opacity_t = trajectory.get_opacity(t)             # (nx, ny, nz) [0, 1]
 
             # 1. type filter
             vt = trajectory.get_voxel_type(t)
             if params.view_type == 'all' or vt is None:
                 type_mask = np.ones(data.shape, dtype=bool)
             else:
-                type_id   = _VOXEL_TYPE_IDS[params.view_type]
-                type_mask = (vt == type_id)
+                type_mask = (vt == trajectory.type_ids[params.view_type])
 
             # 2. clip
             visible = type_mask & clip_mask
 
-            # 3. full calculation
-            filled = has_data & visible
+            # 3. filled = has atoms AND passes visibility
+            filled = (opacity_t > 0) & visible
 
-            clean = np.nan_to_num(data, nan=0.0)   # finite values for filter/color
+            # component 0: color
             if params.smoothing:
-                num      = uniform_filter(clean,                       size=SMOOTH_KERNEL, mode='constant', cval=0.0)
-                den      = uniform_filter(has_data.astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
+                num      = uniform_filter(data,                          size=SMOOTH_KERNEL, mode='constant', cval=0.0)
+                den      = uniform_filter((opacity_t > 0).astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 smoothed = np.where(den > 0, num / den, 0.0)
-                color_t  = np.where(filled, smoothed, 0.0)
+                color    = np.where(filled, smoothed, 0.0)
             else:
-                color_t  = np.where(filled, clean, 0.0)
+                color    = np.where(filled, data, 0.0)
 
-            opacity_t = filled.astype(np.float32)
+            # component 1: opacity — zero out cells that don't pass visibility
+            opacity = np.where(filled, opacity_t, 0.0)
 
-            # interleave as [c0, o0, c1, o1, ...] for VTK 2-component array
-            frame = np.empty(N * 2, dtype=np.float32)
-            frame[0::2] = color_t.flatten(order='F')
-            frame[1::2] = opacity_t.flatten(order='F')
-            self.frames[t] = frame
+            self.frames[t, :, 0] = color.flatten(order='F')
+            self.frames[t, :, 1] = opacity.flatten(order='F')
             self.progress.add(t)
 
         self.ready = True
@@ -279,97 +288,71 @@ def main():
     T          = trajectory.T
     N          = meta['nx'] * meta['ny'] * meta['nz']
 
-    params     = ViewParams(trajectory.available[0])
-    cache      = FrameCache(T, N)
-
-    # renderer state
-    state = {
-        't':           0,
-        'playing':     False,
-        'fps_idx':     PLAY_FPS_STEPS.index(10),   # default 10 fps
-        'timer_id':    None,
-        'qty_idx':     0,
-        'vtype_idx':   0,                           # index into VIEW_TYPES
-    }
-
-    # read voxel type ids from h5 attrs
-    with h5py.File(H5_FILE, 'r') as f:
-        attrs = dict(f.attrs)
-    _VOXEL_TYPE_IDS['water']  = int(attrs.get('h_type',  3))
-    _VOXEL_TYPE_IDS['silica'] = int(attrs.get('si_type', 1))
-
-    # build initial cache starting at t=0
+    params = ViewParams(trajectory.available[0])
+    cache  = FrameCache(T, N)
     cache.build(trajectory, params, start_t=0)
 
-    # plotter setup — grid built once, never rebuilt
+    state = {
+        't':        0,
+        'playing':  False,
+        'fps_idx':  PLAY_FPS_STEPS.index(10),
+        'timer_id': None,
+        'qty_idx':  0,
+        'vtype_idx': 0,
+    }
+
+    # plotter + grid — built once, never rebuilt
     plotter = pv.Plotter(title="Shock Voxel Visualizer")
     plotter.set_background("#1a1a2e")
 
     grid = _make_grid(meta)
 
-    # 2-component VTK array: component 0 = color scalar, component 1 = opacity mask
-    vtk_arr = numpy_support.numpy_to_vtk(
-        np.zeros(N * 2, dtype=np.float32), deep=True
-    )
+    # 2-component VTK cell array: col 0 = color, col 1 = opacity
+    from vtkmodules.vtkCommonCore import vtkFloatArray
+    vtk_arr = vtkFloatArray()
     vtk_arr.SetNumberOfComponents(2)
     vtk_arr.SetNumberOfTuples(N)
     vtk_arr.SetName('display')
+    vtk_arr.Fill(0.0)
     grid.GetCellData().AddArray(vtk_arr)
     grid.GetCellData().SetActiveScalars('display')
 
-    def _build_ctf(quantity):
-        dmin, dmax = trajectory.data_range[quantity]
-        cmap_name  = CMAPS.get(quantity, 'viridis')
-        lut        = pv.LookupTable(cmap=cmap_name, n_colors=256)
-        lut.SetRange(dmin, dmax)
-        ctf = vtkColorTransferFunction()
-        for i in range(256):
-            t   = dmin + i * (dmax - dmin) / 255.0
-            rgb = lut.map_value(t)[:3]
-            ctf.AddRGBPoint(t, *[c / 255.0 for c in rgb])
-        return ctf, dmin, dmax
+    vtk_np_view = numpy_support.vtk_to_numpy(vtk_arr)   # (N, 2) view into VTK memory
 
-    def _setup_volume(quantity):
-        ctf, dmin, dmax = _build_ctf(quantity)
-
-        prop = vtkVolumeProperty()
-        prop.IndependentComponentsOn()
-
-        # component 0: color, flat opacity 1 (visibility driven by component 1)
-        prop.SetColor(0, ctf)
-        otf0 = vtkPiecewiseFunction()
-        otf0.AddPoint(dmin, 1.0)
-        otf0.AddPoint(dmax, 1.0)
-        prop.SetScalarOpacity(0, otf0)
-        prop.SetComponentWeight(0, 1.0)
-
-        # component 1: no color contribution, opacity 0→transparent 1→opaque
-        ctf1 = vtkColorTransferFunction()
-        ctf1.AddRGBPoint(0.0, 0.0, 0.0, 0.0)
-        ctf1.AddRGBPoint(1.0, 0.0, 0.0, 0.0)
-        prop.SetColor(1, ctf1)
-        otf1 = vtkPiecewiseFunction()
-        otf1.AddPoint(0.0, 0.0)
-        otf1.AddPoint(1.0, 1.0)
-        prop.SetScalarOpacity(1, otf1)
-        prop.SetComponentWeight(1, 0.0)
-
-        return prop
-
+    # volume setup
     mapper = vtkSmartVolumeMapper()
     mapper.SetInputData(grid)
     mapper.SetBlendModeToComposite()
 
-    vol_prop   = _setup_volume(params.quantity)
-    vol_volume = vtkVolume()
-    vol_volume.SetMapper(mapper)
-    vol_volume.SetProperty(vol_prop)
-    plotter.renderer.AddVolume(vol_volume)
+    prop = vtkVolumeProperty()
+    prop.IndependentComponentsOn()
 
-    def _update_volume_quantity(quantity):
-        nonlocal vol_prop
-        vol_prop = _setup_volume(quantity)
-        vol_volume.SetProperty(vol_prop)
+    # component 1: opacity only — defined once, never changes
+    ctf1 = vtkColorTransferFunction()
+    ctf1.AddRGBPoint(0.0, 0.0, 0.0, 0.0)
+    ctf1.AddRGBPoint(1.0, 0.0, 0.0, 0.0)
+    otf1 = vtkPiecewiseFunction()
+    otf1.AddPoint(0.0, 0.0)
+    otf1.AddPoint(1.0, 1.0)
+    prop.SetColor(1, ctf1)
+    prop.SetScalarOpacity(1, otf1)
+    prop.SetComponentWeight(1, 0.0)
+
+    def _apply_quantity_to_prop(quantity):
+        ctf0, dmin, dmax = _build_ctf(quantity, trajectory)
+        otf0 = vtkPiecewiseFunction()
+        otf0.AddPoint(dmin, 1.0)
+        otf0.AddPoint(dmax, 1.0)
+        prop.SetColor(0, ctf0)
+        prop.SetScalarOpacity(0, otf0)
+        prop.SetComponentWeight(0, 1.0)
+
+    _apply_quantity_to_prop(params.quantity)
+
+    vol = vtkVolume()
+    vol.SetMapper(mapper)
+    vol.SetProperty(prop)
+    plotter.renderer.AddVolume(vol)
 
     plotter.add_axes(xlabel='X', ylabel='Y', zlabel='Z', color='white', line_width=3)
     plotter.show_bounds(
@@ -378,13 +361,13 @@ def main():
         font_size=10, color='white', fmt='%.0f',
     )
 
-    # HUD text
+    # HUD
     def _hud_text():
-        fps   = PLAY_FPS_STEPS[state['fps_idx']]
-        t     = state['t']
-        clip  = f"{params.clip_axis} @ {params.clip_position:.1f} ({params.clip_side})" \
-                if params.clip_axis else 'OFF'
-        ready = f"{len(cache.progress)}/{T}" if not cache.ready else "ready"
+        fps  = PLAY_FPS_STEPS[state['fps_idx']]
+        t    = state['t']
+        clip = f"{params.clip_axis} @ {params.clip_position:.1f} ({params.clip_side})" \
+               if params.clip_axis else 'OFF'
+        prog = f"{len(cache.progress)}/{T}" if not cache.ready else "ready"
         return (
             f"Quantity  : {params.quantity}\n"
             f"Timestep  : {t}/{T - 1}{trajectory.timestep_label(t)}\n"
@@ -392,7 +375,7 @@ def main():
             f"Clip      : {clip}\n"
             f"Smoothing : {'ON' if params.smoothing else 'OFF'}\n"
             f"Play      : {'▶' if state['playing'] else '⏸'}  {fps} fps\n"
-            f"Cache     : {ready}\n\n"
+            f"Cache     : {prog}\n\n"
             f"[space] play/pause    [←/→] step\n"
             f"[[ / ]] speed -/+    [v] quantity\n"
             f"[w] view type        [x/y/z] clip axis (again=off)\n"
@@ -403,19 +386,16 @@ def main():
         _hud_text(), position='upper_left', font_size=9, color='#e0e0e0'
     )
 
-    # keep a numpy view into the VTK array's memory for zero-copy updates
-    vtk_np_view = numpy_support.vtk_to_numpy(vtk_arr)
-
     def _fast_update(t):
         if t not in cache.progress:
             return
-        vtk_np_view[:] = cache.frames[t]   # in-place write → VTK sees it immediately
+        vtk_np_view[:] = cache.frames[t]      # (N, 2) in-place write
         grid.GetCellData().Modified()
         hud.SetText(2, _hud_text())
         plotter.render_window.Render()
 
     def _on_param_change():
-        _update_volume_quantity(params.quantity)
+        _apply_quantity_to_prop(params.quantity)
         cache.build(trajectory, params, start_t=state['t'])
         _fast_update(state['t'])
 
@@ -484,13 +464,10 @@ def main():
 
     def _set_clip_axis(axis):
         if params.clip_axis == axis:
-            # pressing same axis again clears the clip
             params.clip_axis = None
         else:
-            params.clip_axis = axis
-            lo = meta[axis + 'lo']
-            hi = meta[axis + 'hi']
-            params.clip_position = (lo + hi) / 2.0
+            params.clip_axis     = axis
+            params.clip_position = (meta[axis + 'lo'] + meta[axis + 'hi']) / 2.0
         _on_param_change()
 
     def clip_pos_increase():
@@ -498,9 +475,7 @@ def main():
             return
         axis = params.clip_axis
         step = (meta[axis + 'hi'] - meta[axis + 'lo']) / meta['n' + axis]
-        params.clip_position = min(
-            params.clip_position + step, meta[axis + 'hi']
-        )
+        params.clip_position = min(params.clip_position + step, meta[axis + 'hi'])
         _on_param_change()
 
     def clip_pos_decrease():
@@ -508,31 +483,28 @@ def main():
             return
         axis = params.clip_axis
         step = (meta[axis + 'hi'] - meta[axis + 'lo']) / meta['n' + axis]
-        params.clip_position = max(
-            params.clip_position - step, meta[axis + 'lo']
-        )
+        params.clip_position = max(params.clip_position - step, meta[axis + 'lo'])
         _on_param_change()
 
     def toggle_smoothing():
         params.smoothing = not params.smoothing
         _on_param_change()
 
-    plotter.add_key_event('space',         toggle_play)
-    plotter.add_key_event('Right',         step_forward)
-    plotter.add_key_event('Left',          step_back)
-    plotter.add_key_event('bracketright',  speed_up)
-    plotter.add_key_event('bracketleft',   slow_down)
-    plotter.add_key_event('v',             cycle_quantity)       # q intercepted by pyvista
-    plotter.add_key_event('w',             cycle_view_type)
-    plotter.add_key_event('x',             lambda: _set_clip_axis('x'))
-    plotter.add_key_event('y',             lambda: _set_clip_axis('y'))
-    plotter.add_key_event('z',             lambda: _set_clip_axis('z'))
-    plotter.add_key_event('equal',         clip_pos_increase)   # +
-    plotter.add_key_event('minus',         clip_pos_decrease)   # -
-    plotter.add_key_event('f',             toggle_smoothing)
+    plotter.add_key_event('space',        toggle_play)
+    plotter.add_key_event('Right',        step_forward)
+    plotter.add_key_event('Left',         step_back)
+    plotter.add_key_event('bracketright', speed_up)
+    plotter.add_key_event('bracketleft',  slow_down)
+    plotter.add_key_event('v',            cycle_quantity)
+    plotter.add_key_event('w',            cycle_view_type)
+    plotter.add_key_event('x',            lambda: _set_clip_axis('x'))
+    plotter.add_key_event('y',            lambda: _set_clip_axis('y'))
+    plotter.add_key_event('z',            lambda: _set_clip_axis('z'))
+    plotter.add_key_event('equal',        clip_pos_increase)
+    plotter.add_key_event('minus',        clip_pos_decrease)
+    plotter.add_key_event('f',            toggle_smoothing)
 
-    # show first frame once cache has t=0 ready
-    import time
+    # wait until t=0 is ready then show
     while 0 not in cache.progress:
         time.sleep(0.01)
     _fast_update(0)
