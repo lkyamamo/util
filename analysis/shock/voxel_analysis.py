@@ -140,6 +140,17 @@ def flush_layer(layer_buf, ix, h5file, attrs):
 
     dx = min(vs, box_x - ix * vs)
 
+    # accumulate results into layer-sized arrays, then write once per dataset
+    out_density          = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_pressure         = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_virial_pressure  = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_temperature      = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_avg_speed        = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_avg_O_speed      = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_number_density   = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_voxel_type       = np.zeros((ny, nz),          dtype=np.uint8)
+    out_v_COM            = np.full((ny, nz, 3), np.nan, dtype=np.float32)
+
     for iy in range(ny):
         dy = min(vs, box_y - iy * vs)
 
@@ -157,15 +168,26 @@ def flush_layer(layer_buf, ix, h5file, attrs):
             density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, number_density = \
                 process_voxel(arr, masses, V)
 
-            h5file['density'         ][ix, iy, iz]    = np.float32(density)
-            h5file['pressure'        ][ix, iy, iz]    = np.float32(pressure)
-            h5file['virial_pressure' ][ix, iy, iz]    = np.float32(virial_pressure)
-            h5file['temperature'     ][ix, iy, iz]    = np.float32(temperature)
-            h5file['avg_speed'       ][ix, iy, iz]    = np.float32(avg_speed)
-            h5file['avg_O_speed'     ][ix, iy, iz]    = np.float32(avg_O_speed)
-            h5file['number_density'  ][ix, iy, iz]    = np.float32(number_density)
-            h5file['voxel_type'      ][ix, iy, iz]    = np.uint8(voxel_type)
-            h5file['v_COM'           ][ix, iy, iz, :] = v_COM.astype(np.float32)
+            out_density         [iy, iz]    = density
+            out_pressure        [iy, iz]    = pressure
+            out_virial_pressure [iy, iz]    = virial_pressure
+            out_temperature     [iy, iz]    = temperature
+            out_avg_speed       [iy, iz]    = avg_speed
+            out_avg_O_speed     [iy, iz]    = avg_O_speed
+            out_number_density  [iy, iz]    = number_density
+            out_voxel_type      [iy, iz]    = voxel_type
+            out_v_COM           [iy, iz, :] = v_COM
+
+    # single write per dataset — one chunk I/O instead of ny*nz
+    h5file['density'        ][ix] = out_density
+    h5file['pressure'       ][ix] = out_pressure
+    h5file['virial_pressure'][ix] = out_virial_pressure
+    h5file['temperature'    ][ix] = out_temperature
+    h5file['avg_speed'      ][ix] = out_avg_speed
+    h5file['avg_O_speed'    ][ix] = out_avg_O_speed
+    h5file['number_density' ][ix] = out_number_density
+    h5file['voxel_type'     ][ix] = out_voxel_type
+    h5file['v_COM'          ][ix] = out_v_COM
 
 
 def streaming_loop(file, attrs, h5file):
