@@ -179,8 +179,9 @@ def _build_clip_mask(meta, clip_axis, clip_position, clip_side):
 
 class FrameCache:
     def __init__(self, T, N):
-        self.color    = np.zeros((T, N), dtype=np.float32)
-        self.opacity  = np.zeros((T, N), dtype=np.float32)
+        # Single scalar array: visible cells = actual value, invisible = NaN.
+        # VTK volume mapper renders NaN voxels as fully transparent.
+        self.color    = np.full((T, N), np.nan, dtype=np.float32)
         self.progress = set()
         self.ready    = False
         self.params   = None
@@ -234,15 +235,14 @@ class FrameCache:
             filled = has_data & visible
 
             if params.smoothing:
-                num      = uniform_filter(data,                    size=SMOOTH_KERNEL, mode='constant', cval=0.0)
+                num      = uniform_filter(data,                        size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 den      = uniform_filter(has_data.astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 smoothed = np.where(den > 0, num / den, 0.0)
-                color_t  = np.where(filled, smoothed, 0.0)
+                color_t  = np.where(filled, smoothed, np.nan)
             else:
-                color_t  = np.where(filled, data, 0.0)
+                color_t  = np.where(filled, data, np.nan)
 
-            self.color[t]   = color_t.flatten(order='F')
-            self.opacity[t] = filled.astype(np.float32).flatten(order='F')
+            self.color[t] = color_t.flatten(order='F')
             self.progress.add(t)
 
         self.ready = True
@@ -297,17 +297,18 @@ def main():
     plotter.set_background("#1a1a2e")
 
     grid = _make_grid(meta)
-    grid.cell_data['color']   = np.zeros(N, dtype=np.float32)
-    grid.cell_data['opacity'] = np.zeros(N, dtype=np.float32)
+    grid.cell_data['color'] = np.full(N, np.nan, dtype=np.float32)
 
     vol_actor = plotter.add_volume(
         grid,
         scalars='color',
-        opacity='opacity',
+        opacity='linear',
         cmap=CMAPS.get(params.quantity, 'viridis'),
         shade=False,
         show_scalar_bar=True,
     )
+    # NaN cells → fully transparent
+    vol_actor.GetProperty().SetNanOpacity(0.0)
 
     plotter.add_axes(xlabel='X', ylabel='Y', zlabel='Z', color='white', line_width=3)
     plotter.show_bounds(
@@ -344,8 +345,7 @@ def main():
     def _fast_update(t):
         if t not in cache.progress:
             return
-        grid.cell_data['color']   = cache.color[t]
-        grid.cell_data['opacity'] = cache.opacity[t]
+        grid.cell_data['color'] = cache.color[t]
         grid.Modified()
         hud.SetText(2, _hud_text())
         plotter.render_window.Render()
