@@ -281,9 +281,7 @@ def main():
         'timer_id':    None,
         'qty_idx':     0,
         'vtype_idx':   0,                           # index into VIEW_TYPES
-        'clip_axis_idx': 0,                         # 0=none,1=x,2=y,3=z
     }
-    CLIP_AXES = [None, 'x', 'y', 'z']
 
     # read voxel type ids from h5 attrs
     with h5py.File(H5_FILE, 'r') as f:
@@ -334,8 +332,8 @@ def main():
             f"Play      : {'▶' if state['playing'] else '⏸'}  {fps} fps\n"
             f"Cache     : {ready}\n\n"
             f"[space] play/pause    [←/→] step\n"
-            f"[[ / ]] speed -/+    [q] quantity\n"
-            f"[w] view type        [x/y/z] clip axis\n"
+            f"[[ / ]] speed -/+    [v] quantity\n"
+            f"[w] view type        [x/y/z] clip axis (again=off)\n"
             f"[+/-] clip pos       [f] smoothing"
         )
 
@@ -424,14 +422,14 @@ def main():
         params.view_type   = VIEW_TYPES[state['vtype_idx']]
         _on_param_change()
 
-    def cycle_clip_axis():
-        state['clip_axis_idx'] = (state['clip_axis_idx'] + 1) % len(CLIP_AXES)
-        params.clip_axis       = CLIP_AXES[state['clip_axis_idx']]
-        if params.clip_axis is not None:
-            # default clip position to center of that axis
-            axis  = params.clip_axis
-            lo    = meta[axis + 'lo']
-            hi    = meta[axis + 'hi']
+    def _set_clip_axis(axis):
+        if params.clip_axis == axis:
+            # pressing same axis again clears the clip
+            params.clip_axis = None
+        else:
+            params.clip_axis = axis
+            lo = meta[axis + 'lo']
+            hi = meta[axis + 'hi']
             params.clip_position = (lo + hi) / 2.0
         _on_param_change()
 
@@ -464,11 +462,11 @@ def main():
     plotter.add_key_event('Left',          step_back)
     plotter.add_key_event('bracketright',  speed_up)
     plotter.add_key_event('bracketleft',   slow_down)
-    plotter.add_key_event('q',             cycle_quantity)
+    plotter.add_key_event('v',             cycle_quantity)       # q intercepted by pyvista
     plotter.add_key_event('w',             cycle_view_type)
-    plotter.add_key_event('x',             cycle_clip_axis)
-    plotter.add_key_event('y',             cycle_clip_axis)
-    plotter.add_key_event('z',             cycle_clip_axis)
+    plotter.add_key_event('x',             lambda: _set_clip_axis('x'))
+    plotter.add_key_event('y',             lambda: _set_clip_axis('y'))
+    plotter.add_key_event('z',             lambda: _set_clip_axis('z'))
     plotter.add_key_event('equal',         clip_pos_increase)   # +
     plotter.add_key_event('minus',         clip_pos_decrease)   # -
     plotter.add_key_event('f',             toggle_smoothing)
