@@ -42,23 +42,18 @@ PLAY_FPS_STEPS  = [1, 2, 5, 10, 15, 24, 30, 60]
 class TrajectoryData:
     def __init__(self, h5_path):
         print(f"Loading {h5_path} ...", flush=True)
-        self.data     = {}
-        self.has_data = {}
+        self.data = {}
 
         with h5py.File(h5_path, 'r') as f:
             attrs = dict(f.attrs)
 
-            # read and preprocess all scalar quantities
             for qty in QUANTITIES:
                 if qty not in f:
                     continue
-                raw = f[qty][:].astype(np.float32)
-                self.has_data[qty] = ~np.isnan(raw)          # (T, nx, ny, nz) bool
-                self.data[qty]     = np.nan_to_num(raw, nan=0.0)  # (T, nx, ny, nz) float
+                self.data[qty] = f[qty][:].astype(np.float32)   # NaN preserved
 
             self.voxel_type = f['voxel_type'][:] if 'voxel_type' in f else None
 
-            # timestep labels
             if 'timesteps' in f:
                 self.timestep_labels = f['timesteps'][:]
             elif 'timestep_labels' in f:
@@ -68,15 +63,11 @@ class TrajectoryData:
 
         self.available = [q for q in QUANTITIES if q in self.data]
 
-        # per-quantity data range over all timesteps, used to set the OTF clim
-        # has_data mask ensures only real values (not nan_to_num zeros) are included
+        # global data range per quantity — nanmin/nanmax ignores empty cells
         self.data_range = {}
         for q in self.available:
-            masked = self.data[q][self.has_data[q]]
-            if masked.size > 0:
-                self.data_range[q] = (float(masked.min()), float(masked.max()))
-            else:
-                self.data_range[q] = (0.0, 1.0)
+            d = self.data[q]
+            self.data_range[q] = (float(np.nanmin(d)), float(np.nanmax(d)))
 
         # grid metadata
         first = self.data[self.available[0]]
@@ -101,10 +92,7 @@ class TrajectoryData:
         )
 
     def get(self, quantity, t):
-        return self.data[quantity][t]
-
-    def get_has_data(self, quantity, t):
-        return self.has_data[quantity][t]
+        return self.data[quantity][t]   # NaN intact
 
     def get_voxel_type(self, t):
         if self.voxel_type is None:
@@ -232,7 +220,7 @@ class FrameCache:
                 return
 
             data     = trajectory.get(params.quantity, t)
-            has_data = trajectory.get_has_data(params.quantity, t)
+            has_data = ~np.isnan(data)
 
             # 1. type filter
             vt = trajectory.get_voxel_type(t)
@@ -248,13 +236,14 @@ class FrameCache:
             # 3. full calculation
             filled = has_data & visible
 
+            clean = np.nan_to_num(data, nan=0.0)   # finite values for filter/color
             if params.smoothing:
-                num      = uniform_filter(data,                        size=SMOOTH_KERNEL, mode='constant', cval=0.0)
+                num      = uniform_filter(clean,                       size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 den      = uniform_filter(has_data.astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 smoothed = np.where(den > 0, num / den, 0.0)
-                color_t = np.where(filled, smoothed, 0.0)
+                color_t  = np.where(filled, smoothed, 0.0)
             else:
-                color_t = np.where(filled, data, 0.0)
+                color_t  = np.where(filled, clean, 0.0)
 
             opacity_t = filled.astype(np.float32)
 
