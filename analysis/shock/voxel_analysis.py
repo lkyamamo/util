@@ -42,7 +42,7 @@ def preallocate_hdf5(path, nx, ny, nz, attrs):
 
     h5file = h5py.File(path, 'w')
 
-    scalar_datasets = ['density', 'pressure', 'virial_pressure', 'temperature', 'avg_speed', 'avg_O_speed', 'atom_count']
+    scalar_datasets = ['density', 'pressure', 'virial_pressure', 'temperature', 'avg_speed', 'avg_O_speed', 'number_density']
     for name in scalar_datasets:
         h5file.create_dataset(
             name,
@@ -124,8 +124,9 @@ def process_voxel(arr, masses, V):
     avg_O_speed = all_speeds[o_mask].mean() if o_mask.any() else np.nan
 
     voxel_type = 2 if SI_TYPE in types else 1
+    number_density = N / V   # atoms/Å³
 
-    return density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, N
+    return density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, number_density
 
 
 def flush_layer(layer_buf, ix, h5file, attrs):
@@ -153,7 +154,7 @@ def flush_layer(layer_buf, ix, h5file, attrs):
             arr    = np.array(atoms, dtype=np.float64)
             masses = TYPE_TO_MASS[arr[:, 1].astype(int)]
 
-            density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, atom_count = \
+            density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, number_density = \
                 process_voxel(arr, masses, V)
 
             h5file['density'         ][ix, iy, iz]    = np.float32(density)
@@ -162,7 +163,7 @@ def flush_layer(layer_buf, ix, h5file, attrs):
             h5file['temperature'     ][ix, iy, iz]    = np.float32(temperature)
             h5file['avg_speed'       ][ix, iy, iz]    = np.float32(avg_speed)
             h5file['avg_O_speed'     ][ix, iy, iz]    = np.float32(avg_O_speed)
-            h5file['atom_count'      ][ix, iy, iz]    = np.float32(atom_count)
+            h5file['number_density'  ][ix, iy, iz]    = np.float32(number_density)
             h5file['voxel_type'      ][ix, iy, iz]    = np.uint8(voxel_type)
             h5file['v_COM'           ][ix, iy, iz, :] = v_COM.astype(np.float32)
 
