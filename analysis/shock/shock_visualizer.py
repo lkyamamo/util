@@ -1,209 +1,485 @@
 import sys
+import threading
+import warnings
 
-import numpy as np
 import h5py
+import numpy as np
 import pyvista as pv
 from scipy.ndimage import uniform_filter
 
-# --- Configuration ---
-H5_FILE    = sys.argv[1] if len(sys.argv) > 1 else "trajectory.h5"
-QUANTITIES = ['density', 'pressure', 'virial_pressure', 'temperature',
-              'avg_speed', 'avg_O_speed', 'voxel_type']
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+H5_FILE = sys.argv[1] if len(sys.argv) > 1 else "trajectory.h5"
+
+QUANTITIES = [
+    'density', 'pressure', 'virial_pressure',
+    'temperature', 'avg_speed', 'avg_O_speed', 'voxel_type',
+]
+
 CMAPS = {
-    'density':          'viridis',
-    'pressure':         'RdBu_r',
-    'virial_pressure':  'RdBu_r',
-    'temperature':      'plasma',
-    'avg_speed':        'viridis',
-    'avg_O_speed':      'viridis',
-    'voxel_type':       'Set1',
+    'density':         'viridis',
+    'pressure':        'RdBu_r',
+    'virial_pressure': 'RdBu_r',
+    'temperature':     'plasma',
+    'avg_speed':       'viridis',
+    'avg_O_speed':     'viridis',
+    'voxel_type':      'tab10',
 }
 
+SMOOTH_KERNEL   = 3
+VIEW_TYPES      = ['all', 'water', 'silica']
+PLAY_FPS_STEPS  = [1, 2, 5, 10, 15, 24, 30, 60]
+
 
 # ---------------------------------------------------------------------------
-# State
+# Data layer
 # ---------------------------------------------------------------------------
-class ViewerState:
-    def __init__(self):
-        self.timestep_idx = 0
-        self.quantity_idx = 0
-        self.smooth_kernel = 1
-        self.clip_active   = False
-        self.clip_normal   = np.array([1.0, 0.0, 0.0])
-        self.clip_origin   = np.array([0.0, 0.0, 0.0])
+class TrajectoryData:
+    def __init__(self, h5_path):
+        print(f"Loading {h5_path} ...", flush=True)
+        self.data     = {}
+        self.has_data = {}
+
+        with h5py.File(h5_path, 'r') as f:
+            attrs = dict(f.attrs)
+
+            # read and preprocess all scalar quantities
+            for qty in QUANTITIES:
+                if qty not in f:
+                    continue
+                raw = f[qty][:].astype(np.float32)
+                self.has_data[qty] = ~np.isnan(raw)          # (T, nx, ny, nz) bool
+                self.data[qty]     = np.nan_to_num(raw, nan=0.0)  # (T, nx, ny, nz) float
+
+            self.voxel_type = f['voxel_type'][:] if 'voxel_type' in f else None
+
+            # timestep labels
+            if 'timesteps' in f:
+                self.timestep_labels = f['timesteps'][:]
+            elif 'timestep_labels' in f:
+                self.timestep_labels = f['timestep_labels'][:]
+            else:
+                self.timestep_labels = None
+
+        self.available = [q for q in QUANTITIES if q in self.data]
+
+        # grid metadata
+        first = self.data[self.available[0]]
+        T, nx, ny, nz = first.shape
+        voxel_size = float(attrs.get('voxel_size', 10.0))
+        xlo = float(attrs.get('xlo', 0.0))
+        ylo = float(attrs.get('ylo', 0.0))
+        zlo = float(attrs.get('zlo', 0.0))
+        self.meta = {
+            'T':    T,
+            'nx':   nx,   'ny':   ny,   'nz':   nz,
+            'xlo':  xlo,  'ylo':  ylo,  'zlo':  zlo,
+            'xhi':  float(attrs.get('xhi', xlo + nx * voxel_size)),
+            'yhi':  float(attrs.get('yhi', ylo + ny * voxel_size)),
+            'zhi':  float(attrs.get('zhi', zlo + nz * voxel_size)),
+        }
+        print(
+            f"Loaded: {T} timesteps, "
+            f"grid {nx}×{ny}×{nz}, "
+            f"quantities: {self.available}",
+            flush=True,
+        )
+
+    def get(self, quantity, t):
+        return self.data[quantity][t]
+
+    def get_has_data(self, quantity, t):
+        return self.has_data[quantity][t]
+
+    def get_voxel_type(self, t):
+        if self.voxel_type is None:
+            return None
+        return self.voxel_type[t]
+
+    def timestep_label(self, t):
+        if self.timestep_labels is not None and t < len(self.timestep_labels):
+            return f"  (step {int(self.timestep_labels[t])})"
+        return ""
 
     @property
-    def quantity(self):
-        return QUANTITIES[self.quantity_idx]
+    def T(self):
+        return self.meta['T']
+
+    @property
+    def voxel_type_ids(self):
+        """Map of name → integer id read from h5 attrs."""
+        return {
+            'water':  int(self.meta.get('h_type', 3)) if hasattr(self, '_raw_attrs') else 3,
+            'silica': int(self.meta.get('si_type', 1)) if hasattr(self, '_raw_attrs') else 1,
+        }
 
 
 # ---------------------------------------------------------------------------
-# Data helpers
+# Parameter layer
 # ---------------------------------------------------------------------------
-def load_grid(h5file, state, meta):
-    nx, ny, nz     = meta['nx'], meta['ny'], meta['nz']
-    voxel_size     = meta['voxel_size']
-    xlo, ylo, zlo  = meta['xlo'], meta['ylo'], meta['zlo']
+class ViewParams:
+    def __init__(self, first_quantity):
+        self.quantity      = first_quantity
+        self.view_type     = 'all'     # 'all' / 'water' / 'silica'
+        self.clip_axis     = None      # 'x' / 'y' / 'z' / None
+        self.clip_position = 0.0
+        self.clip_side     = 'below'   # 'below' / 'above'
+        self.smoothing     = False
 
-    raw = h5file[state.quantity][state.timestep_idx]   # (nx, ny, nz)
-    if state.smooth_kernel > 1:
-        raw = uniform_filter(raw.astype(np.float64), size=state.smooth_kernel)
+    def copy(self):
+        p = ViewParams(self.quantity)
+        p.view_type     = self.view_type
+        p.clip_axis     = self.clip_axis
+        p.clip_position = self.clip_position
+        p.clip_side     = self.clip_side
+        p.smoothing     = self.smoothing
+        return p
 
+    def __eq__(self, other):
+        return (
+            self.quantity      == other.quantity
+            and self.view_type     == other.view_type
+            and self.clip_axis     == other.clip_axis
+            and self.clip_position == other.clip_position
+            and self.clip_side     == other.clip_side
+            and self.smoothing     == other.smoothing
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cache layer
+# ---------------------------------------------------------------------------
+_VOXEL_TYPE_IDS = {'water': 3, 'silica': 1}
+
+
+def _build_clip_mask(meta, clip_axis, clip_position, clip_side):
+    nx, ny, nz = meta['nx'], meta['ny'], meta['nz']
+    xlo, ylo, zlo = meta['xlo'], meta['ylo'], meta['zlo']
+    xhi, yhi, zhi = meta['xhi'], meta['yhi'], meta['zhi']
+    dx = (xhi - xlo) / nx
+    dy = (yhi - ylo) / ny
+    dz = (zhi - zlo) / nz
+
+    if clip_axis == 'x':
+        centers = xlo + (np.arange(nx) + 0.5) * dx
+        mask_1d = (centers <= clip_position) if clip_side == 'below' else (centers >= clip_position)
+        return np.broadcast_to(mask_1d[:, None, None], (nx, ny, nz)).copy()
+    elif clip_axis == 'y':
+        centers = ylo + (np.arange(ny) + 0.5) * dy
+        mask_1d = (centers <= clip_position) if clip_side == 'below' else (centers >= clip_position)
+        return np.broadcast_to(mask_1d[None, :, None], (nx, ny, nz)).copy()
+    elif clip_axis == 'z':
+        centers = zlo + (np.arange(nz) + 0.5) * dz
+        mask_1d = (centers <= clip_position) if clip_side == 'below' else (centers >= clip_position)
+        return np.broadcast_to(mask_1d[None, None, :], (nx, ny, nz)).copy()
+    else:
+        return np.ones((nx, ny, nz), dtype=bool)
+
+
+class FrameCache:
+    def __init__(self, T, N):
+        self.color    = np.zeros((T, N), dtype=np.float32)
+        self.opacity  = np.zeros((T, N), dtype=np.float32)
+        self.progress = set()
+        self.ready    = False
+        self.params   = None
+        self._thread  = None
+        self._cancel  = threading.Event()
+
+    def build(self, trajectory, params, start_t=0):
+        self._cancel.set()
+        if self._thread is not None:
+            self._thread.join()
+        self._cancel.clear()
+        self.progress = set()
+        self.ready    = False
+        self.params   = params.copy()
+
+        self._thread = threading.Thread(
+            target=self._worker,
+            args=(trajectory, params.copy(), start_t),
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _worker(self, trajectory, params, start_t):
+        meta = trajectory.meta
+        T    = trajectory.T
+        N    = meta['nx'] * meta['ny'] * meta['nz']
+
+        clip_mask = _build_clip_mask(
+            meta, params.clip_axis, params.clip_position, params.clip_side
+        )
+
+        for t in list(range(start_t, T)) + list(range(0, start_t)):
+            if self._cancel.is_set():
+                return
+
+            data     = trajectory.get(params.quantity, t)
+            has_data = trajectory.get_has_data(params.quantity, t)
+
+            # 1. type filter
+            vt = trajectory.get_voxel_type(t)
+            if params.view_type == 'all' or vt is None:
+                type_mask = np.ones(data.shape, dtype=bool)
+            else:
+                type_id   = _VOXEL_TYPE_IDS[params.view_type]
+                type_mask = (vt == type_id)
+
+            # 2. clip
+            visible = type_mask & clip_mask
+
+            # 3. full calculation
+            filled = has_data & visible
+
+            if params.smoothing:
+                num      = uniform_filter(data,                    size=SMOOTH_KERNEL, mode='constant', cval=0.0)
+                den      = uniform_filter(has_data.astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
+                smoothed = np.where(den > 0, num / den, 0.0)
+                color_t  = np.where(filled, smoothed, 0.0)
+            else:
+                color_t  = np.where(filled, data, 0.0)
+
+            self.color[t]   = color_t.flatten(order='F')
+            self.opacity[t] = filled.astype(np.float32).flatten(order='F')
+            self.progress.add(t)
+
+        self.ready = True
+
+
+# ---------------------------------------------------------------------------
+# Render layer
+# ---------------------------------------------------------------------------
+def _make_grid(meta):
+    nx, ny, nz = meta['nx'], meta['ny'], meta['nz']
     grid = pv.ImageData()
-    grid.dimensions = (nx + 1, ny + 1, nz + 1)        # cell-centred needs dims = shape + 1
-    grid.spacing    = (voxel_size, voxel_size, voxel_size)
-    grid.origin     = (xlo, ylo, zlo)
-    grid.cell_data[state.quantity] = raw.flatten(order='F')
+    grid.dimensions = (nx + 1, ny + 1, nz + 1)
+    grid.spacing    = (
+        (meta['xhi'] - meta['xlo']) / nx,
+        (meta['yhi'] - meta['ylo']) / ny,
+        (meta['zhi'] - meta['zlo']) / nz,
+    )
+    grid.origin = (meta['xlo'], meta['ylo'], meta['zlo'])
     return grid
 
 
-def read_meta(h5file):
-    """Read scalar metadata from the first timestep's HDF5 attributes."""
-    attrs = dict(h5file.attrs) if h5file.attrs else {}
-    # fall back to inferring from dataset shape
-    ds = h5file[QUANTITIES[0]]
-    T, nx, ny, nz = ds.shape
-    return {
-        'T':          T,
-        'nx':         nx,
-        'ny':         ny,
-        'nz':         nz,
-        'voxel_size': float(attrs.get('voxel_size', 10.0)),
-        'xlo':        float(attrs.get('xlo', 0.0)),
-        'ylo':        float(attrs.get('ylo', 0.0)),
-        'zlo':        float(attrs.get('zlo', 0.0)),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Clip plane dialog  (ax + by + cz = d)
-# ---------------------------------------------------------------------------
-def ask_clip_plane(state):
-    try:
-        raw = input("Clip plane — enter coefficients a b c d (for ax+by+cz=d): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        return
-    if not raw:
-        return
-    try:
-        a, b, c, d = map(float, raw.split())
-    except ValueError:
-        print("Invalid input — expected four floats: a b c d")
-        return
-    normal = np.array([a, b, c])
-    norm_sq = np.dot(normal, normal)
-    if norm_sq == 0:
-        print("Normal vector (a,b,c) cannot be zero.")
-        return
-    state.clip_normal  = normal
-    state.clip_origin  = normal * (d / norm_sq)
-    state.clip_active  = True
-    print(f"Clip plane set: {a}x + {b}y + {c}z = {d}")
-
-
-# ---------------------------------------------------------------------------
-# Main viewer
-# ---------------------------------------------------------------------------
 def main():
-    h5file = h5py.File(H5_FILE, 'r')
-    meta   = read_meta(h5file)
-    state  = ViewerState()
-    T      = meta['T']
+    trajectory = TrajectoryData(H5_FILE)
+    meta       = trajectory.meta
+    T          = trajectory.T
+    N          = meta['nx'] * meta['ny'] * meta['nz']
 
+    params     = ViewParams(trajectory.available[0])
+    cache      = FrameCache(T, N)
+
+    # renderer state
+    state = {
+        't':           0,
+        'playing':     False,
+        'fps_idx':     PLAY_FPS_STEPS.index(10),   # default 10 fps
+        'timer_id':    None,
+        'qty_idx':     0,
+        'vtype_idx':   0,                           # index into VIEW_TYPES
+        'clip_axis_idx': 0,                         # 0=none,1=x,2=y,3=z
+    }
+    CLIP_AXES = [None, 'x', 'y', 'z']
+
+    # read voxel type ids from h5 attrs
+    with h5py.File(H5_FILE, 'r') as f:
+        attrs = dict(f.attrs)
+    _VOXEL_TYPE_IDS['water']  = int(attrs.get('h_type',  3))
+    _VOXEL_TYPE_IDS['silica'] = int(attrs.get('si_type', 1))
+
+    # build initial cache starting at t=0
+    cache.build(trajectory, params, start_t=0)
+
+    # plotter setup — grid built once, never rebuilt
     plotter = pv.Plotter(title="Shock Voxel Visualizer")
     plotter.set_background("#1a1a2e")
 
-    # ---- render helper ----
-    def refresh():
-        plotter.clear()
+    grid = _make_grid(meta)
+    grid.cell_data['color']   = np.zeros(N, dtype=np.float32)
+    grid.cell_data['opacity'] = np.zeros(N, dtype=np.float32)
 
-        grid = load_grid(h5file, state, meta)
-        cmap = CMAPS.get(state.quantity, 'viridis')
+    vol_actor = plotter.add_volume(
+        grid,
+        scalars='color',
+        opacity='opacity',
+        cmap=CMAPS.get(params.quantity, 'viridis'),
+        shade=False,
+        show_scalar_bar=True,
+    )
 
-        if state.clip_active:
-            clipped = grid.clip(normal=state.clip_normal, origin=state.clip_origin)
-            plotter.add_mesh(clipped, scalars=state.quantity, cmap=cmap,
-                             show_scalar_bar=True)
+    plotter.add_axes(xlabel='X', ylabel='Y', zlabel='Z', color='white', line_width=3)
+    plotter.show_bounds(
+        bounds=(meta['xlo'], meta['xhi'], meta['ylo'], meta['yhi'], meta['zlo'], meta['zhi']),
+        grid='back', location='outer', ticks='outside',
+        font_size=10, color='white', fmt='%.0f',
+    )
+
+    # HUD text
+    def _hud_text():
+        fps   = PLAY_FPS_STEPS[state['fps_idx']]
+        t     = state['t']
+        clip  = f"{params.clip_axis} @ {params.clip_position:.1f} ({params.clip_side})" \
+                if params.clip_axis else 'OFF'
+        ready = f"{len(cache.progress)}/{T}" if not cache.ready else "ready"
+        return (
+            f"Quantity  : {params.quantity}\n"
+            f"Timestep  : {t}/{T - 1}{trajectory.timestep_label(t)}\n"
+            f"View type : {params.view_type}\n"
+            f"Clip      : {clip}\n"
+            f"Smoothing : {'ON' if params.smoothing else 'OFF'}\n"
+            f"Play      : {'▶' if state['playing'] else '⏸'}  {fps} fps\n"
+            f"Cache     : {ready}\n\n"
+            f"[space] play/pause    [←/→] step\n"
+            f"[[ / ]] speed -/+    [q] quantity\n"
+            f"[w] view type        [x/y/z] clip axis\n"
+            f"[+/-] clip pos       [f] smoothing"
+        )
+
+    hud = plotter.add_text(
+        _hud_text(), position='upper_left', font_size=9, color='#e0e0e0'
+    )
+
+    def _fast_update(t):
+        if t not in cache.progress:
+            return
+        grid.cell_data['color']   = cache.color[t]
+        grid.cell_data['opacity'] = cache.opacity[t]
+        grid.Modified()
+        hud.SetText(2, _hud_text())
+        plotter.render_window.Render()
+
+    def _on_param_change():
+        # update colormap if quantity changed
+        cmap = CMAPS.get(params.quantity, 'viridis')
+        vol_actor.GetProperty().SetLookupTable(
+            plotter.lookup_table(cmap, n_colors=256)
+        )
+        cache.build(trajectory, params, start_t=state['t'])
+        _fast_update(state['t'])
+
+    # timer
+    def _advance_frame(step=None):
+        if not state['playing']:
+            return
+        state['t'] = (state['t'] + 1) % T
+        _fast_update(state['t'])
+
+    def _restart_timer():
+        if state['timer_id'] is not None:
+            plotter.remove_timer_event(state['timer_id'])
+        fps = PLAY_FPS_STEPS[state['fps_idx']]
+        state['timer_id'] = plotter.add_timer_event(
+            max_steps=10_000_000,
+            duration=int(1000 / fps),
+            callback=_advance_frame,
+        )
+
+    # key bindings
+    def toggle_play():
+        state['playing'] = not state['playing']
+        if state['playing']:
+            _restart_timer()
         else:
-            plotter.add_volume(grid, scalars=state.quantity, cmap=cmap,
-                               opacity='linear', shade=False)
+            if state['timer_id'] is not None:
+                plotter.remove_timer_event(state['timer_id'])
+                state['timer_id'] = None
+        hud.SetText(2, _hud_text())
+        plotter.render_window.Render()
 
-        ts_val = ""
-        if 'timestep' in (h5file.attrs or {}):
-            ts_val = f"  (step {int(h5file.attrs['timestep'])})"
-        plotter.add_text(
-            f"Quantity : {state.quantity}\n"
-            f"Timestep : {state.timestep_idx}/{T - 1}{ts_val}\n"
-            f"Smoothing: {state.smooth_kernel}\n"
-            f"Clip     : {'ON' if state.clip_active else 'OFF'}\n\n"
-            f"[n/N] next/prev timestep\n"
-            f"[q]   cycle quantity\n"
-            f"[s/S] smoothing +/-\n"
-            f"[p]   set clip plane  (ax+by+cz=d)\n"
-            f"[c]   toggle clip\n"
-            f"[r]   reset clip",
-            position="upper_left", font_size=9, color="#e0e0e0",
-        )
-        plotter.add_axes(
-            xlabel='X', ylabel='Y', zlabel='Z',
-            color='white',
-            line_width=3,
-        )
-        plotter.show_bounds(
-            grid='back',
-            location='outer',
-            ticks='outside',
-            font_size=10,
-            color='white',
-            fmt='%.0f',
-        )
-        plotter.render()
+    def step_forward():
+        state['playing'] = False
+        state['t'] = min(state['t'] + 1, T - 1)
+        _fast_update(state['t'])
 
-    # ---- key bindings ----
-    def next_timestep():
-        state.timestep_idx = min(state.timestep_idx + 1, T - 1)
-        refresh()
+    def step_back():
+        state['playing'] = False
+        state['t'] = max(state['t'] - 1, 0)
+        _fast_update(state['t'])
 
-    def prev_timestep():
-        state.timestep_idx = max(state.timestep_idx - 1, 0)
-        refresh()
+    def speed_up():
+        state['fps_idx'] = min(state['fps_idx'] + 1, len(PLAY_FPS_STEPS) - 1)
+        if state['playing']:
+            _restart_timer()
+        hud.SetText(2, _hud_text())
+        plotter.render_window.Render()
+
+    def slow_down():
+        state['fps_idx'] = max(state['fps_idx'] - 1, 0)
+        if state['playing']:
+            _restart_timer()
+        hud.SetText(2, _hud_text())
+        plotter.render_window.Render()
 
     def cycle_quantity():
-        state.quantity_idx = (state.quantity_idx + 1) % len(QUANTITIES)
-        refresh()
+        state['qty_idx'] = (state['qty_idx'] + 1) % len(trajectory.available)
+        params.quantity  = trajectory.available[state['qty_idx']]
+        _on_param_change()
 
-    def smooth_up():
-        state.smooth_kernel = min(state.smooth_kernel + 2, 15)
-        refresh()
+    def cycle_view_type():
+        state['vtype_idx'] = (state['vtype_idx'] + 1) % len(VIEW_TYPES)
+        params.view_type   = VIEW_TYPES[state['vtype_idx']]
+        _on_param_change()
 
-    def smooth_down():
-        state.smooth_kernel = max(state.smooth_kernel - 2, 1)
-        refresh()
+    def cycle_clip_axis():
+        state['clip_axis_idx'] = (state['clip_axis_idx'] + 1) % len(CLIP_AXES)
+        params.clip_axis       = CLIP_AXES[state['clip_axis_idx']]
+        if params.clip_axis is not None:
+            # default clip position to center of that axis
+            axis  = params.clip_axis
+            lo    = meta[axis + 'lo']
+            hi    = meta[axis + 'hi']
+            params.clip_position = (lo + hi) / 2.0
+        _on_param_change()
 
-    def set_clip_plane():
-        ask_clip_plane(state)
-        refresh()
+    def clip_pos_increase():
+        if params.clip_axis is None:
+            return
+        axis = params.clip_axis
+        step = (meta[axis + 'hi'] - meta[axis + 'lo']) / meta['n' + axis]
+        params.clip_position = min(
+            params.clip_position + step, meta[axis + 'hi']
+        )
+        _on_param_change()
 
-    def toggle_clip():
-        state.clip_active = not state.clip_active
-        refresh()
+    def clip_pos_decrease():
+        if params.clip_axis is None:
+            return
+        axis = params.clip_axis
+        step = (meta[axis + 'hi'] - meta[axis + 'lo']) / meta['n' + axis]
+        params.clip_position = max(
+            params.clip_position - step, meta[axis + 'lo']
+        )
+        _on_param_change()
 
-    def reset_clip():
-        state.clip_active = False
-        refresh()
+    def toggle_smoothing():
+        params.smoothing = not params.smoothing
+        _on_param_change()
 
-    plotter.add_key_event('n', next_timestep)
-    plotter.add_key_event('N', prev_timestep)
-    plotter.add_key_event('q', cycle_quantity)
-    plotter.add_key_event('s', smooth_up)
-    plotter.add_key_event('S', smooth_down)
-    plotter.add_key_event('p', set_clip_plane)
-    plotter.add_key_event('c', toggle_clip)
-    plotter.add_key_event('r', reset_clip)
+    plotter.add_key_event('space',         toggle_play)
+    plotter.add_key_event('Right',         step_forward)
+    plotter.add_key_event('Left',          step_back)
+    plotter.add_key_event('bracketright',  speed_up)
+    plotter.add_key_event('bracketleft',   slow_down)
+    plotter.add_key_event('q',             cycle_quantity)
+    plotter.add_key_event('w',             cycle_view_type)
+    plotter.add_key_event('x',             cycle_clip_axis)
+    plotter.add_key_event('y',             cycle_clip_axis)
+    plotter.add_key_event('z',             cycle_clip_axis)
+    plotter.add_key_event('equal',         clip_pos_increase)   # +
+    plotter.add_key_event('minus',         clip_pos_decrease)   # -
+    plotter.add_key_event('f',             toggle_smoothing)
 
-    refresh()
+    # show first frame once cache has t=0 ready
+    import time
+    while 0 not in cache.progress:
+        time.sleep(0.01)
+    _fast_update(0)
+
     plotter.show()
-    h5file.close()
 
 
 if __name__ == "__main__":
