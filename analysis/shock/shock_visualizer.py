@@ -31,6 +31,10 @@ SMOOTH_KERNEL   = 3
 VIEW_TYPES      = ['all', 'water', 'silica']
 PLAY_FPS_STEPS  = [1, 2, 5, 10, 15, 24, 30, 60]
 
+# Sentinel value written to invisible cells. Must be below any real data value.
+# Using float32 min ensures no physical quantity can ever equal it.
+INVISIBLE = np.finfo(np.float32).min
+
 
 # ---------------------------------------------------------------------------
 # Data layer
@@ -63,6 +67,16 @@ class TrajectoryData:
                 self.timestep_labels = None
 
         self.available = [q for q in QUANTITIES if q in self.data]
+
+        # per-quantity data range over all timesteps, used to set the OTF clim
+        # has_data mask ensures only real values (not nan_to_num zeros) are included
+        self.data_range = {}
+        for q in self.available:
+            masked = self.data[q][self.has_data[q]]
+            if masked.size > 0:
+                self.data_range[q] = (float(masked.min()), float(masked.max()))
+            else:
+                self.data_range[q] = (0.0, 1.0)
 
         # grid metadata
         first = self.data[self.available[0]]
@@ -179,9 +193,9 @@ def _build_clip_mask(meta, clip_axis, clip_position, clip_side):
 
 class FrameCache:
     def __init__(self, T, N):
-        # Single scalar array: visible cells = actual value, invisible = NaN.
-        # VTK volume mapper renders NaN voxels as fully transparent.
-        self.color    = np.full((T, N), np.nan, dtype=np.float32)
+        # Single scalar: visible cells = actual value, invisible = INVISIBLE sentinel.
+        # OTF maps sentinel → 0 opacity, actual data range → linear.
+        self.color    = np.full((T, N), INVISIBLE, dtype=np.float32)
         self.progress = set()
         self.ready    = False
         self.params   = None
@@ -238,9 +252,9 @@ class FrameCache:
                 num      = uniform_filter(data,                        size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 den      = uniform_filter(has_data.astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 smoothed = np.where(den > 0, num / den, 0.0)
-                color_t  = np.where(filled, smoothed, np.nan)
+                color_t  = np.where(filled, smoothed, INVISIBLE)
             else:
-                color_t  = np.where(filled, data, np.nan)
+                color_t  = np.where(filled, data, INVISIBLE)
 
             self.color[t] = color_t.flatten(order='F')
             self.progress.add(t)
@@ -297,18 +311,30 @@ def main():
     plotter.set_background("#1a1a2e")
 
     grid = _make_grid(meta)
-    grid.cell_data['color'] = np.full(N, np.nan, dtype=np.float32)
+    grid.cell_data['color'] = np.full(N, INVISIBLE, dtype=np.float32)
 
+    dmin, dmax = trajectory.data_range[params.quantity]
     vol_actor = plotter.add_volume(
         grid,
         scalars='color',
         opacity='linear',
+        clim=[dmin, dmax],
         cmap=CMAPS.get(params.quantity, 'viridis'),
         shade=False,
         show_scalar_bar=True,
     )
-    # NaN cells → fully transparent
-    vol_actor.GetProperty().SetNanOpacity(0.0)
+
+    def _update_otf(dmin, dmax):
+        """Set OTF: sentinel → transparent, [dmin, dmax] → linear 0→1."""
+        from vtkmodules.vtkRenderingCore import vtkPiecewiseFunction
+        otf = vtkPiecewiseFunction()
+        otf.AddPoint(INVISIBLE,      0.0)   # sentinel → transparent
+        otf.AddPoint(dmin - 1.0,     0.0)   # gap below real data → transparent
+        otf.AddPoint(dmin,           0.0)   # data floor → transparent start
+        otf.AddPoint(dmax,           1.0)   # data ceiling → fully opaque
+        vol_actor.GetProperty().SetScalarOpacity(otf)
+
+    _update_otf(dmin, dmax)
 
     plotter.add_axes(xlabel='X', ylabel='Y', zlabel='Z', color='white', line_width=3)
     plotter.show_bounds(
@@ -351,11 +377,8 @@ def main():
         plotter.render_window.Render()
 
     def _on_param_change():
-        # update colormap if quantity changed
-        cmap = CMAPS.get(params.quantity, 'viridis')
-        vol_actor.GetProperty().SetLookupTable(
-            plotter.lookup_table(cmap, n_colors=256)
-        )
+        dmin, dmax = trajectory.data_range[params.quantity]
+        _update_otf(dmin, dmax)
         cache.build(trajectory, params, start_t=state['t'])
         _fast_update(state['t'])
 
