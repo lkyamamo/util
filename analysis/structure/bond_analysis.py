@@ -193,13 +193,15 @@ def main():
     def shift_and_resize_box(frame, data):
         pos = np.copy(data.particles.positions)
         axis_min_val = pos[:, axis].min()
-        pos[:, axis] -= axis_min_val          # shift so atom min == 0
-        axis_range = pos[:, axis].max()
+        axis_range = pos[:, axis].max() - axis_min_val
+
+        # 1. Shift atoms: apply padding below so atoms start at REFIT_BOX_PAD.
+        # 2. Set box origin to 0 so xlo == 0 (recenter as final step).
+        # LAMMPS rejects atoms sitting exactly on xlo/xhi during domain decomposition.
+        pos[:, axis] -= axis_min_val - REFIT_BOX_PAD
         data.particles_.positions_ = pos
 
-        # Expand box by PAD on each face so no atom sits exactly on xlo/xhi.
-        # LAMMPS rejects atoms at exactly xhi during domain decomposition.
-        data.cell_[axis, 3] = -REFIT_BOX_PAD
+        data.cell_[axis, 3] = 0.0
         data.cell_[axis, axis] = axis_range + 2 * REFIT_BOX_PAD
 
     pipeline.modifiers.append(shift_top_along_axis)

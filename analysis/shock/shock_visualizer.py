@@ -6,10 +6,6 @@ import h5py
 import numpy as np
 import pyvista as pv
 from scipy.ndimage import uniform_filter
-from vtkmodules.vtkCommonDataModel import vtkPiecewiseFunction
-from vtkmodules.vtkRenderingCore import vtkColorTransferFunction, vtkVolume, vtkVolumeProperty
-from vtkmodules.vtkRenderingVolume import vtkSmartVolumeMapper
-from vtkmodules.util import numpy_support
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -82,13 +78,17 @@ class TrajectoryData:
 
         # data range over filled cells only
         filled_mask = self.opacity > 0
-        self.data_range = {}
+        self.data_range    = {}
+        self.empty_sentinel = {}
         for q in self.available:
             vals = self.data[q][filled_mask]
             if vals.size > 0:
-                self.data_range[q] = (float(vals.min()), float(vals.max()))
+                dmin, dmax = float(np.nanmin(vals)), float(np.nanmax(vals))
             else:
-                self.data_range[q] = (0.0, 1.0)
+                dmin, dmax = 0.0, 1.0
+            self.data_range[q] = (dmin, dmax)
+            span = dmax - dmin
+            self.empty_sentinel[q] = dmin - (span * 0.1 if span > 0 else 1.0)
 
         # grid metadata
         first = self.data[self.available[0]]
@@ -180,25 +180,13 @@ def _build_clip_mask(meta, clip_axis, clip_position, clip_side):
         return np.ones((nx, ny, nz), dtype=bool)
 
 
-def _build_ctf(quantity, trajectory):
-    dmin, dmax   = trajectory.data_range[quantity]
-    cmap_name    = CMAPS.get(quantity, 'viridis')
-    lut          = pv.LookupTable(cmap=cmap_name, n_colors=256)
-    lut.SetRange(dmin, dmax)
-    ctf = vtkColorTransferFunction()
-    for i in range(256):
-        t   = dmin + i * (dmax - dmin) / 255.0 if dmax > dmin else dmin
-        rgb = lut.map_value(t)[:3]
-        ctf.AddRGBPoint(t, rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0)
-    return ctf, dmin, dmax
-
 
 # ---------------------------------------------------------------------------
 # Cache layer
 # ---------------------------------------------------------------------------
 class FrameCache:
     def __init__(self, T, N):
-        self.frames   = np.zeros((T, N, 2), dtype=np.float32)
+        self.frames   = np.zeros((T, N), dtype=np.float32)
         self.progress = set()
         self.ready    = False
         self._thread  = None
@@ -247,20 +235,17 @@ class FrameCache:
             # 3. filled = has atoms AND passes visibility
             filled = (opacity_t > 0) & visible
 
-            # component 0: color
+            # color value for filled cells; sentinel for empty/hidden cells
+            sentinel = trajectory.empty_sentinel[params.quantity]
             if params.smoothing:
-                num      = uniform_filter(data,                          size=SMOOTH_KERNEL, mode='constant', cval=0.0)
+                num      = uniform_filter(data,                               size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 den      = uniform_filter((opacity_t > 0).astype(np.float32), size=SMOOTH_KERNEL, mode='constant', cval=0.0)
                 smoothed = np.where(den > 0, num / den, 0.0)
-                color    = np.where(filled, smoothed, 0.0)
+                color    = np.where(filled, smoothed, sentinel)
             else:
-                color    = np.where(filled, data, 0.0)
+                color    = np.where(filled, data, sentinel)
 
-            # component 1: opacity — zero out cells that don't pass visibility
-            opacity = np.where(filled, opacity_t, 0.0)
-
-            self.frames[t, :, 0] = color.flatten(order='F')
-            self.frames[t, :, 1] = opacity.flatten(order='F')
+            self.frames[t, :] = color.flatten(order='F')
             self.progress.add(t)
 
         self.ready = True
@@ -294,65 +279,37 @@ def main():
 
     state = {
         't':        0,
-        'playing':  False,
-        'fps_idx':  PLAY_FPS_STEPS.index(10),
-        'timer_id': None,
         'qty_idx':  0,
         'vtype_idx': 0,
     }
 
-    # plotter + grid — built once, never rebuilt
     plotter = pv.Plotter(title="Shock Voxel Visualizer")
     plotter.set_background("#1a1a2e")
 
     grid = _make_grid(meta)
+    grid.cell_data['display'] = np.zeros(N, dtype=np.float32)
 
-    # 2-component VTK cell array: col 0 = color, col 1 = opacity
-    from vtkmodules.vtkCommonCore import vtkFloatArray
-    vtk_arr = vtkFloatArray()
-    vtk_arr.SetNumberOfComponents(2)
-    vtk_arr.SetNumberOfTuples(N)
-    vtk_arr.SetName('display')
-    vtk_arr.Fill(0.0)
-    grid.GetCellData().AddArray(vtk_arr)
-    grid.GetCellData().SetActiveScalars('display')
+    vol_actor = [None]
 
-    vtk_np_view = numpy_support.vtk_to_numpy(vtk_arr)   # (N, 2) view into VTK memory
+    def _add_volume(quantity):
+        if vol_actor[0] is not None:
+            plotter.remove_actor(vol_actor[0])
+        dmin, dmax = trajectory.data_range[quantity]
+        # opacity array: index 0 (== dmin, and any clamped sentinel below it) → 0
+        # everything above → 1; sentinel values are < dmin so always clamp to index 0
+        opacity_arr = np.ones(256, dtype=np.float32)
+        opacity_arr[0] = 0.0
+        vol_actor[0] = plotter.add_volume(
+            grid,
+            scalars='display',
+            clim=[dmin, dmax],
+            opacity=opacity_arr,
+            cmap=CMAPS.get(quantity, 'viridis'),
+            shade=False,
+            show_scalar_bar=False,
+        )
 
-    # volume setup
-    mapper = vtkSmartVolumeMapper()
-    mapper.SetInputData(grid)
-    mapper.SetBlendModeToComposite()
-
-    prop = vtkVolumeProperty()
-    prop.IndependentComponentsOn()
-
-    # component 1: opacity only — defined once, never changes
-    ctf1 = vtkColorTransferFunction()
-    ctf1.AddRGBPoint(0.0, 0.0, 0.0, 0.0)
-    ctf1.AddRGBPoint(1.0, 0.0, 0.0, 0.0)
-    otf1 = vtkPiecewiseFunction()
-    otf1.AddPoint(0.0, 0.0)
-    otf1.AddPoint(1.0, 1.0)
-    prop.SetColor(1, ctf1)
-    prop.SetScalarOpacity(1, otf1)
-    prop.SetComponentWeight(1, 0.0)
-
-    def _apply_quantity_to_prop(quantity):
-        ctf0, dmin, dmax = _build_ctf(quantity, trajectory)
-        otf0 = vtkPiecewiseFunction()
-        otf0.AddPoint(dmin, 1.0)
-        otf0.AddPoint(dmax, 1.0)
-        prop.SetColor(0, ctf0)
-        prop.SetScalarOpacity(0, otf0)
-        prop.SetComponentWeight(0, 1.0)
-
-    _apply_quantity_to_prop(params.quantity)
-
-    vol = vtkVolume()
-    vol.SetMapper(mapper)
-    vol.SetProperty(prop)
-    plotter.renderer.AddVolume(vol)
+    _add_volume(params.quantity)
 
     plotter.add_axes(xlabel='X', ylabel='Y', zlabel='Z', color='white', line_width=3)
     plotter.show_bounds(
@@ -363,7 +320,6 @@ def main():
 
     # HUD
     def _hud_text():
-        fps  = PLAY_FPS_STEPS[state['fps_idx']]
         t    = state['t']
         clip = f"{params.clip_axis} @ {params.clip_position:.1f} ({params.clip_side})" \
                if params.clip_axis else 'OFF'
@@ -374,10 +330,8 @@ def main():
             f"View type : {params.view_type}\n"
             f"Clip      : {clip}\n"
             f"Smoothing : {'ON' if params.smoothing else 'OFF'}\n"
-            f"Play      : {'▶' if state['playing'] else '⏸'}  {fps} fps\n"
             f"Cache     : {prog}\n\n"
-            f"[space] play/pause    [←/→] step\n"
-            f"[[ / ]] speed -/+    [v] quantity\n"
+            f"[←/→] step           [v] quantity\n"
             f"[w] view type        [x/y/z] clip axis (again=off)\n"
             f"[+/-] clip pos       [f] smoothing"
         )
@@ -389,68 +343,65 @@ def main():
     def _fast_update(t):
         if t not in cache.progress:
             return
-        vtk_np_view[:] = cache.frames[t]      # (N, 2) in-place write
-        grid.GetCellData().Modified()
-        hud.SetText(2, _hud_text())
-        plotter.render_window.Render()
+        grid['display'] = cache.frames[t]
+        hud.set_text('upper_left', _hud_text())
+        plotter.render()
 
     def _on_param_change():
-        _apply_quantity_to_prop(params.quantity)
+        _add_volume(params.quantity)
         cache.build(trajectory, params, start_t=state['t'])
         _fast_update(state['t'])
 
-    # timer
-    def _advance_frame(step=None):
-        if not state['playing']:
-            return
-        state['t'] = (state['t'] + 1) % T
-        _fast_update(state['t'])
-
-    def _restart_timer():
-        if state['timer_id'] is not None:
-            plotter.remove_timer_event(state['timer_id'])
-        fps = PLAY_FPS_STEPS[state['fps_idx']]
-        state['timer_id'] = plotter.add_timer_event(
-            max_steps=10_000_000,
-            duration=int(1000 / fps),
-            callback=_advance_frame,
-        )
-
-    # key bindings
-    def toggle_play():
-        state['playing'] = not state['playing']
-        if state['playing']:
-            _restart_timer()
-        else:
-            if state['timer_id'] is not None:
-                plotter.remove_timer_event(state['timer_id'])
-                state['timer_id'] = None
-        hud.SetText(2, _hud_text())
-        plotter.render_window.Render()
+    # # --- autoplay (disabled) ---
+    # def _advance_frame(step=None):
+    #     if not state['playing']:
+    #         return
+    #     state['t'] = (state['t'] + 1) % T
+    #     _fast_update(state['t'])
+    #
+    # def _restart_timer():
+    #     if state['timer_id'] is not None:
+    #         plotter.remove_timer_event(state['timer_id'])
+    #     fps = PLAY_FPS_STEPS[state['fps_idx']]
+    #     state['timer_id'] = plotter.add_timer_event(
+    #         max_steps=10_000_000,
+    #         duration=int(1000 / fps),
+    #         callback=_advance_frame,
+    #     )
+    #
+    # def toggle_play():
+    #     state['playing'] = not state['playing']
+    #     if state['playing']:
+    #         _restart_timer()
+    #     else:
+    #         if state['timer_id'] is not None:
+    #             plotter.remove_timer_event(state['timer_id'])
+    #             state['timer_id'] = None
+    #     hud.SetText(2, _hud_text())
+    #     plotter.render_window.Render()
+    #
+    # def speed_up():
+    #     state['fps_idx'] = min(state['fps_idx'] + 1, len(PLAY_FPS_STEPS) - 1)
+    #     if state['playing']:
+    #         _restart_timer()
+    #     hud.SetText(2, _hud_text())
+    #     plotter.render_window.Render()
+    #
+    # def slow_down():
+    #     state['fps_idx'] = max(state['fps_idx'] - 1, 0)
+    #     if state['playing']:
+    #         _restart_timer()
+    #     hud.SetText(2, _hud_text())
+    #     plotter.render_window.Render()
+    # # --- end autoplay ---
 
     def step_forward():
-        state['playing'] = False
         state['t'] = min(state['t'] + 1, T - 1)
         _fast_update(state['t'])
 
     def step_back():
-        state['playing'] = False
         state['t'] = max(state['t'] - 1, 0)
         _fast_update(state['t'])
-
-    def speed_up():
-        state['fps_idx'] = min(state['fps_idx'] + 1, len(PLAY_FPS_STEPS) - 1)
-        if state['playing']:
-            _restart_timer()
-        hud.SetText(2, _hud_text())
-        plotter.render_window.Render()
-
-    def slow_down():
-        state['fps_idx'] = max(state['fps_idx'] - 1, 0)
-        if state['playing']:
-            _restart_timer()
-        hud.SetText(2, _hud_text())
-        plotter.render_window.Render()
 
     def cycle_quantity():
         state['qty_idx'] = (state['qty_idx'] + 1) % len(trajectory.available)
@@ -490,11 +441,8 @@ def main():
         params.smoothing = not params.smoothing
         _on_param_change()
 
-    plotter.add_key_event('space',        toggle_play)
     plotter.add_key_event('Right',        step_forward)
     plotter.add_key_event('Left',         step_back)
-    plotter.add_key_event('bracketright', speed_up)
-    plotter.add_key_event('bracketleft',  slow_down)
     plotter.add_key_event('v',            cycle_quantity)
     plotter.add_key_event('w',            cycle_view_type)
     plotter.add_key_event('x',            lambda: _set_clip_axis('x'))

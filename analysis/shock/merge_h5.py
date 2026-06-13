@@ -21,6 +21,8 @@ def merge(output_dir, final_h5):
                     if i == 0:
                         shape = (T,) + data.shape
                         out.create_dataset(name, shape=shape, dtype=data.dtype)
+                        for key, val in src.attrs.items():
+                            out.attrs[key] = val
                     out[name][i] = data
             if (i + 1) % 50 == 0 or (i + 1) == T:
                 print(f"  {i + 1}/{T}")
