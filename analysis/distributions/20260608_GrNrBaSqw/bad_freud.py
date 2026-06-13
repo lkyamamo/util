@@ -33,6 +33,8 @@ Adjust COL_ELEMENT / COL_X / COL_Y / COL_Z if your dump's ITEM: ATOMS
 columns differ from the default (id element x y z vx vy vz).
 """
 
+import os
+
 import numpy as np
 import freud
 import matplotlib.pyplot as plt
@@ -42,7 +44,7 @@ import matplotlib.pyplot as plt
 # =============================================================================
 
 # Input trajectory file
-DUMP_FILE = "../OH.lammpstrj"
+DUMP_FILE = os.environ.get("TRAJ", "../OH.lammpstrj")
 
 # Output plot file
 OUTPUT_PLOT = "bads.png"

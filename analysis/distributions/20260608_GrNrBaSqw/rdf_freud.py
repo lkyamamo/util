@@ -23,6 +23,7 @@ from the default layout:  id  element  x  y  z  vx  vy  vz
 """
 
 import itertools
+import os
 
 import numpy as np
 import freud
@@ -33,7 +34,7 @@ import matplotlib.pyplot as plt
 # =============================================================================
 
 # Input trajectory file
-DUMP_FILE = "../int_dump.lammpstrj"
+DUMP_FILE = os.environ.get("TRAJ", "../int_dump.lammpstrj")
 
 # Output plot file
 OUTPUT_PLOT = "rdfs.png"
@@ -136,10 +137,11 @@ def read_lammps_dump(filename):
             positions -= center
 
             frames.append({
-                'timestep': timestep,
-                'box':      box,
-                'positions': positions,
-                'elements': np.array(elements),
+                'timestep':       timestep,
+                'box':            box,
+                'positions':      positions,
+                'elements':       np.array(elements),
+                'number_density': n_atoms / box.volume,   # atoms / Å³
             })
 
     return frames
@@ -147,15 +149,14 @@ def read_lammps_dump(filename):
 
 def compute_rdf(frames, get_a, get_b, self_pair=False):
     """
-    Compute per-frame RDF and n(r) between position sets returned by get_a and get_b,
-    then return the simple mean across frames.
-    For self-pairs (O-O, H-H, Si-Si), set self_pair=True so freud excludes
-    the i=j distance-zero contribution automatically.
-    freud's RDF.n_r is the cumulative coordination number (running integral of g(r)).
+    Compute the frame-averaged RDF and n(r) using freud's built-in accumulation.
+    freud accumulates across compute() calls when reset=False, so rdf.rdf and
+    rdf.n_r at the end are already the properly normalized frame averages.
+
+    Returns: r, mean_g, mean_nr
     """
-    rdf = freud.density.RDF(bins=BINS, r_max=R_MAX)
-    all_rdf = []
-    all_nr  = []
+    rdf   = freud.density.RDF(bins=BINS, r_max=R_MAX)
+    first = True
 
     for frame in frames:
         pos_a = get_a(frame)
@@ -165,17 +166,17 @@ def compute_rdf(frames, get_a, get_b, self_pair=False):
             continue
 
         if self_pair:
-            rdf.compute((frame['box'], pos_a), reset=True)
+            rdf.compute((frame['box'], pos_a), reset=first)
         else:
-            rdf.compute((frame['box'], pos_a), query_points=pos_b, reset=True)
+            rdf.compute((frame['box'], pos_a), query_points=pos_b, reset=first)
 
-        all_rdf.append(rdf.rdf.copy())
-        all_nr.append(rdf.n_r.copy())
+        first = False
 
-    if not all_rdf:
-        return rdf.bin_centers, np.zeros(BINS), np.zeros(BINS)
+    if first:
+        empty = np.zeros(BINS)
+        return rdf.bin_centers, empty, empty
 
-    return rdf.bin_centers, np.mean(all_rdf, axis=0), np.mean(all_nr, axis=0)
+    return rdf.bin_centers, rdf.rdf, rdf.n_r
 
 
 def build_pair_getters(elements):
@@ -206,45 +207,56 @@ def get_concentrations(frames):
     return {el: n / total for el, n in counts.items()}
 
 
-def combine_partials(partial_results, elements, concentrations):
+
+def _neutron_weights(elements, concentrations):
+    """Return (b, b_mean, w_neutron dict) or None if any element is missing."""
+    missing = [el for el in elements if el not in NEUTRON_SCATTERING_LENGTHS]
+    if missing:
+        print(f"Warning: no scattering length for {missing}; neutron g(r) skipped.")
+        return None
+    b = {el: NEUTRON_SCATTERING_LENGTHS[el] for el in elements}
+    b_mean = sum(concentrations[el] * b[el] for el in elements)
+    weights = {}
+    for a, bl in itertools.combinations_with_replacement(sorted(elements), 2):
+        factor = 1 if a == bl else 2
+        w_total = factor * concentrations[a] * concentrations[bl]
+        weights[f'{a}-{bl}'] = w_total * b[a] * b[bl] / b_mean ** 2
+    return weights
+
+
+def combine_partials(partial_results, elements, concentrations, rho):
     """
-    Build total and neutron-weighted g(r) from partial pair g(r)s.
+    Combine partial g(r)s into total and neutron-weighted g(r) and t(r).
 
     Total g(r):   w_αβ = c_α c_β  (×2 for cross-pairs)
     Neutron g(r): w_αβ = c_α c_β b_α b_β / <b>²  (×2 for cross-pairs)
+    t(r):         g_neutron(r) · 4π r · mean(ρ)
 
-    Returns a dict with keys 'total' and 'neutron' (if all elements have a
-    known scattering length), each mapping to (r, g).
+    rho : per-frame number density array (atoms / Å³), shape (n_frames,)
+
+    Returns a dict {label: (r, y)} with keys 'total', and optionally 'neutron' and 't'.
     """
     r = next(iter(partial_results.values()))[0]
 
     g_total   = np.zeros(len(r))
     g_neutron = np.zeros(len(r))
 
-    missing = [el for el in elements if el not in NEUTRON_SCATTERING_LENGTHS]
-    if missing:
-        print(f"Warning: no scattering length for {missing}; neutron g(r) skipped.")
-        compute_neutron = False
-    else:
-        b = {el: NEUTRON_SCATTERING_LENGTHS[el] for el in elements}
-        b_mean = sum(concentrations[el] * b[el] for el in elements)
-        compute_neutron = True
+    nw = _neutron_weights(elements, concentrations)
 
     for a, bl in itertools.combinations_with_replacement(sorted(elements), 2):
         label  = f'{a}-{bl}'
         factor = 1 if a == bl else 2
         _, g, *_ = partial_results[label]
 
-        w_total = factor * concentrations[a] * concentrations[bl]
-        g_total += w_total * g
-
-        if compute_neutron:
-            w_neutron = w_total * b[a] * b[bl] / b_mean ** 2
-            g_neutron += w_neutron * g
+        g_total += factor * concentrations[a] * concentrations[bl] * g
+        if nw is not None:
+            g_neutron += nw[label] * g
 
     out = {'total': (r, g_total)}
-    if compute_neutron:
+    if nw is not None:
+        t = g_neutron * 4 * np.pi * r * rho.mean()
         out['neutron'] = (r, g_neutron)
+        out['t']       = (r, t)
     return out
 
 
@@ -322,6 +334,9 @@ if __name__ == '__main__':
     concentrations = get_concentrations(frames)
     print("Concentrations: " + ", ".join(f"{el}={c:.3f}" for el, c in concentrations.items()))
 
+    rho = np.array([f['number_density'] for f in frames])   # atoms/Å³, shape (n_frames,)
+    print(f"Number density: {rho.mean():.6e} atoms/Å³")
+
     pairs = build_pair_getters(elements)
     gr_results = {}
     nr_results = {}
@@ -331,7 +346,7 @@ if __name__ == '__main__':
         gr_results[name] = (r, g)
         nr_results[name] = (r, nr)
 
-    gr_results.update(combine_partials(gr_results, elements, concentrations))
+    gr_results.update(combine_partials(gr_results, elements, concentrations, rho))
 
     if OUTPUT_CSV is not None:
         save_csv(gr_results, OUTPUT_CSV)

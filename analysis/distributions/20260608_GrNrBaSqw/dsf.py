@@ -35,7 +35,7 @@ import os
 # CONFIGURATION — edit these variables between runs
 # =============================================================================
 
-DUMP_FILE       = "dump.lammpstrj"
+DUMP_FILE       = os.environ.get("TRAJ", "dump.lammpstrj")
 
 # Trajectory sampling
 N_FRAMES        = 500       # max frames to read (frame_stop in Trajectory)

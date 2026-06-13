@@ -16,9 +16,15 @@
 # =============================================================================
 
 # --- Configuration ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DUMP_DIR="../dumps"              # directory containing LAMMPS dump files
 DUMP_GLOB="dielectric.*.custom" # glob matching your dump file names
-OUTPUT_DIR="$DUMP_DIR/dipole_output"
+OUTPUT_DIR="$SCRIPT_DIR/dipole_output"
+START_TIMESTEP=0
+END_TIMESTEP=60000000
+DUMP_EVERY=10
+
+
 
 CUTOFF=1.2     # O-H bond cutoff in Angstroms
 TYPE_O=1       # LAMMPS atom type for oxygen
@@ -36,47 +42,76 @@ VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
 # Maximum simultaneous array tasks (throttle to avoid overwhelming the scheduler)
 MAX_SIMULTANEOUS=64
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # ---------------------
 
-N=$(ls "$DUMP_DIR"/$DUMP_GLOB 2>/dev/null | wc -l)
-
-if [ "$N" -eq 0 ]; then
-    echo "ERROR: No files matching '$DUMP_GLOB' found in '$DUMP_DIR'" >&2
+# check to see if the dump files exist
+if [ ! -f "$DUMP_DIR/${DUMP_GLOB/\*/$START_TIMESTEP}" ]; then
+    echo "ERROR: No files matching '${DUMP_GLOB/\*/$START_TIMESTEP}' found in '$DUMP_DIR'" >&2
     exit 1
 fi
 
 mkdir -p "$SCRIPT_DIR/logs"
-mkdir -p "$OUTPUT_DIR"
 
-# --- Build list of unprocessed dump files ---
-DUMP_PREFIX="${DUMP_GLOB%%\**}"
-DUMP_SUFFIX="${DUMP_GLOB##*\*}"
 PENDING_FILE="$SCRIPT_DIR/pending_dumps.txt"
+OUT_GLOB="dipole_*.txt"
 > "$PENDING_FILE"
 
-skipped=0
-for DUMP in $(ls "$DUMP_DIR"/$DUMP_GLOB | sort); do
-    BASENAME=$(basename "$DUMP")
-    TIMESTEP="${BASENAME#$DUMP_PREFIX}"
-    TIMESTEP="${TIMESTEP%$DUMP_SUFFIX}"
-    if [ -f "$OUTPUT_DIR/dipole_${TIMESTEP}.txt" ]; then
-        skipped=$((skipped + 1))
-    else
-        echo "$DUMP" >> "$PENDING_FILE"
+# see if the output directory exists. if exists, assume processed files exist
+if [ -d "$OUTPUT_DIR" ]; then
+    echo "Existing processed frames"
+    skipped=0
+    toprocess=0
+    missing=0
+    for ((i=START_TIMESTEP; i<=END_TIMESTEP; i+=DUMP_EVERY)); do
+        if [ ! -f "$OUTPUT_DIR/${OUT_GLOB/\*/$i}" ]; then
+            TEMP="${DUMP_GLOB/\*/$i}"
+            if [ -f "$DUMP_DIR/$TEMP" ]; then
+                echo "$DUMP_DIR/$TEMP" >> "$PENDING_FILE"
+                toprocess=$((toprocess + 1))
+            else
+                echo "Missing timestep: $i"
+                missing=$((missing + 1))
+            fi
+        else
+            skipped=$((skipped + 1))
+        fi
+    done
+
+    if [ $skipped == $((($END_TIMESTEP - $START_TIMESTEP)/$DUMP_EVERY)+1)]; then
+        echo "All frames already processed"
+        echo "Run 1.aggregate.py directly if you need to regenerate dipole_output.txt."
+        exit 0
     fi
-done
 
-N_PENDING=$(wc -l < "$PENDING_FILE")
-echo "Found $N dump files total — $skipped already processed, $N_PENDING pending"
-
-if [ "$N_PENDING" -eq 0 ]; then
-    echo "All frames already processed. Nothing to submit."
-    echo "Run 1.aggregate.py directly if you need to regenerate dipole_output.txt."
-    exit 0
+    echo "Skipped: $skipped"
+    echo "Pending: $toprocess"
+    echo "Missing: $missing"
+# no ouptut dir therefore cannot have any processed frames
+else
+    mkdir -p "$OUTPUT_DIR"
+    echo "No previous frames processed"
+    toprocess=0
+    missing=0
+    for ((i=START_TIMESTEP; i<=END_TIMESTEP; i+=DUMP_EVERY)); do
+        TEMP="${DUMP_GLOB/\*/$i}"
+        if [ -f "$DUMP_DIR/$TEMP" ]; then
+            echo "$DUMP_DIR/$TEMP" >> "$PENDING_FILE"
+            toprocess=$((toprocess + 1))
+        else                
+            echo "Missing timestep: $i"
+            missing=$((missing + 1))
+        fi
+    done
+    echo "Skipped: 0"
+    echo "Pending: $toprocess"
+    echo "Missing: $missing"
 fi
 
-ARRAY_MAX=$((N_PENDING - 1))
+
+
+
+ARRAY_MAX=$((toprocess - 1))
 echo "Submitting array 0-${ARRAY_MAX} (max ${MAX_SIMULTANEOUS} simultaneous)"
 
 ARRAY_JOB=$(sbatch --parsable \

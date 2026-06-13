@@ -17,6 +17,14 @@ echo "starting analysis **************************************"
 date
 
 ############################
+# Trajectory — set this before submitting
+############################
+
+TRAJ="../OH.lammpstrj"
+export TRAJ
+echo "Trajectory: $TRAJ"
+
+############################
 # Run flags — set 1 to run, 0 to skip
 ############################
 
@@ -38,7 +46,7 @@ echo "Running in $(pwd)"
 
 module purge
 module load usc
-conda activate dynasor_env        # env with dynasor, icc_rt, freud, numpy, matplotlib
+source /home1/lkyamamo/venv/struc_analysis/bin/activate        # env with dynasor, icc_rt, freud, numpy, matplotlib
 
 ############################
 # Thread count
