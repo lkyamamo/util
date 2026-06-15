@@ -6,9 +6,10 @@
 #SBATCH --mem=4G
 #SBATCH --time=00:10:00
 
-# Global array job — SLURM_ARRAY_TASK_ID is the frame index.
-# Required: OUTPUT_DIR, SCRIPT_DIR, DUMP_DIR, DUMP_GLOB, START_TIMESTEP, DUMP_EVERY,
-#           CHUNK_SIZE, CUTOFF, TYPE_O, TYPE_H, VENV_PATH (optional)
+# Per-chunk array job — SLURM_ARRAY_TASK_ID is the index within this chunk (0 .. CHUNK_NUM_FRAMES-1).
+# CHUNK_ID is still required: it maps the local task ID to the global frame index and output paths.
+# Required: CHUNK_ID, CHUNK_SIZE, OUTPUT_DIR, SCRIPT_DIR, DUMP_DIR, DUMP_GLOB, START_TIMESTEP,
+#           DUMP_EVERY, CUTOFF, TYPE_O, TYPE_H, VENV_PATH (optional)
 
 module purge
 module load usc
@@ -17,9 +18,10 @@ if [ -n "$VENV_PATH" ]; then
     source "$VENV_PATH/bin/activate"
 fi
 
-FRAME_INDEX=$SLURM_ARRAY_TASK_ID
+: "${CHUNK_ID:?CHUNK_ID must be set via sbatch --export (see submit_pipeline.sh)}"
+
+FRAME_INDEX=$((CHUNK_ID * CHUNK_SIZE + SLURM_ARRAY_TASK_ID))
 TIMESTEP=$((START_TIMESTEP + FRAME_INDEX * DUMP_EVERY))
-CHUNK_ID=$((FRAME_INDEX / CHUNK_SIZE))
 CHUNK_DIR="$OUTPUT_DIR/chunk_${CHUNK_ID}"
 CHUNK_OUTPUT="$OUTPUT_DIR/dipole_output_chunk_${CHUNK_ID}.txt"
 FRAME_OUTPUT="$CHUNK_DIR/dipole_${TIMESTEP}.txt"
