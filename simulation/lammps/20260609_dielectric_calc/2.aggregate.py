@@ -35,6 +35,8 @@ def parse_args():
                         help="Path for the combined dipole output file")
     parser.add_argument("--warn-log", required=True,
                         help="Path for the consolidated warnings log")
+    parser.add_argument("--expected-frames", type=int, default=None,
+                        help="If set, exit with error unless exactly this many frames are collected")
     return parser.parse_args()
 
 
@@ -110,6 +112,11 @@ def main():
 
     rows = collect_dipole_files(args.input_dir)
     print(f"  Collected {len(rows)} frames")
+
+    if args.expected_frames is not None and len(rows) != args.expected_frames:
+        print(f"ERROR: Expected {args.expected_frames} frames, got {len(rows)}",
+              file=sys.stderr)
+        sys.exit(1)
 
     with open(args.output, "w") as out:
         for _ts, line in rows:

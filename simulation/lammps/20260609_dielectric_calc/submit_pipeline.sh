@@ -1,15 +1,13 @@
 #!/bin/bash
 
 # =============================================================================
-# Dielectric constant pipeline — full pipeline submission
+# Dielectric constant pipeline — chunked submission
 #
-# Step 1 : SLURM job array  — one task per dump file, computes per-frame dipole
-# Step 1b: Aggregate job    — combines per-frame outputs into dipole_output.txt
-# Step 2 : dipoleStd job    — computes dielectric constant from dipole_output.txt
+# 1. Global calc array  — 1.calc.slurm (one task per frame, %MAX_SIMULTANEOUS)
+# 2. Per-chunk aggregate — 2.aggregate.slurm (depends on chunk calc task range)
+# 3. Final job          — 3.final.slurm (combine + dipoleStd)
 #
-# All three steps are chained automatically via SLURM dependencies.
-#
-# Usage:
+# Usage (run on HPC login node):
 #   bash submit_pipeline.sh
 #
 # Edit the Configuration section below before running.
@@ -17,130 +15,140 @@
 
 # --- Configuration ---
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DUMP_DIR="../dumps"              # directory containing LAMMPS dump files
-DUMP_GLOB="dielectric.*.custom" # glob matching your dump file names
+DUMP_DIR="../dumps"
+DUMP_GLOB="dielectric.*.custom"
 OUTPUT_DIR="$SCRIPT_DIR/dipole_output"
 START_TIMESTEP=0
 END_TIMESTEP=60000000
 DUMP_EVERY=10
+CHUNK_SIZE=100000
 
+CUTOFF=1.2
+TYPE_O=1
+TYPE_H=2
 
-
-CUTOFF=1.2     # O-H bond cutoff in Angstroms
-TYPE_O=1       # LAMMPS atom type for oxygen
-TYPE_H=2       # LAMMPS atom type for hydrogen
-
-# Step 2 (2.dipoleStd.py) parameters
-TEMPERATURE=298.0     # simulation temperature in Kelvin
-LA=37.2514            # box dimension a in Angstroms
-LB=37.2514            # box dimension b in Angstroms
-LC=37.2514            # box dimension c in Angstroms
-AVERAGING_METHOD=binned  # windowed | cumulative | hybrid | binned
+TEMPERATURE=303.0
+LA=37.2514
+LB=37.2514
+LC=37.2514
+AVERAGING_METHOD=cumulative
 
 VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
 
-# Maximum simultaneous array tasks (throttle to avoid overwhelming the scheduler)
+# Pipeline-wide cap on concurrent calc array tasks
 MAX_SIMULTANEOUS=64
 
+# =============================================================================
+# SETUP
+# =============================================================================
 
-# ---------------------
-
-# check to see if the dump files exist
 if [ ! -f "$DUMP_DIR/${DUMP_GLOB/\*/$START_TIMESTEP}" ]; then
     echo "ERROR: No files matching '${DUMP_GLOB/\*/$START_TIMESTEP}' found in '$DUMP_DIR'" >&2
     exit 1
 fi
 
-mkdir -p "$SCRIPT_DIR/logs"
+mkdir -p "$SCRIPT_DIR/logs" "$OUTPUT_DIR"
 
-PENDING_FILE="$SCRIPT_DIR/pending_dumps.txt"
-OUT_GLOB="dipole_*.txt"
-> "$PENDING_FILE"
+NUM_FRAMES=$(( (END_TIMESTEP - START_TIMESTEP) / DUMP_EVERY + 1 ))
+NUM_CHUNKS=$(( (NUM_FRAMES + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 
-# see if the output directory exists. if exists, assume processed files exist
-if [ -d "$OUTPUT_DIR" ]; then
-    echo "Existing processed frames"
-    skipped=0
-    toprocess=0
-    missing=0
-    for ((i=START_TIMESTEP; i<=END_TIMESTEP; i+=DUMP_EVERY)); do
-        if [ ! -f "$OUTPUT_DIR/${OUT_GLOB/\*/$i}" ]; then
-            TEMP="${DUMP_GLOB/\*/$i}"
-            if [ -f "$DUMP_DIR/$TEMP" ]; then
-                echo "$DUMP_DIR/$TEMP" >> "$PENDING_FILE"
-                toprocess=$((toprocess + 1))
-            else
-                echo "Missing timestep: $i"
-                missing=$((missing + 1))
-            fi
-        else
-            skipped=$((skipped + 1))
-        fi
-    done
+CALC_EXPORT="DUMP_GLOB=$DUMP_GLOB,DUMP_DIR=$DUMP_DIR,OUTPUT_DIR=$OUTPUT_DIR"
+CALC_EXPORT="${CALC_EXPORT},SCRIPT_DIR=$SCRIPT_DIR,START_TIMESTEP=$START_TIMESTEP,DUMP_EVERY=$DUMP_EVERY"
+CALC_EXPORT="${CALC_EXPORT},CHUNK_SIZE=$CHUNK_SIZE,CUTOFF=$CUTOFF,TYPE_O=$TYPE_O,TYPE_H=$TYPE_H"
+CALC_EXPORT="${CALC_EXPORT},VENV_PATH=$VENV_PATH"
 
-    if [ $skipped == $((($END_TIMESTEP - $START_TIMESTEP)/$DUMP_EVERY)+1)]; then
-        echo "All frames already processed"
-        echo "Run 1.aggregate.py directly if you need to regenerate dipole_output.txt."
-        exit 0
-    fi
+echo "Frames: $NUM_FRAMES  Chunks: $NUM_CHUNKS  Chunk size: $CHUNK_SIZE"
+echo "Max simultaneous calc tasks: $MAX_SIMULTANEOUS"
 
-    echo "Skipped: $skipped"
-    echo "Pending: $toprocess"
-    echo "Missing: $missing"
-# no ouptut dir therefore cannot have any processed frames
-else
-    mkdir -p "$OUTPUT_DIR"
-    echo "No previous frames processed"
-    toprocess=0
-    missing=0
-    for ((i=START_TIMESTEP; i<=END_TIMESTEP; i+=DUMP_EVERY)); do
-        TEMP="${DUMP_GLOB/\*/$i}"
-        if [ -f "$DUMP_DIR/$TEMP" ]; then
-            echo "$DUMP_DIR/$TEMP" >> "$PENDING_FILE"
-            toprocess=$((toprocess + 1))
-        else                
-            echo "Missing timestep: $i"
-            missing=$((missing + 1))
-        fi
-    done
-    echo "Skipped: 0"
-    echo "Pending: $toprocess"
-    echo "Missing: $missing"
-fi
+# =============================================================================
+# SUBMIT
+# =============================================================================
 
+echo "Submitting global calc array 0-$((NUM_FRAMES - 1)) (max ${MAX_SIMULTANEOUS} simultaneous)"
 
+CALC_JOB=$(sbatch --parsable \
+    --array=0-$((NUM_FRAMES - 1))%${MAX_SIMULTANEOUS} \
+    --output="$SCRIPT_DIR/logs/calc_%A_%a.out" \
+    --export="$CALC_EXPORT" \
+    "$SCRIPT_DIR/1.calc.slurm")
 
-
-ARRAY_MAX=$((toprocess - 1))
-echo "Submitting array 0-${ARRAY_MAX} (max ${MAX_SIMULTANEOUS} simultaneous)"
-
-ARRAY_JOB=$(sbatch --parsable \
-    --array=0-${ARRAY_MAX}%${MAX_SIMULTANEOUS} \
-    --export=PENDING_FILE="$PENDING_FILE",DUMP_GLOB="$DUMP_GLOB",OUTPUT_DIR="$OUTPUT_DIR",SCRIPT_DIR="$SCRIPT_DIR",CUTOFF="$CUTOFF",TYPE_O="$TYPE_O",TYPE_H="$TYPE_H",VENV_PATH="$VENV_PATH" \
-    "$SCRIPT_DIR/1.array.slurm")
-
-if [ -z "$ARRAY_JOB" ]; then
-    echo "ERROR: Array job submission failed" >&2
+if [ -z "$CALC_JOB" ]; then
+    echo "ERROR: Calc array submission failed" >&2
     exit 1
 fi
 
-echo "Array job ID: $ARRAY_JOB"
+echo "Calc array job ID: $CALC_JOB"
 
-MERGE_JOB=$(sbatch --parsable \
-    --dependency=afterany:$ARRAY_JOB \
-    --export=OUTPUT_DIR="$OUTPUT_DIR",SCRIPT_DIR="$SCRIPT_DIR",VENV_PATH="$VENV_PATH" \
-    "$SCRIPT_DIR/1.aggregate.slurm")
+AGG_JOBS=()
+for ((chunk=0; chunk<NUM_CHUNKS; chunk++)); do
+    TASK_START=$((chunk * CHUNK_SIZE))
+    CHUNK_NUM_FRAMES=$CHUNK_SIZE
+    if (( chunk == NUM_CHUNKS - 1 )); then
+        CHUNK_NUM_FRAMES=$((NUM_FRAMES - TASK_START))
+    fi
+    TASK_END=$((TASK_START + CHUNK_NUM_FRAMES - 1))
 
-echo "Aggregate job ID: $MERGE_JOB (runs after array completes)"
+    AGG_EXPORT="CHUNK_ID=$chunk,CHUNK_NUM_FRAMES=$CHUNK_NUM_FRAMES"
+    AGG_EXPORT="${AGG_EXPORT},OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH"
 
-DIPOLE_STD_JOB=$(sbatch --parsable \
-    --dependency=afterok:$MERGE_JOB \
-    --export=OUTPUT_DIR="$OUTPUT_DIR",SCRIPT_DIR="$SCRIPT_DIR",VENV_PATH="$VENV_PATH",TEMPERATURE="$TEMPERATURE",LA="$LA",LB="$LB",LC="$LC",AVERAGING_METHOD="$AVERAGING_METHOD" \
-    "$SCRIPT_DIR/2.dipoleStd.slurm")
+    # Run aggregate only after all calc array tasks for this chunk succeed.
+    AGG_DEP="afterok:${CALC_JOB}_${TASK_START}-${TASK_END}"
+    echo "  dependency: ${AGG_DEP}"
 
-echo "dipoleStd job ID: $DIPOLE_STD_JOB (runs after aggregate completes)"
+    AGG_JOB=$(sbatch --parsable \
+        --dependency="$AGG_DEP" \
+        --output="$SCRIPT_DIR/logs/agg_chunk${chunk}_%j.out" \
+        --export="$AGG_EXPORT" \
+        "$SCRIPT_DIR/2.aggregate.slurm")
+
+    if [ -z "$AGG_JOB" ]; then
+        echo "ERROR: Aggregate submission failed for chunk $chunk" >&2
+        exit 1
+    fi
+
+    AGG_JOBS+=("$AGG_JOB")
+    echo "Chunk ${chunk} aggregate job ID: $AGG_JOB (tasks ${TASK_START}-${TASK_END})"
+done
+
+# Run final job only after all chunk aggregate jobs succeed.
+FINAL_DEP=""
+for agg_id in "${AGG_JOBS[@]}"; do
+    FINAL_DEP="${FINAL_DEP}afterok:${agg_id},"
+done
+FINAL_DEP="${FINAL_DEP%,}"
+echo "Final dependency: ${FINAL_DEP}"
+
+FINAL_EXPORT="OUTPUT_DIR=$OUTPUT_DIR,NUM_CHUNKS=$NUM_CHUNKS,SCRIPT_DIR=$SCRIPT_DIR"
+FINAL_EXPORT="${FINAL_EXPORT},TEMPERATURE=$TEMPERATURE,LA=$LA,LB=$LB,LC=$LC"
+FINAL_EXPORT="${FINAL_EXPORT},AVERAGING_METHOD=$AVERAGING_METHOD,VENV_PATH=$VENV_PATH"
+
+FINAL_JOB=$(sbatch --parsable \
+    --dependency="$FINAL_DEP" \
+    --output="$SCRIPT_DIR/logs/final_%j.out" \
+    --export="$FINAL_EXPORT" \
+    "$SCRIPT_DIR/3.final.slurm")
+
+if [ -z "$FINAL_JOB" ]; then
+    echo "ERROR: Final job submission failed" >&2
+    exit 1
+fi
+
+echo "Final job ID: $FINAL_JOB (combine + dipoleStd)"
 echo ""
-echo "Monitor with: squeue -j $ARRAY_JOB,$MERGE_JOB,$DIPOLE_STD_JOB"
-echo "Dipole output : $OUTPUT_DIR/dipole_output.txt"
-echo "Warnings log  : $OUTPUT_DIR/dipole_warnings.log"
-echo "Dielectric CSV: $OUTPUT_DIR/dipole_output_timestep_data_${AVERAGING_METHOD}.csv"
+
+echo "=== scontrol dependency check ==="
+echo "--- calc array ($CALC_JOB) ---"
+scontrol show job "$CALC_JOB" | grep -E '^JobId=|JobName=|JobState=|Dependency='
+for ((chunk=0; chunk<NUM_CHUNKS; chunk++)); do
+    echo "--- aggregate chunk ${chunk} (${AGG_JOBS[$chunk]}) ---"
+    scontrol show job "${AGG_JOBS[$chunk]}" | grep -E '^JobId=|JobName=|JobState=|Dependency='
+done
+echo "--- final ($FINAL_JOB) ---"
+scontrol show job "$FINAL_JOB" | grep -E '^JobId=|JobName=|JobState=|Dependency='
+
+echo ""
+echo "Monitor calc:    squeue -j $CALC_JOB"
+echo "Monitor final:   squeue -j $FINAL_JOB"
+echo "Chunk outputs:   $OUTPUT_DIR/dipole_output_chunk_*.txt"
+echo "Combined output: $OUTPUT_DIR/dipole_output.txt"
+echo "Dielectric CSV:  $OUTPUT_DIR/dipole_output_timestep_data_${AVERAGING_METHOD}.csv"
