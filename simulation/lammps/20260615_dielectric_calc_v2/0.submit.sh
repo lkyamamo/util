@@ -62,26 +62,23 @@ echo "ONE_SHOT: ${ONE_SHOT}"
 echo "Frames: ${NUM_FRAMES}  Groups: ${NUM_GROUPS}  Group size: ${GROUP_SIZE}"
 echo "Array: 0-${ARRAY_MAX}${ARRAY_THROTTLE}"
 
-CALC_EXPORT="DUMP_GLOB=$DUMP_GLOB,DUMP_DIR=$DUMP_DIR,OUTPUT_DIR=$OUTPUT_DIR"
-CALC_EXPORT="${CALC_EXPORT},SCRIPT_DIR=$SCRIPT_DIR,START_TIMESTEP=$START_TIMESTEP"
-CALC_EXPORT="${CALC_EXPORT},DUMP_EVERY=$DUMP_EVERY,GROUP_SIZE=$GROUP_SIZE"
-CALC_EXPORT="${CALC_EXPORT},NUM_FRAMES=$NUM_FRAMES,CUTOFF=$CUTOFF"
-CALC_EXPORT="${CALC_EXPORT},TYPE_O=$TYPE_O,TYPE_H=$TYPE_H,VENV_PATH=$VENV_PATH"
+# Export all config and derived variables into the current environment so
+# sbatch --export=ALL picks them up without fragile comma-separated strings.
+export DUMP_GLOB DUMP_DIR OUTPUT_DIR SCRIPT_DIR \
+       START_TIMESTEP DUMP_EVERY GROUP_SIZE NUM_FRAMES \
+       CUTOFF TYPE_O TYPE_H VENV_PATH \
+       NUM_GROUPS TEMPERATURE LA LB LC AVERAGING_METHOD
 
 CALC_JOB=$(sbatch --parsable \
     --array=0-${ARRAY_MAX}${ARRAY_THROTTLE} \
     --output="$SCRIPT_DIR/logs/calc_%A_%a.out" \
-    --export="$CALC_EXPORT" \
+    --export=ALL \
     "$SCRIPT_DIR/1.calc_group.slurm")
 echo "Calc array job: ${CALC_JOB}"
-
-FINAL_EXPORT="OUTPUT_DIR=$OUTPUT_DIR,NUM_GROUPS=$NUM_GROUPS,SCRIPT_DIR=$SCRIPT_DIR"
-FINAL_EXPORT="${FINAL_EXPORT},TEMPERATURE=$TEMPERATURE,LA=$LA,LB=$LB,LC=$LC"
-FINAL_EXPORT="${FINAL_EXPORT},AVERAGING_METHOD=$AVERAGING_METHOD,VENV_PATH=$VENV_PATH"
 
 FINAL_JOB=$(sbatch --parsable \
     --dependency=afterok:${CALC_JOB} \
     --output="$SCRIPT_DIR/logs/final_%j.out" \
-    --export="$FINAL_EXPORT" \
+    --export=ALL \
     "$SCRIPT_DIR/2.final.slurm")
 echo "Final job: ${FINAL_JOB}"
