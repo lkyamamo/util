@@ -24,12 +24,12 @@ from ovito.modifiers import (
 )
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-FILE_PATH = "/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bubble-collapse/structures/water/0013_21x1x1.data"
-SURFACE_DIST = 1.2   # Å from top/bottom surfaces
-BOND_CUTOFF  = 1.1   # Å pairwise O–H cutoff
+FILE_PATH = "/scratch1/lkyamamo/finalized-bubble-collapse/structures/small_interface/0023.data"
+SURFACE_DIST = 1.2   # �� from top/bottom surfaces
+BOND_CUTOFF  = 1.1   # �� pairwise OH cutoff
 REFIT_BOX    = True  # Shift atoms so min == 0 and resize box to atom extent
-REFIT_BOX_PAD = 0.01  # Å of padding added to each face of the non-periodic axis after refit
-                     # (prevents atoms from sitting exactly on xlo/xhi, which LAMMPS rejects)
+REFIT_BOX_PAD = 0.01  # �� of padding added to each face of the non-periodic axis after refit
+                     # (atoms are inset by this amount; box origin stays at 0)
 ATOM_TYPES = (1,2)
 
 # Non-periodic direction: 'x', 'y', or 'z' (slab normal / confined axis)
@@ -128,6 +128,8 @@ def main():
     axis_max      = data.cell[axis, 3] + data.cell[axis, axis]
     axis_mid      = 0.5 * (axis_min + axis_max)
     axis_box_size = axis_max - axis_min
+    initial_box_origin = float(axis_min)
+    initial_box_size   = float(data.cell[axis, axis])
     print(f"{DIRECTION}_min={axis_min:.4f}  {DIRECTION}_max={axis_max:.4f}")
 
     preexisting_mask = np.isin(particle_ids, list(preexisting_orphan_ids))
@@ -190,16 +192,20 @@ def main():
         pos[top_mask_copy, axis] -= axis_box_size
         data.particles_.positions_ = pos
 
+    movement_log = {"global_shift": 0.0}
+
     def shift_and_resize_box(frame, data):
         pos = np.copy(data.particles.positions)
         axis_min_val = pos[:, axis].min()
-        pos[:, axis] -= axis_min_val          # shift so atom min == 0
-        axis_range = pos[:, axis].max()
+        net_atom_shift = REFIT_BOX_PAD - axis_min_val
+        movement_log["global_shift"] = float(net_atom_shift)
+        pos[:, axis] += net_atom_shift
+        axis_range = pos[:, axis].max() - REFIT_BOX_PAD
         data.particles_.positions_ = pos
 
-        # Expand box by PAD on each face so no atom sits exactly on xlo/xhi.
+        # Keep box origin at 0; inset atoms by PAD so none sit on xlo/xhi.
         # LAMMPS rejects atoms at exactly xhi during domain decomposition.
-        data.cell_[axis, 3] = -REFIT_BOX_PAD
+        data.cell_[axis, 3] = 0.0
         data.cell_[axis, axis] = axis_range + 2 * REFIT_BOX_PAD
 
     pipeline.modifiers.append(shift_top_along_axis)
@@ -242,6 +248,24 @@ def main():
         f"Shifting introduced {len(new_orphan_ids)} new orphan atoms."
     )
 
+    # ── Box movement summary ─────────────────────────────────────────────────
+    final_box_origin = float(data_final.cell[axis, 3])
+    final_box_size   = float(data_final.cell[axis, axis])
+    net_box_translation = final_box_origin - initial_box_origin
+    total_box_movement = abs(net_box_translation)
+
+    print(f"\nBox movement summary ({DIRECTION} axis):")
+    print(f"  Initial box origin : {initial_box_origin:.6f} Å")
+    print(f"  Final box origin   : {final_box_origin:.6f} Å")
+    print(f"  Net box translation: {net_box_translation:+.6f} Å")
+    print(f"  Total box movement : {total_box_movement:.6f} Å")
+    print(f"  Initial box size   : {initial_box_size:.6f} Å")
+    print(f"  Final box size     : {final_box_size:.6f} Å")
+    print(f"  Box size change    : {final_box_size - initial_box_size:+.6f} Å")
+    if REFIT_BOX:
+        print(f"  Global refit shift : {movement_log['global_shift']:+.6f} Å "
+              f"(uniform translation applied to all atoms along {DIRECTION})")
+
     # ── Geometry check on shifted file ───────────────────────────────────────
     axis_all   = data_final.particles.positions[:, axis]
     box_origin = data_final.cell[axis, 3]
@@ -254,6 +278,11 @@ def main():
     print(f"  Clearance to lo={axis_all.min() - box_lo:.6f} Å  to hi={box_hi - axis_all.max():.6f} Å")
     assert axis_all.min() > box_lo, "Atom(s) at or below box lower face — LAMMPS will reject."
     assert axis_all.max() < box_hi, "Atom(s) at or above box upper face — LAMMPS will reject."
+    if REFIT_BOX:
+        assert abs(box_lo) < 1e-6, f"Box {DIRECTION}lo should be 0 after refit, got {box_lo}."
+        assert abs(axis_all.min() - REFIT_BOX_PAD) < 1e-5, (
+            f"Expected atom min {DIRECTION} ≈ {REFIT_BOX_PAD} Å, got {axis_all.min()}."
+        )
 
     # ── Double-shift guard ────────────────────────────────────────────────────
     double_shifted = bottom_mask & top_mask
