@@ -138,6 +138,7 @@ def flush_layer(layer_buf, ix, h5file, attrs):
     box_y = attrs['yhi'] - attrs['ylo']
     box_z = attrs['zhi'] - attrs['zlo']
 
+    # for edge voxels, use the actual distance to the edge of the box
     dx = min(vs, box_x - ix * vs)
 
     # accumulate results into layer-sized arrays, then write once per dataset
@@ -152,6 +153,7 @@ def flush_layer(layer_buf, ix, h5file, attrs):
     out_v_COM            = np.full((ny, nz, 3), np.nan, dtype=np.float32)
 
     for iy in range(ny):
+        # for edge voxels, use the actual distance to the edge of the box
         dy = min(vs, box_y - iy * vs)
 
         for iz in range(nz):
@@ -159,6 +161,7 @@ def flush_layer(layer_buf, ix, h5file, attrs):
             if not atoms:
                 continue
 
+            # for edge voxels, use the actual distance to the edge of the box
             dz = min(vs, box_z - iz * vs)
             V  = dx * dy * dz
 
