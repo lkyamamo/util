@@ -1,6 +1,7 @@
 import numpy as np
 import pyvista as pv
 import h5py
+from scipy.ndimage import uniform_filter
 
 VOXEL_SIZE = 1.0
 VOXEL_GAP  = 0.05   # fractional gap between voxels
@@ -49,6 +50,7 @@ class VoxelGrid:
         self.current_property  = 'density'
         self.current_timestep  = 0
         self.voxel_type_filter = None
+        self.smooth_enabled    = False
 
         # slicing
         self.slice_enabled   = False
@@ -113,6 +115,19 @@ class VoxelGrid:
         denom  = (hi - lo) if hi != lo else 1.0
         return np.clip((arr - lo) / denom, 0.0, 1.0)
 
+    def _smooth(self, arr):
+        """NaN-aware neighbor average: each voxel becomes the mean of itself
+        and its 26 immediate neighbors, ignoring NaN cells."""
+        nan_mask = np.isnan(arr)
+        filled   = np.where(nan_mask, 0.0, arr)
+        weight   = np.where(nan_mask, 0.0, 1.0)
+        smoothed = uniform_filter(filled,  size=3, mode='constant', cval=0.0)
+        counts   = uniform_filter(weight,  size=3, mode='constant', cval=0.0)
+        result   = np.where(counts > 0, smoothed / counts, np.nan)
+        # preserve NaN for cells that were originally NaN
+        result[nan_mask] = np.nan
+        return result.astype(arr.dtype)
+
     # ------------------------------------------------------------------
     def build_mesh(self):
         """Build a PyVista PolyData for currently visible voxels."""
@@ -121,6 +136,9 @@ class VoxelGrid:
 
         color_arr   = self._to_scalar(prop, self.data[prop][t].astype(np.float32))
         density_arr = self._normalize_density(self.data['density'][t].astype(np.float32))
+        if self.smooth_enabled:
+            color_arr   = self._smooth(color_arr)
+            density_arr = self._smooth(density_arr)
 
         mask = self._compute_mask() | np.isnan(color_arr) | np.isnan(density_arr)
         visible = ~mask
@@ -319,6 +337,11 @@ def slice_thinner():
     grid.slice_thickness = max(0, grid.slice_thickness - 1)
     print(f"Slice thickness={grid.slice_thickness}"); refresh()
 
+def toggle_smooth():
+    grid.smooth_enabled = not grid.smooth_enabled
+    print(f"Smoothing {'ON' if grid.smooth_enabled else 'OFF'}")
+    refresh()
+
 
 pl.add_key_event('Right',        next_frame)
 pl.add_key_event('Left',         prev_frame)
@@ -340,5 +363,6 @@ pl.add_key_event('period',       slice_forward)
 pl.add_key_event('comma',        slice_backward)
 pl.add_key_event('equal',        slice_thicker)
 pl.add_key_event('minus',        slice_thinner)
+pl.add_key_event('n',            toggle_smooth)
 
 pl.show()
