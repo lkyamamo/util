@@ -42,14 +42,14 @@ def preallocate_hdf5(path, nx, ny, nz, attrs):
 
     h5file = h5py.File(path, 'w')
 
-    scalar_datasets = ['density', 'pressure', 'virial_pressure', 'temperature', 'avg_speed', 'avg_O_speed']
+    scalar_datasets = ['density', 'pressure', 'virial_pressure', 'temperature', 'avg_speed', 'avg_O_speed', 'number_density']
     for name in scalar_datasets:
         h5file.create_dataset(
             name,
             shape=(nx, ny, nz),
             dtype=np.float32,
             chunks=(1, ny, nz),
-            fillvalue=np.nan,
+            fillvalue=0.0,
         )
 
     h5file.create_dataset(
@@ -124,36 +124,73 @@ def process_voxel(arr, masses, V):
     avg_O_speed = all_speeds[o_mask].mean() if o_mask.any() else np.nan
 
     voxel_type = 2 if SI_TYPE in types else 1
+    number_density = N / V   # atoms/Å³, unnormalized — normalization done at visualization time
 
-    return density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM
+    return density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, number_density
 
 
 def flush_layer(layer_buf, ix, h5file, attrs):
     ny = attrs['ny']
     nz = attrs['nz']
     vs = attrs['voxel_size']
-    V  = vs ** 3
+
+    box_x = attrs['xhi'] - attrs['xlo']
+    box_y = attrs['yhi'] - attrs['ylo']
+    box_z = attrs['zhi'] - attrs['zlo']
+
+    # for edge voxels, use the actual distance to the edge of the box
+    dx = min(vs, box_x - ix * vs)
+
+    # accumulate results into layer-sized arrays, then write once per dataset
+    out_density          = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_pressure         = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_virial_pressure  = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_temperature      = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_avg_speed        = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_avg_O_speed      = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_number_density   = np.full((ny, nz), np.nan,  dtype=np.float32)
+    out_voxel_type       = np.zeros((ny, nz),          dtype=np.uint8)
+    out_v_COM            = np.full((ny, nz, 3), np.nan, dtype=np.float32)
 
     for iy in range(ny):
+        # for edge voxels, use the actual distance to the edge of the box
+        dy = min(vs, box_y - iy * vs)
+
         for iz in range(nz):
             atoms = layer_buf.get((iy, iz))
             if not atoms:
                 continue
 
+            # for edge voxels, use the actual distance to the edge of the box
+            dz = min(vs, box_z - iz * vs)
+            V  = dx * dy * dz
+
             arr    = np.array(atoms, dtype=np.float64)
             masses = TYPE_TO_MASS[arr[:, 1].astype(int)]
 
-            density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM = \
+            density, pressure, virial_pressure, temperature, avg_speed, avg_O_speed, voxel_type, v_COM, number_density = \
                 process_voxel(arr, masses, V)
 
-            h5file['density'         ][ix, iy, iz]    = np.float32(density)
-            h5file['pressure'        ][ix, iy, iz]    = np.float32(pressure)
-            h5file['virial_pressure' ][ix, iy, iz]    = np.float32(virial_pressure)
-            h5file['temperature'     ][ix, iy, iz]    = np.float32(temperature)
-            h5file['avg_speed'       ][ix, iy, iz]    = np.float32(avg_speed)
-            h5file['avg_O_speed'     ][ix, iy, iz]    = np.float32(avg_O_speed)
-            h5file['voxel_type'      ][ix, iy, iz]    = np.uint8(voxel_type)
-            h5file['v_COM'           ][ix, iy, iz, :] = v_COM.astype(np.float32)
+            out_density         [iy, iz]    = density
+            out_pressure        [iy, iz]    = pressure
+            out_virial_pressure [iy, iz]    = virial_pressure
+            out_temperature     [iy, iz]    = temperature
+            out_avg_speed       [iy, iz]    = avg_speed
+            out_avg_O_speed     [iy, iz]    = avg_O_speed
+            out_number_density  [iy, iz]    = number_density
+            out_voxel_type      [iy, iz]    = voxel_type
+            out_v_COM           [iy, iz, :] = v_COM
+
+    # single write per dataset — one chunk I/O instead of ny*nz
+    h5file['density'        ][ix] = out_density
+    h5file['pressure'       ][ix] = out_pressure
+    h5file['virial_pressure'][ix] = out_virial_pressure
+    h5file['temperature'    ][ix] = out_temperature
+    h5file['avg_speed'      ][ix] = out_avg_speed
+    h5file['avg_O_speed'    ][ix] = out_avg_O_speed
+    h5file['number_density' ][ix] = out_number_density
+    h5file['voxel_type'     ][ix] = out_voxel_type
+    h5file['v_COM'          ][ix] = out_v_COM
 
 
 def streaming_loop(file, attrs, h5file):

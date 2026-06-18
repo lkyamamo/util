@@ -1,0 +1,5 @@
+need the code to also calculate the depth of the crater that is formed.
+idea: create the surface by getting the right most silicon atoms within a voxel and get that for each voxel to create a mesh from points. (i.e. within a given square in the yz plane, determine the silicon atom with the largest x position)
+
+can just add to the voxel_analysis code.
+already determines whether the voxel is a silica one or not so from the voxels of each (ny,nz) take the voxels with the largest nx and within each one get the silicon atom with the largest x position

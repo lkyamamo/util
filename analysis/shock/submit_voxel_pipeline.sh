@@ -1,11 +1,11 @@
 #!/bin/bash
 
 # --- Configuration ---
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DUMP_DIR="/path/to/dump/dir"    # directory containing dump files
 DUMP_GLOB="dump.*"              # adjust to match your dump file naming
-OUTPUT_DIR="$DUMP_DIR/voxel_output"
+OUTPUT_DIR="$SCRIPT_DIR/voxel_output"
 FINAL_H5="$SCRIPT_DIR/trajectory.h5"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV_PATH="$SCRIPT_DIR/venv"    # path to virtual environment
 BATCH_SIZE=64
 
