@@ -1,4 +1,5 @@
 import math
+import os
 import sys
 from collections import defaultdict
 
@@ -261,9 +262,11 @@ def main():
             'h_type': H_TYPE
         }
 
-        h5file = preallocate_hdf5(output_file, nx, ny, nz, attrs)
+        tmp_file = output_file + ".tmp"
+        h5file = preallocate_hdf5(tmp_file, nx, ny, nz, attrs)
         streaming_loop(f, attrs, h5file)
         h5file.close()
+        os.rename(tmp_file, output_file)
 
 
 if __name__ == "__main__":
