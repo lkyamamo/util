@@ -262,20 +262,27 @@ def main():
         with open(rank_output) as f:
             frames_done = sum(1 for _ in f)
 
-    if frames_done >= frames_per_file:
+    # Frame 0 is always skipped because consecutive trajectory files share a
+    # boundary frame (the last frame of file N equals the first frame of file N+1).
+    # Skipping the first frame of each file removes the duplicate.
+    processable = frames_per_file - 1
+
+    done_flag = os.path.join(args.output_dir, "ranks", f"dipole_rank_{rank}.done")
+
+    if frames_done >= processable:
         if rank == 0:
             print(f"Rank {rank}: already complete, skipping.")
+        open(done_flag, "w").close()
         comm.Barrier()
         return
 
-    frames_to_skip = frames_done % frames_per_file
-    assigned_file  = files[rank]
+    assigned_file = files[rank]
 
     # --- Process frames ---
     errors = 0
     with open(assigned_file) as f_in, open(rank_output, "a") as out:
-        # Skip already-completed frames by streaming past them.
-        lines_to_skip = frames_to_skip * lines_per_frame
+        # Skip frame 0 unconditionally, then skip any checkpointed frames.
+        lines_to_skip = (1 + frames_done) * lines_per_frame
         for _ in range(lines_to_skip):
             f_in.readline()
 
@@ -319,6 +326,7 @@ def main():
         print(f"Rank {rank}: {errors} frame(s) failed", file=sys.stderr)
         comm.Abort(1)
 
+    open(done_flag, "w").close()
     comm.Barrier()
 
 

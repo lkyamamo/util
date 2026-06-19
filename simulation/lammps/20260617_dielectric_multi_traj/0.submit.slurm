@@ -33,6 +33,9 @@ TYPE_O=1
 TYPE_H=2
 
 TEMPERATURE=303.0
+LA=37.2514
+LB=37.2514
+LC=37.2514
 AVERAGING_METHOD=cumulative
 
 VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
@@ -65,18 +68,37 @@ srun --ntasks="$NUM_FILES" python "$SCRIPT_DIR/1.calc_mpi.py" \
     --type-h          "$TYPE_H" \
     --output-dir      "$OUTPUT_DIR"
 
-echo "Concatenating ${NUM_FILES} rank files..."
 DIPOLE_FILE="$OUTPUT_DIR/dipole_output.txt"
-> "$DIPOLE_FILE"
-for ((r=0; r<NUM_FILES; r++)); do
-    cat "$OUTPUT_DIR/ranks/dipole_rank_${r}.txt" >> "$DIPOLE_FILE"
-done
-echo "  Wrote: $DIPOLE_FILE ($(wc -l < "$DIPOLE_FILE") lines)"
+
+if [ -f "$DIPOLE_FILE" ]; then
+    echo "dipole_output.txt already exists — skipping concatenation and validation."
+else
+    echo "Verifying all ranks completed..."
+    missing=0
+    for ((r=0; r<NUM_FILES; r++)); do
+        if [ ! -f "$OUTPUT_DIR/ranks/dipole_rank_${r}.done" ]; then
+            echo "  ERROR: rank ${r} did not complete (missing .done flag)" >&2
+            missing=$((missing + 1))
+        fi
+    done
+    if [ "$missing" -gt 0 ]; then
+        echo "ERROR: ${missing} rank(s) failed — dipole_output.txt will not be written." >&2
+        exit 1
+    fi
+
+    echo "Concatenating ${NUM_FILES} rank files..."
+    > "$DIPOLE_FILE"
+    for ((r=0; r<NUM_FILES; r++)); do
+        cat "$OUTPUT_DIR/ranks/dipole_rank_${r}.txt" >> "$DIPOLE_FILE"
+    done
+    echo "  Wrote: $DIPOLE_FILE ($(wc -l < "$DIPOLE_FILE") lines)"
+fi
 
 echo "Running dipole_std..."
 python "$SCRIPT_DIR/2.dipole_std.py" \
     "$DIPOLE_FILE" \
     "$TEMPERATURE" \
+    "$LA" "$LB" "$LC" \
     "$AVERAGING_METHOD"
 
 echo "Job ${SLURM_JOB_ID} finished at $(date)"
