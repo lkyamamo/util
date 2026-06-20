@@ -6,6 +6,7 @@ from collections import defaultdict
 import numpy as np
 import h5py
 from scipy.spatial import cKDTree
+from scipy.ndimage import uniform_filter
 
 # --- Configuration ---
 # DUMP_FILE, OUTPUT_FILE, HYDRONIUM_Y_CENTER, HYDRONIUM_Z_CENTER are CLI args
@@ -29,9 +30,9 @@ AMU_A3_TO_G_CM3     = 1.6605       # amu/Å³ -> g/cm³ (for density)
 
 # --- Hydronium detection ---
 HYDRONIUM_VOXEL_X = 10.0   # Å, voxel depth along x
-HYDRONIUM_VOXEL_Y = 10.0   # Å, voxel cross-section in y
-HYDRONIUM_VOXEL_Z = 10.0   # Å, voxel cross-section in z
-HYDRONIUM_PADDING =  2.0   # Å, padding around rod for H atom collection
+HYDRONIUM_VOXEL_Y = 50.0   # Å, voxel cross-section in y
+HYDRONIUM_VOXEL_Z = 50.0   # Å, voxel cross-section in z
+HYDRONIUM_PADDING =  1.3   # Å, padding around rod for H atom collection
 OH_CUTOFF         =  1.2   # Å, O-H bond distance cutoff
 
 # --- Jet tip detection ---
@@ -79,6 +80,10 @@ def preallocate_hdf5(path, nx, ny, nz, attrs):
         chunks=(1, ny, nz, 3),
         fillvalue=np.nan,
     )
+
+    h5file.create_dataset('si_surface',      shape=(ny, nz),                    dtype=np.float32, fillvalue=np.nan)
+    h5file.create_dataset('hydronium_count', shape=(attrs['n_hydronium_x'],),   dtype=np.int32,   fillvalue=0)
+    h5file.create_dataset('jet_tip_x',       shape=(),                          dtype=np.float32)
 
     for key, val in attrs.items():
         h5file.attrs[key] = val
@@ -316,6 +321,33 @@ def detect_jet_tip(h5file, attrs):
     return np.float32((tip_ix + 0.5) * attrs['voxel_size'])
 
 
+SMOOTH_DATASETS = [
+    'density', 'pressure', 'virial_pressure', 'temperature',
+    'avg_speed', 'avg_O_speed', 'number_density',
+]
+
+def _smooth_3d(arr):
+    """NaN-aware uniform_filter smoothing. Empty voxels receive the weighted
+    average of their neighbors; non-empty voxels include themselves."""
+    nan_mask = np.isnan(arr)
+    filled   = np.where(nan_mask, 0.0, arr)
+    weights  = np.where(nan_mask, 0.0, 1.0)
+    smoothed = uniform_filter(filled,   size=3, mode='constant', cval=0.0)
+    counts   = uniform_filter(weights,  size=3, mode='constant', cval=0.0)
+    return np.where(counts > 0, smoothed / counts, np.nan).astype(arr.dtype)
+
+
+def smooth_voxel_data(h5file):
+    for name in SMOOTH_DATASETS:
+        arr = h5file[name][:]
+        h5file[name][:] = _smooth_3d(arr)
+
+    v_com = h5file['v_COM'][:]   # (nx, ny, nz, 3)
+    for i in range(3):
+        v_com[..., i] = _smooth_3d(v_com[..., i])
+    h5file['v_COM'][:] = v_com
+
+
 def main():
     dump_file   = sys.argv[1]
     output_file = sys.argv[2]
@@ -349,15 +381,13 @@ def main():
         tmp_file = output_file + ".tmp"
         h5file = preallocate_hdf5(tmp_file, nx, ny, nz, attrs)
 
-        h5file.create_dataset('si_surface',       shape=(ny, nz),       dtype=np.float32, fillvalue=np.nan)
-        h5file.create_dataset('hydronium_count',  shape=(n_hydronium_x,), dtype=np.int32,   fillvalue=0)
-        h5file.create_dataset('jet_tip_x',        shape=(),              dtype=np.float32)
-
         si_surface, rod_o, rod_h = streaming_loop(f, attrs, h5file, y_center, z_center)
 
-        h5file['si_surface'][:]    = si_surface.astype(np.float32)
+        h5file['si_surface'][:]      = si_surface.astype(np.float32)
         h5file['hydronium_count'][:] = detect_hydronium(rod_o, rod_h, attrs)
-        h5file['jet_tip_x'][()]    = detect_jet_tip(h5file, attrs)
+        h5file['jet_tip_x'][()]      = detect_jet_tip(h5file, attrs)
+
+        smooth_voxel_data(h5file)
 
         h5file.close()
         os.rename(tmp_file, output_file)
