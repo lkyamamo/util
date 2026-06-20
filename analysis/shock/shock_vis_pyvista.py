@@ -223,6 +223,14 @@ sbar = pl.add_scalar_bar(
 
 pl.show_bounds(color='black', xlabel='X', ylabel='Y', zlabel='Z')
 
+# face the XZ plane: camera sits at -Y, looks in +Y, Z is up → +X goes right
+_cx = grid.nx * VOXEL_SIZE / 2.0
+_cy = grid.ny * VOXEL_SIZE / 2.0
+_cz = grid.nz * VOXEL_SIZE / 2.0
+pl.camera.focal_point = (_cx, _cy, _cz)
+pl.camera.position    = (_cx, _cy - max(grid.nx, grid.nz) * VOXEL_SIZE * 3.0, _cz)
+pl.camera.up          = (0.0, 0.0, 1.0)
+
 # -----------------------------------------------------------------------
 # state
 current_timestep  = [0]
