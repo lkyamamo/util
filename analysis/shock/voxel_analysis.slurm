@@ -30,7 +30,7 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: processing ${DUMP} (frame ${FRAME_ID})"
 
 SUMMARY_LOG="$SCRIPT_DIR/logs/summary_${SLURM_ARRAY_JOB_ID}.log"
 
-python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" \
+python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" "$HYDRONIUM_Y_CENTER" "$HYDRONIUM_Z_CENTER" \
     2>"$SCRIPT_DIR/logs/voxel_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
 EXIT_CODE=$?
 

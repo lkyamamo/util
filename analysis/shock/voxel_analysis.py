@@ -5,10 +5,11 @@ from collections import defaultdict
 
 import numpy as np
 import h5py
+from scipy.spatial import cKDTree
 
 # --- Configuration ---
-# DUMP_FILE and OUTPUT_FILE are passed as CLI args (for SLURM job arrays)
-# Usage: python voxel_analysis.py <dump_file> <output_file>
+# DUMP_FILE, OUTPUT_FILE, HYDRONIUM_Y_CENTER, HYDRONIUM_Z_CENTER are CLI args
+# Usage: python voxel_analysis.py <dump_file> <output_file> <y_center> <z_center>
 VOXEL_SIZE  = 10.0      # Å (10 Å = 1 nm)
 
 # Atom type IDs (1-based, must match LAMMPS dump)
@@ -25,6 +26,16 @@ K_B                 = 8.617333e-5   # eV/K
 AMU_ANGS2_PS2_TO_EV = 1.0364e-4    # amu*(Å/ps)² -> eV (for kinetic energy)
 EV_A3_TO_GPA        = 160.2176     # eV/Å³ -> GPa (for pressure)
 AMU_A3_TO_G_CM3     = 1.6605       # amu/Å³ -> g/cm³ (for density)
+
+# --- Hydronium detection ---
+HYDRONIUM_VOXEL_X = 10.0   # Å, voxel depth along x
+HYDRONIUM_VOXEL_Y = 10.0   # Å, voxel cross-section in y
+HYDRONIUM_VOXEL_Z = 10.0   # Å, voxel cross-section in z
+HYDRONIUM_PADDING =  2.0   # Å, padding around rod for H atom collection
+OH_CUTOFF         =  1.2   # Å, O-H bond distance cutoff
+
+# --- Jet tip detection ---
+JET_TIP_SPEED_THRESHOLD = 30.0  # Å/ps, minimum avg_speed to count as jet front
 
 
 def parse_header(file):
@@ -194,8 +205,7 @@ def flush_layer(layer_buf, ix, h5file, attrs):
     h5file['v_COM'          ][ix] = out_v_COM
 
 
-def streaming_loop(file, attrs, h5file):
-
+def streaming_loop(file, attrs, h5file, y_center, z_center):
     vs = attrs['voxel_size']
     xlo = attrs['xlo']
     ylo = attrs['ylo']
@@ -204,27 +214,52 @@ def streaming_loop(file, attrs, h5file):
     ny = attrs['ny']
     nz = attrs['nz']
 
+    # hydronium rod bounds (no PBC — absolute coordinates)
+    rod_y_lo = y_center - HYDRONIUM_VOXEL_Y / 2.0
+    rod_y_hi = y_center + HYDRONIUM_VOXEL_Y / 2.0
+    rod_z_lo = z_center - HYDRONIUM_VOXEL_Z / 2.0
+    rod_z_hi = z_center + HYDRONIUM_VOXEL_Z / 2.0
+    pad_y_lo = rod_y_lo - HYDRONIUM_PADDING
+    pad_y_hi = rod_y_hi + HYDRONIUM_PADDING
+    pad_z_lo = rod_z_lo - HYDRONIUM_PADDING
+    pad_z_hi = rod_z_hi + HYDRONIUM_PADDING
+
+    si_surface = np.full((ny, nz), np.nan, dtype=np.float64)
+    rod_o = []   # (x, y, z) of O atoms inside the rod cross-section
+    rod_h = []   # (x, y, z) of H atoms inside the padded cross-section
+
     layer_buf = defaultdict(list)
     current_ix = None
-    
-    fields = file.readline().split()
-    x, y, z = float(fields[2]), float(fields[3]), float(fields[4])
 
-    ix = min(int((x - xlo) / vs), nx - 1)
-    iy = min(int((y - ylo) / vs), ny - 1)
-    iz = min(int((z - zlo) / vs), nz - 1)
-
-    current_ix = ix
-
-    layer_buf[(iy, iz)].append([float(v) for v in fields])
-
-    for line in file:
-        fields = line.split()
+    def _process_atom(fields):
+        atype = int(fields[1])
         x, y, z = float(fields[2]), float(fields[3]), float(fields[4])
 
         ix = min(int((x - xlo) / vs), nx - 1)
         iy = min(int((y - ylo) / vs), ny - 1)
         iz = min(int((z - zlo) / vs), nz - 1)
+
+        # si surface: track max-x Si atom per (y,z) bin
+        if atype == SI_TYPE:
+            if np.isnan(si_surface[iy, iz]) or x > si_surface[iy, iz]:
+                si_surface[iy, iz] = x
+
+        # hydronium rod collection
+        if atype == O_TYPE and rod_y_lo <= y <= rod_y_hi and rod_z_lo <= z <= rod_z_hi:
+            rod_o.append((x, y, z))
+        elif atype == H_TYPE and pad_y_lo <= y <= pad_y_hi and pad_z_lo <= z <= pad_z_hi:
+            rod_h.append((x, y, z))
+
+        return ix, iy, iz
+
+    fields = file.readline().split()
+    ix, iy, iz = _process_atom(fields)
+    current_ix = ix
+    layer_buf[(iy, iz)].append([float(v) for v in fields])
+
+    for line in file:
+        fields = line.split()
+        ix, iy, iz = _process_atom(fields)
 
         if ix != current_ix:
             flush_layer(layer_buf, current_ix, h5file, attrs)
@@ -236,11 +271,56 @@ def streaming_loop(file, attrs, h5file):
     if layer_buf:
         flush_layer(layer_buf, current_ix, h5file, attrs)
 
+    return si_surface, rod_o, rod_h
+
+
+def detect_hydronium(rod_o, rod_h, attrs):
+    n_hx = attrs['n_hydronium_x']
+    counts = np.zeros(n_hx, dtype=np.int32)
+
+    if not rod_o or len(rod_h) < 3:
+        return counts
+
+    o_arr = np.array(rod_o, dtype=np.float64)   # (N_o, 3)
+    h_arr = np.array(rod_h, dtype=np.float64)   # (N_h, 3)
+
+    k = min(3, len(h_arr))
+    tree = cKDTree(h_arr)
+    dists, _ = tree.query(o_arr, k=k, distance_upper_bound=OH_CUTOFF)
+
+    if k < 3:
+        return counts
+
+    is_hydronium = ~np.isinf(dists).any(axis=1)
+    hydronium_x = o_arr[is_hydronium, 0]
+
+    xlo = attrs['xlo']
+    for ox in hydronium_x:
+        ix = min(int((ox - xlo) / HYDRONIUM_VOXEL_X), n_hx - 1)
+        counts[ix] += 1
+
+    return counts
+
+
+def detect_jet_tip(h5file, attrs):
+    avg_speed  = h5file['avg_speed'][:]    # (nx, ny, nz)
+    voxel_type = h5file['voxel_type'][:]   # (nx, ny, nz)
+
+    water_above_threshold = (voxel_type == 1) & (avg_speed > JET_TIP_SPEED_THRESHOLD)
+    x_layers_hit = np.any(water_above_threshold, axis=(1, 2))   # (nx,)
+
+    if not x_layers_hit.any():
+        return np.float32(np.nan)
+
+    tip_ix = int(np.where(x_layers_hit)[0].max())
+    return np.float32((tip_ix + 0.5) * attrs['voxel_size'])
 
 
 def main():
     dump_file   = sys.argv[1]
     output_file = sys.argv[2]
+    y_center    = float(sys.argv[3])
+    z_center    = float(sys.argv[4])
 
     with open(dump_file, "r") as f:
         timestep, N, xlo, xhi, ylo, yhi, zlo, zhi = parse_header(f)
@@ -248,6 +328,7 @@ def main():
         nx = math.ceil((xhi - xlo) / VOXEL_SIZE)
         ny = math.ceil((yhi - ylo) / VOXEL_SIZE)
         nz = math.ceil((zhi - zlo) / VOXEL_SIZE)
+        n_hydronium_x = math.ceil((xhi - xlo) / HYDRONIUM_VOXEL_X)
 
         attrs = {
             'timestep': timestep,
@@ -259,16 +340,28 @@ def main():
             'nx': nx, 'ny': ny, 'nz': nz,
             'si_type': SI_TYPE,
             'o_type': O_TYPE,
-            'h_type': H_TYPE
+            'h_type': H_TYPE,
+            'n_hydronium_x': n_hydronium_x,
+            'hydronium_y_center': y_center,
+            'hydronium_z_center': z_center,
         }
 
         tmp_file = output_file + ".tmp"
         h5file = preallocate_hdf5(tmp_file, nx, ny, nz, attrs)
-        streaming_loop(f, attrs, h5file)
+
+        h5file.create_dataset('si_surface',       shape=(ny, nz),       dtype=np.float32, fillvalue=np.nan)
+        h5file.create_dataset('hydronium_count',  shape=(n_hydronium_x,), dtype=np.int32,   fillvalue=0)
+        h5file.create_dataset('jet_tip_x',        shape=(),              dtype=np.float32)
+
+        si_surface, rod_o, rod_h = streaming_loop(f, attrs, h5file, y_center, z_center)
+
+        h5file['si_surface'][:]    = si_surface.astype(np.float32)
+        h5file['hydronium_count'][:] = detect_hydronium(rod_o, rod_h, attrs)
+        h5file['jet_tip_x'][()]    = detect_jet_tip(h5file, attrs)
+
         h5file.close()
         os.rename(tmp_file, output_file)
 
 
 if __name__ == "__main__":
     main()
-

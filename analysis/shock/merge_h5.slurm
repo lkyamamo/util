@@ -9,4 +9,6 @@
 
 source "$VENV_PATH/bin/activate"
 
-python "$SCRIPT_DIR/merge_h5.py" "$OUTPUT_DIR" "$FINAL_H5"
+python "$SCRIPT_DIR/merge_h5.py" "$OUTPUT_DIR" "$FINAL_H5" \
+    --initial-cutoff "$CRATER_INITIAL_CUTOFF" \
+    --secondary-cutoff "$CRATER_SECONDARY_CUTOFF"
