@@ -221,7 +221,7 @@ sbar = pl.add_scalar_bar(
     color='black',
 )
 
-pl.show_bounds(color='black', xlabel='X', ylabel='Y', zlabel='Z')
+pl.show_bounds(color='black', xtitle='X', ytitle='Y', ztitle='Z')
 
 # face the XZ plane: camera sits at -Y, looks in +Y, Z is up → +X goes right
 _cx = grid.nx * VOXEL_SIZE / 2.0
@@ -285,6 +285,7 @@ def _set_timestep(t):
 # -----------------------------------------------------------------------
 # playback timer
 iren = pl.iren
+vtk_iren = iren.interactor
 
 def _on_timer(obj, event):
     if playing[0]:
@@ -294,17 +295,17 @@ def _on_timer(obj, event):
         _set_timestep(current_timestep[0] + 1)
         refresh()
 
-iren._iren.AddObserver('TimerEvent', _on_timer)
+vtk_iren.AddObserver('TimerEvent', _on_timer)
 
 
 def _start_playback():
     playing[0] = True
-    timer_id[0] = iren._iren.CreateRepeatingTimer(PLAY_SPEEDS_MS[play_speed_idx[0]])
+    timer_id[0] = vtk_iren.CreateRepeatingTimer(PLAY_SPEEDS_MS[play_speed_idx[0]])
 
 def _stop_playback():
     playing[0] = False
     if timer_id[0] is not None:
-        iren._iren.DestroyTimer(timer_id[0])
+        vtk_iren.DestroyTimer(timer_id[0])
         timer_id[0] = None
     info_actor.SetText(2, _info_text())
     pl.render()
