@@ -28,6 +28,9 @@ PROPERTY_DISPLAY_RANGES = {
     'v_COM':           None,
 }
 
+# Playback speed options in ms per frame (lower = faster)
+PLAY_SPEEDS_MS = [500, 250, 100, 50, 20]
+
 # cube corner offsets (unit cube, scaled by half_size later)
 _CORNERS = np.array([
     [-1,-1,-1],[+1,-1,-1],[+1,+1,-1],[-1,+1,-1],
@@ -40,6 +43,26 @@ _FACES = np.array([
     [0,1,5,4],[3,7,6,2],  # -y, +y
     [0,4,7,3],[1,2,6,5],  # -x, +x
 ], dtype=np.int32)
+
+KEY_HELP = (
+    "--- Navigation ---\n"
+    "Right / Left   : next / prev frame\n"
+    "Up / Down      : next / prev property\n"
+    "Space          : play / pause\n"
+    "f / g          : faster / slower playback\n"
+    "0-9 + Return   : jump to timestep\n"
+    "Escape         : cancel jump input\n"
+    "--- Voxel Filter ---\n"
+    "t              : toggle voxel type filter\n"
+    "] / [          : increase / decrease voxel type\n"
+    "--- Slicing ---\n"
+    "s              : toggle slice\n"
+    "x / y / z      : slice axis (yz / xz / xy)\n"
+    ". / ,          : move slice forward / backward\n"
+    "= / -          : thicker / thinner slice\n"
+    "--- Camera ---\n"
+    "h              : toggle this help text"
+)
 
 
 class VoxelGrid:
@@ -173,6 +196,7 @@ grid = VoxelGrid(full_data)
 # plotter setup
 pl = pv.Plotter(window_size=(1000, 800))
 pl.set_background('white')
+pl.enable_parallel_projection()
 
 mesh, lo, hi = grid.build_mesh()
 actor = pl.add_mesh(
@@ -199,18 +223,33 @@ sbar = pl.add_scalar_bar(
 
 pl.show_bounds(color='black', xlabel='X', ylabel='Y', zlabel='Z')
 
-def _info_text():
-    return (f"Property : {grid.current_property}\n"
-            f"Timestep : {grid.current_timestep} / {grid.ntimesteps - 1}")
-
-info_actor = pl.add_text(_info_text(), position='upper_left', font_size=12, color='black')
-
+# -----------------------------------------------------------------------
+# state
 current_timestep  = [0]
 current_prop_idx  = [0]
 voxel_type_filter = [None]
 active_voxel_type = [1]
+playing           = [False]
+play_speed_idx    = [0]   # index into PLAY_SPEEDS_MS
+jump_buffer       = ['']  # digits typed for jump-to-frame
+timer_id          = [None]
+help_visible      = [True]
 
 
+# -----------------------------------------------------------------------
+# text actors
+def _info_text():
+    speed_ms = PLAY_SPEEDS_MS[play_speed_idx[0]]
+    play_str = f"[PLAYING {speed_ms}ms/frame]" if playing[0] else "[paused]"
+    jump_str = f"  Jump: {jump_buffer[0]}_" if jump_buffer[0] else ''
+    return (f"Property : {grid.current_property}\n"
+            f"Timestep : {grid.current_timestep} / {grid.ntimesteps - 1}  {play_str}{jump_str}")
+
+info_actor = pl.add_text(_info_text(), position='upper_left', font_size=12, color='black')
+help_actor = pl.add_text(KEY_HELP, position='lower_left', font_size=10, color='black')
+
+
+# -----------------------------------------------------------------------
 def refresh():
     global actor
     mesh, lo, hi = grid.build_mesh()
@@ -230,40 +269,128 @@ def refresh():
     pl.update()
 
 
+def _set_timestep(t):
+    current_timestep[0] = max(0, min(t, grid.ntimesteps - 1))
+    grid.current_timestep = current_timestep[0]
+
+
+# -----------------------------------------------------------------------
+# playback timer
+iren = pl.iren
+
+def _on_timer(obj, event):
+    if playing[0]:
+        if current_timestep[0] >= grid.ntimesteps - 1:
+            _stop_playback()
+            return
+        _set_timestep(current_timestep[0] + 1)
+        refresh()
+
+iren._iren.AddObserver('TimerEvent', _on_timer)
+
+
+def _start_playback():
+    playing[0] = True
+    timer_id[0] = iren._iren.CreateRepeatingTimer(PLAY_SPEEDS_MS[play_speed_idx[0]])
+
+def _stop_playback():
+    playing[0] = False
+    if timer_id[0] is not None:
+        iren._iren.DestroyTimer(timer_id[0])
+        timer_id[0] = None
+    info_actor.SetText(2, _info_text())
+    pl.render()
+    pl.update()
+
+def _restart_timer_if_playing():
+    if playing[0]:
+        _stop_playback()
+        _start_playback()
+
+
+# -----------------------------------------------------------------------
+# key callbacks
+
 # timestep
 def next_frame():
-    current_timestep[0] = min(current_timestep[0] + 1, grid.ntimesteps - 1)
-    grid.current_timestep = current_timestep[0]
-    print(f"Timestep: {current_timestep[0]}")
+    _stop_playback()
+    _set_timestep(current_timestep[0] + 1)
     refresh()
 
 def prev_frame():
-    current_timestep[0] = max(current_timestep[0] - 1, 0)
-    grid.current_timestep = current_timestep[0]
-    print(f"Timestep: {current_timestep[0]}")
+    _stop_playback()
+    _set_timestep(current_timestep[0] - 1)
     refresh()
+
+def toggle_play():
+    if playing[0]:
+        _stop_playback()
+    else:
+        _start_playback()
+    info_actor.SetText(2, _info_text())
+    pl.render()
+    pl.update()
+
+def faster():
+    play_speed_idx[0] = min(play_speed_idx[0] + 1, len(PLAY_SPEEDS_MS) - 1)
+    print(f"Playback speed: {PLAY_SPEEDS_MS[play_speed_idx[0]]} ms/frame")
+    _restart_timer_if_playing()
+    info_actor.SetText(2, _info_text())
+    pl.render()
+    pl.update()
+
+def slower():
+    play_speed_idx[0] = max(play_speed_idx[0] - 1, 0)
+    print(f"Playback speed: {PLAY_SPEEDS_MS[play_speed_idx[0]]} ms/frame")
+    _restart_timer_if_playing()
+    info_actor.SetText(2, _info_text())
+    pl.render()
+    pl.update()
+
+# jump-to-frame digit accumulation
+def _digit(d):
+    def _cb():
+        jump_buffer[0] += str(d)
+        info_actor.SetText(2, _info_text())
+        pl.render()
+        pl.update()
+    return _cb
+
+def confirm_jump():
+    if jump_buffer[0]:
+        t = int(jump_buffer[0])
+        jump_buffer[0] = ''
+        _stop_playback()
+        _set_timestep(t)
+        refresh()
+    else:
+        info_actor.SetText(2, _info_text())
+        pl.render()
+        pl.update()
+
+def cancel_jump():
+    jump_buffer[0] = ''
+    info_actor.SetText(2, _info_text())
+    pl.render()
+    pl.update()
 
 # property
 def next_prop():
     current_prop_idx[0] = (current_prop_idx[0] + 1) % len(PROPERTIES)
     grid.current_property = PROPERTIES[current_prop_idx[0]]
-    print(f"Property: {grid.current_property}")
     refresh()
 
 def prev_prop():
     current_prop_idx[0] = (current_prop_idx[0] - 1) % len(PROPERTIES)
     grid.current_property = PROPERTIES[current_prop_idx[0]]
-    print(f"Property: {grid.current_property}")
     refresh()
 
 # voxel type filter
 def toggle_voxel_filter():
     if voxel_type_filter[0] is None:
         voxel_type_filter[0] = active_voxel_type[0]
-        print(f"Voxel type filter ON: type {voxel_type_filter[0]}")
     else:
         voxel_type_filter[0] = None
-        print("Voxel type filter OFF")
     grid.voxel_type_filter = voxel_type_filter[0]
     refresh()
 
@@ -273,7 +400,6 @@ def inc_voxel_type():
         voxel_type_filter[0] = active_voxel_type[0]
         grid.voxel_type_filter = voxel_type_filter[0]
         refresh()
-    print(f"Active voxel type: {active_voxel_type[0]}")
 
 def dec_voxel_type():
     active_voxel_type[0] -= 1
@@ -281,57 +407,61 @@ def dec_voxel_type():
         voxel_type_filter[0] = active_voxel_type[0]
         grid.voxel_type_filter = voxel_type_filter[0]
         refresh()
-    print(f"Active voxel type: {active_voxel_type[0]}")
 
 # slicing
 def toggle_slice():
     grid.slice_enabled = not grid.slice_enabled
     if grid.slice_enabled:
         grid.slice_center = grid.slice_axis_size // 2
-    print(f"Slice {'ON' if grid.slice_enabled else 'OFF'} | axis={grid.slice_axis} center={grid.slice_center} thickness={grid.slice_thickness}")
     refresh()
 
 def slice_axis_yz():
-    grid.slice_axis = 'yz'; grid.slice_center = grid.nx // 2
-    print(f"Slice axis=yz center={grid.slice_center}"); refresh()
+    grid.slice_axis = 'yz'; grid.slice_center = grid.nx // 2; refresh()
 
 def slice_axis_xz():
-    grid.slice_axis = 'xz'; grid.slice_center = grid.ny // 2
-    print(f"Slice axis=xz center={grid.slice_center}"); refresh()
+    grid.slice_axis = 'xz'; grid.slice_center = grid.ny // 2; refresh()
 
 def slice_axis_xy():
-    grid.slice_axis = 'xy'; grid.slice_center = grid.nz // 2
-    print(f"Slice axis=xy center={grid.slice_center}"); refresh()
+    grid.slice_axis = 'xy'; grid.slice_center = grid.nz // 2; refresh()
 
 def slice_forward():
-    grid.slice_center = min(grid.slice_center + 1, grid.slice_axis_size - 1)
-    print(f"Slice center={grid.slice_center}"); refresh()
+    grid.slice_center = min(grid.slice_center + 1, grid.slice_axis_size - 1); refresh()
 
 def slice_backward():
-    grid.slice_center = max(grid.slice_center - 1, 0)
-    print(f"Slice center={grid.slice_center}"); refresh()
+    grid.slice_center = max(grid.slice_center - 1, 0); refresh()
 
 def slice_thicker():
-    grid.slice_thickness += 1
-    print(f"Slice thickness={grid.slice_thickness}"); refresh()
+    grid.slice_thickness += 1; refresh()
 
 def slice_thinner():
-    grid.slice_thickness = max(0, grid.slice_thickness - 1)
-    print(f"Slice thickness={grid.slice_thickness}"); refresh()
+    grid.slice_thickness = max(0, grid.slice_thickness - 1); refresh()
 
+# help toggle
+def toggle_help():
+    help_visible[0] = not help_visible[0]
+    help_actor.SetVisibility(help_visible[0])
+    pl.render()
+    pl.update()
+
+
+# -----------------------------------------------------------------------
+# key bindings
 pl.add_key_event('Right',        next_frame)
 pl.add_key_event('Left',         prev_frame)
-# PyVista/VTK binds Up/Down to camera dolly — override with our property cycling
 pl.add_key_event('Up',           next_prop)
 pl.add_key_event('Down',         prev_prop)
-# VTK InteractorStyleTrackballCamera binds 't' (trackball toggle) and 's' (surface/wireframe)
-# — override both so our bindings win
+pl.add_key_event('space',        toggle_play)
+pl.add_key_event('f',            faster)
+pl.add_key_event('g',            slower)
+pl.add_key_event('Return',       confirm_jump)
+pl.add_key_event('Escape',       cancel_jump)
+for _d in range(10):
+    pl.add_key_event(str(_d), _digit(_d))
 pl.add_key_event('t',            toggle_voxel_filter)
 pl.add_key_event('bracketright', inc_voxel_type)
 pl.add_key_event('bracketleft',  dec_voxel_type)
 pl.add_key_event('s',            toggle_slice)
-# neutralize additional conflicting VTK defaults
-pl.add_key_event('w', lambda: None)  # wireframe mode
+pl.add_key_event('w',            lambda: None)
 pl.add_key_event('x',            slice_axis_yz)
 pl.add_key_event('y',            slice_axis_xz)
 pl.add_key_event('z',            slice_axis_xy)
@@ -339,5 +469,6 @@ pl.add_key_event('period',       slice_forward)
 pl.add_key_event('comma',        slice_backward)
 pl.add_key_event('equal',        slice_thicker)
 pl.add_key_event('minus',        slice_thinner)
+pl.add_key_event('h',            toggle_help)
 
 pl.show()
