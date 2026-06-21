@@ -98,7 +98,7 @@ def merge(output_dir, final_h5, initial_cutoff, secondary_cutoff):
         for i, path in enumerate(files):
             with h5py.File(path, 'r') as src:
                 for name in src:
-                    data = src[name][:]
+                    data = src[name][()]
                     if i == 0:
                         shape = (T,) + data.shape
                         out.create_dataset(name, shape=shape, dtype=data.dtype)
