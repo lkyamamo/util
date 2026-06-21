@@ -285,9 +285,11 @@ def run_pipeline():
     voxel_script = os.path.join(SCRIPT_DIR, 'voxel_analysis.py')
     merge_script = os.path.join(SCRIPT_DIR, 'merge_h5.py')
 
+    python = '/Users/loganyamamoto/util/analysis/.venv/bin/python'
+
     for dump, h5 in [(dump1, h5_1), (dump2, h5_2)]:
         r = subprocess.run(
-            [sys.executable, voxel_script, dump, h5, str(Y_CENTER), str(Z_CENTER)],
+            [python, voxel_script, dump, h5, str(Y_CENTER), str(Z_CENTER)],
             capture_output=True, text=True
         )
         if r.returncode != 0:
@@ -295,7 +297,7 @@ def run_pipeline():
             sys.exit(1)
 
     r = subprocess.run(
-        [sys.executable, merge_script, H5_DIR, TRAJ_H5,
+        [python, merge_script, H5_DIR, TRAJ_H5,
          '--initial-cutoff', '2.0', '--secondary-cutoff', '1.0'],
         capture_output=True, text=True
     )
