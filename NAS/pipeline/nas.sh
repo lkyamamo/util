@@ -10,6 +10,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RSYNC=/opt/homebrew/bin/rsync
 CONFIG="${SCRIPT_DIR}/nas.config"
 MANIFEST_DIR="${SCRIPT_DIR}/manifests"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -69,7 +70,7 @@ robust_rsync() {
     local attempt=0 delay=10
     while (( attempt < 5 )); do
         if [[ -n "$logfile" ]]; then
-            rsync \
+            $RSYNC \
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
@@ -78,7 +79,7 @@ robust_rsync() {
                 "$@" 2>&1 | tee -a "$logfile"
             local rc="${PIPESTATUS[0]}"
         else
-            rsync \
+            $RSYNC \
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
