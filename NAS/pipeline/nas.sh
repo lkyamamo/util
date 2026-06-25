@@ -59,14 +59,35 @@ robust_ssh() {
 }
 
 robust_rsync() {
+    # Usage: robust_rsync [--logfile <path>] <src> <dest>
+    local logfile=""
+    if [[ "${1:-}" == "--logfile" ]]; then
+        logfile="$2"
+        shift 2
+    fi
+
     local attempt=0 delay=10
     while (( attempt < 5 )); do
-        rsync \
-            -az \
-            --partial \
-            --partial-dir=.rsync-partial \
-            -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
-            "$@" && return 0
+        if [[ -n "$logfile" ]]; then
+            rsync \
+                -az \
+                --partial \
+                --partial-dir=.rsync-partial \
+                --info=progress2 \
+                -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
+                "$@" 2>&1 | tee -a "$logfile"
+            local rc="${PIPESTATUS[0]}"
+        else
+            rsync \
+                -az \
+                --partial \
+                --partial-dir=.rsync-partial \
+                --info=progress2 \
+                -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
+                "$@"
+            local rc=$?
+        fi
+        [[ $rc -eq 0 ]] && return 0
         attempt=$(( attempt + 1 ))
         echo "  [rsync] attempt $attempt failed, retrying in ${delay}s..."
         sleep "$delay"
@@ -337,10 +358,13 @@ rsync_target() {
     local remote_log_dir="${REMOTE_LOG_BASE}/${dirname}"
     local remote_file="${remote_log_dir}/${target_name}"
     local local_dest="${LOCAL_BASE}/${dirname}/${target_path}"
+    local local_log_dir="${LOG_DIR}/${dirname}"
+    local logfile="${local_log_dir}/rsync_${target_name}_$(date +%Y%m%d_%H%M%S).log"
 
-    mkdir -p "$local_dest"
+    mkdir -p "$local_dest" "$local_log_dir"
+    echo "  [rsync log] $logfile"
 
-    robust_rsync \
+    robust_rsync --logfile "$logfile" \
         "${HPC}:${remote_file}" \
         "${local_dest}/" && return 0 || return 1
 }
@@ -486,9 +510,14 @@ process_direct() {
         return 0
     fi
 
+    local local_log_dir="${LOG_DIR}/${dirname}"
+    local logfile="${local_log_dir}/rsync_${dirname}_$(date +%Y%m%d_%H%M%S).log"
+    mkdir -p "$local_log_dir"
+
     echo "  [direct] rsyncing ${dirname}..."
+    echo "  [rsync log] $logfile"
     manifest_update "$manifest" "$dirname" "UPLOADING"
-    if robust_rsync \
+    if robust_rsync --logfile "$logfile" \
         "${HPC}:${REMOTE_BASE}/${dirname}/" \
         "${LOCAL_BASE}/${dirname}/"; then
         manifest_update "$manifest" "$dirname" "UPLOADED"
