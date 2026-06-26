@@ -27,7 +27,7 @@ date
 RUN_DIR=$SLURM_SUBMIT_DIR
 INPUT_DIR="$(cd "$RUN_DIR/../input_files" && pwd)"
 
-export lmp="/home1/lkyamamo/executables/lammps/lmp_mpi_2019"
+export lmp="/home1/lkyamamo/executables/lammps/lmp_mpi_shock_2019"
 
 echo "Run directory (cwd for LAMMPS): $RUN_DIR"
 echo "Input files symlinked from: $INPUT_DIR"
