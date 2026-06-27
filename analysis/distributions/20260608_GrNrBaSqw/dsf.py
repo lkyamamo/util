@@ -106,7 +106,7 @@ def _make_traj():
     """Return a fresh Trajectory (Trajectory is an exhaustible iterable)."""
     return Trajectory(
         DUMP_FILE,
-        trajectory_format='lammps-dump-text',
+        trajectory_format='LAMMPSDUMP',
         frame_stop=N_FRAMES,
         frame_step=STRIDE,
     )

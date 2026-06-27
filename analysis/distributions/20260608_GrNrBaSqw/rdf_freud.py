@@ -17,9 +17,8 @@ OUTPUT
 
 COLUMN LAYOUT
 -------------
-Adjust COL_ELEMENT / COL_X / COL_Y / COL_Z if your dump's ITEM: ATOMS columns differ
-from the default layout:  id  element  x  y  z  vx  vy  vz
-                          0   1        2  3  4  5   6   7
+Expects LAMMPS custom dump format with at minimum columns: id type element x y z
+Column positions are read automatically from the ITEM: ATOMS header line.
 """
 
 import itertools
@@ -45,13 +44,6 @@ OUTPUT_CSV = "rdfs.csv"
 # RDF parameters
 R_MAX = 20.0        # maximum r in Angstroms; must be < half shortest box dimension
 BINS  = 2000         # number of bins
-
-# Column indices in the ITEM: ATOMS line (0-indexed)
-# Default matches: id element x y z vx vy vz
-COL_ELEMENT = 1
-COL_X       = 2
-COL_Y       = 3
-COL_Z       = 4
 
 # Plot layout: how many columns in the subplot grid
 PLOT_NCOLS = 2
@@ -112,27 +104,22 @@ def read_lammps_dump(filename):
             ylo, yhi = map(float, f.readline().split())
             zlo, zhi = map(float, f.readline().split())
 
-            # ATOMS header line
-            f.readline()
+            # ATOMS header — parse column positions dynamically
+            header = f.readline().split()  # ['ITEM:', 'ATOMS', 'id', 'type', 'element', ...]
+            cols = header[2:]
+            col_element = cols.index('element')
+            col_x       = cols.index('x')
+            col_y       = cols.index('y')
+            col_z       = cols.index('z')
 
             elements, positions = [], []
             for _ in range(n_atoms):
                 parts = f.readline().split()
-                elements.append(parts[COL_ELEMENT])
-                positions.append([
-                    float(parts[COL_X]),
-                    float(parts[COL_Y]),
-                    float(parts[COL_Z]),
-                ])
+                elements.append(parts[col_element])
+                positions.append([float(parts[col_x]), float(parts[col_y]), float(parts[col_z])])
 
-            box = freud.box.Box(
-                Lx=xhi - xlo,
-                Ly=yhi - ylo,
-                Lz=zhi - zlo,
-            )
+            box = freud.box.Box(Lx=xhi - xlo, Ly=yhi - ylo, Lz=zhi - zlo)
             positions = np.array(positions)
-
-            # wrap positions into [-L/2, L/2] as freud expects
             center = np.array([(xlo + xhi) / 2, (ylo + yhi) / 2, (zlo + zhi) / 2])
             positions -= center
 
@@ -141,7 +128,7 @@ def read_lammps_dump(filename):
                 'box':            box,
                 'positions':      positions,
                 'elements':       np.array(elements),
-                'number_density': n_atoms / box.volume,   # atoms / Å³
+                'number_density': n_atoms / box.volume,
             })
 
     return frames
