@@ -61,6 +61,7 @@ KEY_HELP = (
     ". / ,          : move slice forward / backward\n"
     "= / -          : thicker / thinner slice\n"
     "--- Overlays ---\n"
+    "a              : toggle density opacity\n"
     "m              : toggle voxel mesh\n"
     "p              : toggle Si surface plane\n"
     "s              : toggle crater sphere cap\n"
@@ -310,6 +311,7 @@ timer_id          = [None]
 help_visible      = [True]
 
 # overlay toggles
+density_opacity    = [True]   # True = opacity mapped from density, False = fully opaque
 show_mesh          = [True]
 show_surface_plane = [False]
 show_sphere_cap    = [False]
@@ -457,6 +459,8 @@ def refresh():
     mesh, lo, hi, is_cat = grid.build_mesh(crater_colors=crater_color_mode[0])
     pl.remove_actor(actor)
 
+    opacity = 'alpha' if density_opacity[0] else 1.0
+
     if is_cat:
         actor = pl.add_mesh(
             mesh,
@@ -465,7 +469,7 @@ def refresh():
             cmap=['steelblue', 'orange', 'red'],
             n_colors=3,
             show_scalar_bar=False,
-            opacity='alpha',
+            opacity=opacity,
         )
     else:
         actor = pl.add_mesh(
@@ -474,7 +478,7 @@ def refresh():
             clim=[lo, hi],
             cmap='coolwarm',
             show_scalar_bar=False,
-            opacity='alpha',
+            opacity=opacity,
         )
         sbar.SetTitle(grid.current_property)
         sbar.GetLookupTable().SetTableRange(lo, hi)
@@ -655,6 +659,10 @@ def slice_thinner():
     grid.slice_thickness = max(0, grid.slice_thickness - 1); refresh()
 
 # overlay toggles
+def toggle_density_opacity():
+    density_opacity[0] = not density_opacity[0]
+    refresh()
+
 def toggle_mesh():
     show_mesh[0] = not show_mesh[0]
     actor.SetVisibility(show_mesh[0])
@@ -731,6 +739,7 @@ pl.add_key_event('period',       slice_forward)
 pl.add_key_event('comma',        slice_backward)
 pl.add_key_event('equal',        slice_thicker)
 pl.add_key_event('minus',        slice_thinner)
+pl.add_key_event('a',            toggle_density_opacity)
 pl.add_key_event('m',            toggle_mesh)
 pl.add_key_event('p',            toggle_surface_plane)
 pl.add_key_event('s',            toggle_sphere_cap)
