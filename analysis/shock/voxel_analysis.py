@@ -82,6 +82,7 @@ def preallocate_hdf5(path, nx, ny, nz, attrs):
     )
 
     h5file.create_dataset('si_surface',      shape=(ny, nz),                    dtype=np.float32, fillvalue=np.nan)
+    h5file.create_dataset('si_surface_mask', shape=(nx, ny, nz),                dtype=np.uint8,   fillvalue=0)
     h5file.create_dataset('hydronium_count', shape=(attrs['n_hydronium_x'],),   dtype=np.int32,   fillvalue=0)
     h5file.create_dataset('jet_tip_x',       shape=(),                          dtype=np.float32)
 
@@ -384,6 +385,18 @@ def main():
         si_surface, rod_o, rod_h = streaming_loop(f, attrs, h5file, y_center, z_center)
 
         h5file['si_surface'][:]      = si_surface.astype(np.float32)
+
+        # mark the surface Si voxel for each (iy, iz) bin
+        si_surface_mask = np.zeros((nx, ny, nz), dtype=np.uint8)
+        vs = VOXEL_SIZE
+        for iy in range(ny):
+            for iz in range(nz):
+                sx = si_surface[iy, iz]
+                if not np.isnan(sx):
+                    six = min(int((sx - attrs['xlo']) / vs), nx - 1)
+                    si_surface_mask[six, iy, iz] = 1
+        h5file['si_surface_mask'][:] = si_surface_mask
+
         h5file['hydronium_count'][:] = detect_hydronium(rod_o, rod_h, attrs)
         h5file['jet_tip_x'][()]      = detect_jet_tip(h5file, attrs)
 

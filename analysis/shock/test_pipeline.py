@@ -298,7 +298,8 @@ def run_pipeline():
 
     r = subprocess.run(
         [python, merge_script, H5_DIR, TRAJ_H5,
-         '--initial-cutoff', '2.0', '--secondary-cutoff', '1.0'],
+         '--initial-cutoff', '2.0', '--secondary-cutoff', '1.0',
+         '--sphere-y-center', str(Y_CENTER), '--sphere-z-center', str(Z_CENTER)],
         capture_output=True, text=True
     )
     if r.returncode != 0:
@@ -381,6 +382,65 @@ def verify():
         ok = hc == 1
         print(f"  [{'PASS' if ok else 'FAIL'}] hydronium_count[1]: got={hc}  expected=1")
         passes += ok; fails += not ok
+
+        # --- si_surface_mask ---
+        print("\n=== si_surface_mask ===")
+        # Frame 0: Si at x=5.0, y=5.0, z=5.0 → ix=0, iy=0, iz=0
+        # Frame 1: Si at x=8.0, y=5.0, z=5.0 → ix=0, iy=0, iz=0
+        for fi, si_x in [(0, 5.0), (1, 8.0)]:
+            mask = f['si_surface_mask'][fi]  # (nx, ny, nz)
+            ok = int(mask[0, 0, 0]) == 1
+            print(f"  [{'PASS' if ok else 'FAIL'}] Frame {fi}: si_surface_mask[0,0,0]=={int(mask[0,0,0])} expected 1")
+            passes += ok; fails += not ok
+            total_set = int(mask.sum())
+            ok = total_set == 1
+            print(f"  [{'PASS' if ok else 'FAIL'}] Frame {fi}: total set voxels=={total_set} expected 1")
+            passes += ok; fails += not ok
+
+        # --- crater datasets ---
+        print("\n=== crater datasets ===")
+        ok = 'crater' in f
+        print(f"  [{'PASS' if ok else 'FAIL'}] crater group exists")
+        passes += ok; fails += not ok
+
+        if 'crater' in f:
+            cg = f['crater']
+
+            ok = 'reference_x' in cg and cg['reference_x'].shape == (2,)
+            print(f"  [{'PASS' if ok else 'FAIL'}] crater/reference_x shape (2,)")
+            passes += ok; fails += not ok
+
+            ok = 'depth_map' in cg and cg['depth_map'].shape == (2, NY, NZ)
+            print(f"  [{'PASS' if ok else 'FAIL'}] crater/depth_map shape (2,{NY},{NZ})")
+            passes += ok; fails += not ok
+
+            ok = 'sphere_center' in cg and cg['sphere_center'].shape == (2, 3)
+            print(f"  [{'PASS' if ok else 'FAIL'}] crater/sphere_center shape (2,3)")
+            passes += ok; fails += not ok
+
+            ok = 'sphere_radius' in cg and cg['sphere_radius'].shape == (2,)
+            print(f"  [{'PASS' if ok else 'FAIL'}] crater/sphere_radius shape (2,)")
+            passes += ok; fails += not ok
+
+            # with only 1 Si bin and cutoff=2.0, no crater detected → reference_x valid, no sphere
+            ref_x = cg['reference_x'][()]
+            ok = not np.isnan(ref_x[0]) and not np.isnan(ref_x[1])
+            print(f"  [{'PASS' if ok else 'FAIL'}] reference_x not NaN: {ref_x}")
+            passes += ok; fails += not ok
+
+            ok = float(ref_x[0]) == pytest_approx(5.0, 1e-3) if False else abs(float(ref_x[0]) - 5.0) < 0.1
+            print(f"  [{'PASS' if ok else 'FAIL'}] reference_x[0]≈5.0: got {float(ref_x[0]):.3f}")
+            passes += ok; fails += not ok
+
+            ok = abs(float(ref_x[1]) - 8.0) < 0.1
+            print(f"  [{'PASS' if ok else 'FAIL'}] reference_x[1]≈8.0: got {float(ref_x[1]):.3f}")
+            passes += ok; fails += not ok
+
+            # sphere fit should be NaN (no crater bins with depth > 2.0)
+            sr = cg['sphere_radius'][()]
+            ok = np.isnan(float(sr[0])) and np.isnan(float(sr[1]))
+            print(f"  [{'PASS' if ok else 'FAIL'}] sphere_radius NaN for both frames (no crater): {sr}")
+            passes += ok; fails += not ok
 
     print(f"\n{'='*40}")
     print(f"Results: {passes} PASS  {fails} FAIL")

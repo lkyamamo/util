@@ -17,6 +17,10 @@ HYDRONIUM_Z_CENTER=0.0
 CRATER_INITIAL_CUTOFF=5.0    # depth below reference plane to classify a bin as crater (first pass)
 CRATER_SECONDARY_CUTOFF=3.0  # distance from fitted sphere surface to keep a point (second pass)
 
+# Sphere fit center: fixed y/z coordinates (Å) — axis of rotational symmetry of the jet
+SPHERE_Y_CENTER=0.0
+SPHERE_Z_CENTER=0.0
+
 N=$(ls "$DUMP_DIR"/$DUMP_GLOB 2>/dev/null | wc -l)
 
 if [ "$N" -eq 0 ]; then
@@ -70,7 +74,7 @@ echo "Array job ID: $ARRAY_JOB"
 
 MERGE_JOB=$(sbatch --parsable \
     --dependency=afterok:$ARRAY_JOB \
-    --export=OUTPUT_DIR=$OUTPUT_DIR,FINAL_H5=$FINAL_H5,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH,CRATER_INITIAL_CUTOFF=$CRATER_INITIAL_CUTOFF,CRATER_SECONDARY_CUTOFF=$CRATER_SECONDARY_CUTOFF \
+    --export=OUTPUT_DIR=$OUTPUT_DIR,FINAL_H5=$FINAL_H5,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH,CRATER_INITIAL_CUTOFF=$CRATER_INITIAL_CUTOFF,CRATER_SECONDARY_CUTOFF=$CRATER_SECONDARY_CUTOFF,SPHERE_Y_CENTER=$SPHERE_Y_CENTER,SPHERE_Z_CENTER=$SPHERE_Z_CENTER \
     "$SCRIPT_DIR/merge_h5.slurm")
 
 echo "Merge job ID: $MERGE_JOB (runs after array completes)"
