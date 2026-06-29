@@ -5,7 +5,7 @@ import h5py
 VOXEL_SIZE = 1.0
 VOXEL_GAP  = 0.05   # fractional gap between voxels
 #FILEPATH   = "/tmp/shock_vis_verify.h5"
-FILEPATH  = '/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bubble-collapse/analysis/small_system/voxel_r0137/trajectory.h5'
+FILEPATH  = '/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/voxel_0147/trajectory.h5'
 
 PROPERTIES = ['density', 'pressure', 'virial_pressure', 'temperature',
               'avg_speed', 'avg_O_speed', 'voxel_type', 'v_COM']
