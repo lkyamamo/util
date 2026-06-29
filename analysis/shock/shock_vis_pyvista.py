@@ -120,7 +120,7 @@ class VoxelGrid:
             override = PROPERTY_DISPLAY_RANGES.get(prop)
             self.display_ranges[prop] = override if override is not None else self.ranges[prop]
 
-        self.nan_mask = np.isnan(data['density'])  # (T, nx, ny, nz)
+        self.nan_mask = np.isnan(data['density']) | (data['voxel_type'] == 0)  # (T, nx, ny, nz)
 
     def angstrom_to_display(self, x, y, z):
         """Convert real Å coordinates to display voxel coordinates."""
