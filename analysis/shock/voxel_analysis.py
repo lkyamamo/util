@@ -62,7 +62,7 @@ def preallocate_hdf5(path, nx, ny, nz, attrs):
             shape=(nx, ny, nz),
             dtype=np.float32,
             chunks=(1, ny, nz),
-            fillvalue=0.0,
+            fillvalue=np.nan,
         )
 
     h5file.create_dataset(
