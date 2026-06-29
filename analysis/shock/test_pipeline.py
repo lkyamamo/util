@@ -247,8 +247,8 @@ def smooth_3d(arr):
     nan_mask = np.isnan(arr)
     filled   = np.where(nan_mask, 0.0, arr)
     weights  = np.where(nan_mask, 0.0, 1.0)
-    s = uniform_filter(filled,  size=3, mode='constant', cval=0.0)
-    c = uniform_filter(weights, size=3, mode='constant', cval=0.0)
+    s = uniform_filter(filled,  size=7, mode='constant', cval=0.0)
+    c = uniform_filter(weights, size=7, mode='constant', cval=0.0)
     return np.where(c > 0, s / c, np.nan).astype(np.float32)
 
 

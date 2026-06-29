@@ -327,14 +327,16 @@ SMOOTH_DATASETS = [
     'avg_speed', 'avg_O_speed', 'number_density',
 ]
 
+SMOOTH_KERNEL_SIZE = 7  # box width per axis: 3 neighbors each side + itself
+
 def _smooth_3d(arr):
     """NaN-aware uniform_filter smoothing. Empty voxels receive the weighted
     average of their neighbors; non-empty voxels include themselves."""
     nan_mask = np.isnan(arr)
     filled   = np.where(nan_mask, 0.0, arr)
     weights  = np.where(nan_mask, 0.0, 1.0)
-    smoothed = uniform_filter(filled,   size=3, mode='constant', cval=0.0)
-    counts   = uniform_filter(weights,  size=3, mode='constant', cval=0.0)
+    smoothed = uniform_filter(filled,   size=SMOOTH_KERNEL_SIZE, mode='constant', cval=0.0)
+    counts   = uniform_filter(weights,  size=SMOOTH_KERNEL_SIZE, mode='constant', cval=0.0)
     return np.where(counts > 0, smoothed / counts, np.nan).astype(arr.dtype)
 
 
