@@ -11,8 +11,13 @@ source "$VENV_PATH/bin/activate"
 
 TIME_LOG="$SCRIPT_DIR/logs/time_merge_${SLURM_JOB_ID}.log"
 
-if command -v /usr/bin/time >/dev/null 2>&1; then
-    TIME_CMD=(/usr/bin/time -v -o "$TIME_LOG")
+# GNU time (supports -v/-o) isn't always on PATH by default on CARC — load
+# the module if available. Falls through silently if module/time is absent.
+module load gcc/13.3.0 time/1.9 >/dev/null 2>&1 || true
+
+TIME_BIN=$(command -v time 2>/dev/null || true)
+if [ -n "$TIME_BIN" ]; then
+    TIME_CMD=("$TIME_BIN" -v -o "$TIME_LOG")
 else
     TIME_CMD=()
 fi
@@ -23,9 +28,9 @@ fi
     --sphere-y-center "$SPHERE_Y_CENTER" \
     --sphere-z-center "$SPHERE_Z_CENTER"
 
-if [ ${#TIME_CMD[@]} -gt 0 ]; then
+if [ -n "$TIME_BIN" ]; then
     MAX_RSS_KB=$(grep "Maximum resident set size" "$TIME_LOG" | awk '{print $NF}')
     echo "Peak memory usage: ${MAX_RSS_KB} KB"
 else
-    echo "/usr/bin/time not available — peak memory not logged (use seff/sacct after the job completes)"
+    echo "GNU time not available — peak memory not logged (use seff/sacct after the job completes)"
 fi

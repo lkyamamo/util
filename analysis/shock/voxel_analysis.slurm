@@ -35,8 +35,13 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: processing ${DUMP} (frame ${FRAME_ID})"
 SUMMARY_LOG="$SCRIPT_DIR/logs/summary_${SLURM_ARRAY_JOB_ID}.log"
 TIME_LOG="$SCRIPT_DIR/logs/time_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
 
-if command -v /usr/bin/time >/dev/null 2>&1; then
-    TIME_CMD=(/usr/bin/time -v -o "$TIME_LOG")
+# GNU time (supports -v/-o) isn't always on PATH by default on CARC — load
+# the module if available. Falls through silently if module/time is absent.
+module load gcc/13.3.0 time/1.9 >/dev/null 2>&1 || true
+
+TIME_BIN=$(command -v time 2>/dev/null || true)
+if [ -n "$TIME_BIN" ]; then
+    TIME_CMD=("$TIME_BIN" -v -o "$TIME_LOG")
 else
     TIME_CMD=()
 fi
