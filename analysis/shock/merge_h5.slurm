@@ -7,13 +7,16 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=logs/merge_%j.out
 
+# GNU time (supports -v/-o) isn't always on PATH by default on CARC — load
+# the module if available, BEFORE activating the venv. module load can
+# prepend to PATH; loading it after the venv would risk shadowing the
+# venv's python and breaking numpy/h5py imports. Falls through silently
+# if module/time is absent.
+module load gcc/13.3.0 time/1.9 >/dev/null 2>&1 || true
+
 source "$VENV_PATH/bin/activate"
 
 TIME_LOG="$SCRIPT_DIR/logs/time_merge_${SLURM_JOB_ID}.log"
-
-# GNU time (supports -v/-o) isn't always on PATH by default on CARC — load
-# the module if available. Falls through silently if module/time is absent.
-module load gcc/13.3.0 time/1.9 >/dev/null 2>&1 || true
 
 TIME_BIN=$(command -v time 2>/dev/null || true)
 if [ -n "$TIME_BIN" ]; then

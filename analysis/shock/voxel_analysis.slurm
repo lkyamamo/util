@@ -7,6 +7,13 @@
 #SBATCH --time=00:30:00
 #SBATCH --output=logs/voxel_%A_%a.out
 
+# GNU time (supports -v/-o) isn't always on PATH by default on CARC — load
+# the module if available, BEFORE activating the venv. module load can
+# prepend to PATH; loading it after the venv would risk shadowing the
+# venv's python and breaking numpy/h5py imports. Falls through silently
+# if module/time is absent.
+module load gcc/13.3.0 time/1.9 >/dev/null 2>&1 || true
+
 source "$VENV_PATH/bin/activate"
 
 # VOXEL_MEMORY_PROFILE is set in submit_voxel_pipeline.sh (Configuration —
@@ -34,10 +41,6 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: processing ${DUMP} (frame ${FRAME_ID})"
 
 SUMMARY_LOG="$SCRIPT_DIR/logs/summary_${SLURM_ARRAY_JOB_ID}.log"
 TIME_LOG="$SCRIPT_DIR/logs/time_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
-
-# GNU time (supports -v/-o) isn't always on PATH by default on CARC — load
-# the module if available. Falls through silently if module/time is absent.
-module load gcc/13.3.0 time/1.9 >/dev/null 2>&1 || true
 
 TIME_BIN=$(command -v time 2>/dev/null || true)
 if [ -n "$TIME_BIN" ]; then
