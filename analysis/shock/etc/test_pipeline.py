@@ -26,8 +26,9 @@ import numpy as np
 import h5py
 from scipy.ndimage import uniform_filter
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR    = os.path.join(SCRIPT_DIR, 'test_output')
+TEST_DIR   = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(TEST_DIR)
+OUT_DIR    = os.path.join(TEST_DIR, 'test_output')
 DUMP_DIR   = os.path.join(OUT_DIR, 'dumps')
 H5_DIR     = os.path.join(OUT_DIR, 'h5')
 TRAJ_H5    = os.path.join(OUT_DIR, 'trajectory.h5')
