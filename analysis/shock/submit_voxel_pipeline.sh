@@ -52,9 +52,26 @@ done
 N_PENDING=$(wc -l < "$PENDING_FILE")
 echo "Found $N dump files total — $skipped already processed, $N_PENDING pending"
 
+# Merge should only run once all voxels are analyzed and trajectory.h5
+# doesn't already exist (avoid redundant/overwriting re-merges).
 if [ "$N_PENDING" -eq 0 ]; then
-    echo "All frames already processed. Nothing to submit."
+    if [ -f "$FINAL_H5" ]; then
+        echo "All frames already processed and $FINAL_H5 already exists. Nothing to do."
+        exit 0
+    fi
+
+    echo "All frames already processed but $FINAL_H5 does not exist — submitting merge."
+    MERGE_JOB=$(sbatch --parsable \
+        --export=OUTPUT_DIR=$OUTPUT_DIR,FINAL_H5=$FINAL_H5,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH,CRATER_INITIAL_CUTOFF=$CRATER_INITIAL_CUTOFF,CRATER_SECONDARY_CUTOFF=$CRATER_SECONDARY_CUTOFF,SPHERE_Y_CENTER=$SPHERE_Y_CENTER,SPHERE_Z_CENTER=$SPHERE_Z_CENTER \
+        "$SCRIPT_DIR/merge_h5.slurm")
+
+    echo "Merge job ID: $MERGE_JOB"
     exit 0
+fi
+
+if [ -f "$FINAL_H5" ]; then
+    echo "WARNING: $FINAL_H5 already exists but new dump files are pending."
+    echo "         The merge job will overwrite it once the array job completes."
 fi
 
 ARRAY_MAX=$((N_PENDING - 1))
