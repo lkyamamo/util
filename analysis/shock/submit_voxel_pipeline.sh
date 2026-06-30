@@ -1,6 +1,8 @@
 #!/bin/bash
 
-# --- Configuration ---
+# =============================================================================
+# Configuration — paths and job sizing
+# =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DUMP_DIR="/path/to/dump/dir"    # directory containing dump files
 DUMP_GLOB="dump.*"              # adjust to match your dump file naming
@@ -9,17 +11,30 @@ FINAL_H5="$SCRIPT_DIR/trajectory.h5"
 VENV_PATH="$SCRIPT_DIR/venv"    # path to virtual environment
 BATCH_SIZE=64
 
-# Hydronium rod center (y, z coordinates in Å — rotational symmetry axis of the system)
+# =============================================================================
+# Configuration — hydronium detection
+# =============================================================================
+# Rod center (y, z coordinates in Å — rotational symmetry axis of the system)
 HYDRONIUM_Y_CENTER=0.0
 HYDRONIUM_Z_CENTER=0.0
 
-# Crater analysis cutoffs (Å)
-CRATER_INITIAL_CUTOFF=5.0    # depth below reference plane to classify a bin as crater (first pass)
-CRATER_SECONDARY_CUTOFF=3.0  # distance from fitted sphere surface to keep a point (second pass)
+# =============================================================================
+# Configuration — crater analysis
+# =============================================================================
+CRATER_INITIAL_CUTOFF=5.0    # Å below reference plane to classify a bin as crater (first pass)
+CRATER_SECONDARY_CUTOFF=3.0  # Å from fitted sphere surface to keep a point (second pass)
 
 # Sphere fit center: fixed y/z coordinates (Å) — axis of rotational symmetry of the jet
 SPHERE_Y_CENTER=0.0
 SPHERE_Z_CENTER=0.0
+
+# =============================================================================
+# Configuration — diagnostics
+# =============================================================================
+# Set to 1 to log per-layer and per-smoothing-pass memory usage (RSS) from
+# voxel_analysis.py to each task's .err log. Off by default — adds print
+# overhead per layer, only enable for memory-scaling investigations.
+VOXEL_MEMORY_PROFILE=0
 
 N=$(ls "$DUMP_DIR"/$DUMP_GLOB 2>/dev/null | wc -l)
 
@@ -79,7 +94,7 @@ echo "Submitting array 0-${ARRAY_MAX} (max ${BATCH_SIZE} simultaneous)"
 
 ARRAY_JOB=$(sbatch --parsable \
     --array=0-${ARRAY_MAX}%${BATCH_SIZE} \
-    --export=PENDING_FILE=$PENDING_FILE,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH,HYDRONIUM_Y_CENTER=$HYDRONIUM_Y_CENTER,HYDRONIUM_Z_CENTER=$HYDRONIUM_Z_CENTER \
+    --export=PENDING_FILE=$PENDING_FILE,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH,HYDRONIUM_Y_CENTER=$HYDRONIUM_Y_CENTER,HYDRONIUM_Z_CENTER=$HYDRONIUM_Z_CENTER,VOXEL_MEMORY_PROFILE=$VOXEL_MEMORY_PROFILE \
     "$SCRIPT_DIR/voxel_analysis.slurm")
 
 if [ -z "$ARRAY_JOB" ]; then

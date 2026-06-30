@@ -9,10 +9,9 @@
 
 source "$VENV_PATH/bin/activate"
 
-# Per-layer / per-smoothing-pass memory profiling (diagnostic, off by default).
-# Enable by adding VOXEL_MEMORY_PROFILE=1 to the --export list in
-# submit_voxel_pipeline.sh, or export it before sbatch for a one-off run.
-# Output goes to this task's .err log alongside warnings/errors.
+# VOXEL_MEMORY_PROFILE is set in submit_voxel_pipeline.sh (Configuration —
+# diagnostics) and passed through via --export. When set to 1, per-layer
+# and per-smoothing-pass memory usage (RSS) is logged to this task's .err log.
 
 mkdir -p "$OUTPUT_DIR"
 
