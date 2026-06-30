@@ -413,6 +413,7 @@ def main():
             'o_type': O_TYPE,
             'h_type': H_TYPE,
             'n_hydronium_x': n_hydronium_x,
+            'hydronium_voxel_x': HYDRONIUM_VOXEL_X,
             'hydronium_y_center': y_center,
             'hydronium_z_center': z_center,
         }
