@@ -48,7 +48,7 @@ OH_CUTOFF         =  1.2   # Å, O-H bond distance cutoff
 # fast-moving stray atoms, which can give a high avg_speed in an otherwise
 # near-empty voxel. Bulk liquid water is ~1.0 g/cm^3; this threshold should
 # be calibrated against actual bulk-water voxel density in your trajectory.
-JET_TIP_DENSITY_THRESHOLD = 0.15  # g/cm^3, minimum density to count as jet front
+JET_TIP_DENSITY_THRESHOLD = 0.3  # g/cm^3, minimum density to count as jet front
 
 
 def parse_header(file):
