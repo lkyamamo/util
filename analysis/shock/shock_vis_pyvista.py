@@ -10,6 +10,10 @@ FILEPATH  = '/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interfa
 PROPERTIES = ['density', 'pressure', 'virial_pressure', 'temperature',
               'avg_speed', 'avg_O_speed', 'voxel_type', 'v_COM']
 
+# Additional properties shown only in the voxel info panel (not cycled
+# through with Up/Down or used for the colored mesh display)
+INFO_EXTRA_PROPERTIES = ['number_density']
+
 ZERO_BASED_RANGE_PROPERTIES = {'density', 'temperature', 'avg_speed', 'avg_O_speed'}
 
 # Percentile clip for auto display ranges: e.g. 1.0 uses 1st-99th percentile.
@@ -68,6 +72,9 @@ KEY_HELP = (
     "c              : toggle crater/surface coloring (Si mode)\n"
     "v              : toggle velocity vectors\n"
     "< / >          : scale velocity arrows down / up\n"
+    "--- Voxel Inspection ---\n"
+    "left-click     : select voxel, show its properties\n"
+    "i              : clear voxel selection\n"
     "--- Camera ---\n"
     "h              : toggle this help text"
 )
@@ -240,6 +247,9 @@ class VoxelGrid:
 # load data
 with h5py.File(FILEPATH, 'r') as f:
     full_data = {prop: np.array(f[prop]) for prop in PROPERTIES}
+    for prop in INFO_EXTRA_PROPERTIES:
+        if prop in f:
+            full_data[prop] = np.array(f[prop])
 
     opt = {}
     opt['xlo']            = float(f.attrs.get('xlo', 0.0))
@@ -317,7 +327,10 @@ show_surface_plane = [False]
 show_sphere_cap    = [False]
 crater_color_mode  = [False]
 show_velocity_vecs = [False]
-velocity_scale     = [1.0]
+velocity_scale     = [0.5]   # arrow length in display units (uniform; magnitude shown via color, not length)
+
+# voxel selection / inspection
+selected_voxel = [None]   # (ix, iy, iz) or None
 
 # overlay actors
 surface_plane_actor = [None]
@@ -334,8 +347,32 @@ def _info_text():
     return (f"Property : {grid.current_property}\n"
             f"Timestep : {grid.current_timestep} / {grid.ntimesteps - 1}  {play_str}{jump_str}")
 
+def _voxel_info_text():
+    if selected_voxel[0] is None:
+        return ""
+    ix, iy, iz = selected_voxel[0]
+    t = grid.current_timestep
+    if not (0 <= ix < grid.nx and 0 <= iy < grid.ny and 0 <= iz < grid.nz):
+        return ""
+    lines = [f"Voxel ({ix}, {iy}, {iz})"]
+    for prop in PROPERTIES + INFO_EXTRA_PROPERTIES:
+        if prop not in grid.data:
+            continue
+        val = grid.data[prop][t, ix, iy, iz]
+        if prop == 'v_COM':
+            vx, vy, vz = (float(v) for v in val)
+            mag = float(np.linalg.norm(val))
+            lines.append(f"v_COM: ({vx:.2f}, {vy:.2f}, {vz:.2f})  |v|={mag:.2f}")
+        elif prop == 'voxel_type':
+            lines.append(f"voxel_type: {int(val)}")
+        else:
+            lines.append(f"{prop}: {float(val):.4g}")
+    return "\n".join(lines)
+
+
 info_actor = pl.add_text(_info_text(), position='upper_left', font_size=12, color='black')
 help_actor = pl.add_text(KEY_HELP, position='lower_left', font_size=10, color='black')
+voxel_info_actor = pl.add_text(_voxel_info_text(), position='upper_right', font_size=11, color='black')
 
 
 # -----------------------------------------------------------------------
@@ -443,11 +480,16 @@ def _update_velocity_vectors():
     v_com   = v_com[valid_v].astype(np.float32)
     magnitudes = np.linalg.norm(v_com, axis=1).astype(np.float32)
 
+    # normalize direction to unit length — all arrows same length, magnitude
+    # represented by color only (not by length)
+    safe_mag = np.where(magnitudes == 0, 1.0, magnitudes)
+    unit_vectors = (v_com / safe_mag[:, np.newaxis]).astype(np.float32)
+
     points = pv.PolyData(centers)
-    points['vectors']   = v_com
+    points['vectors']   = unit_vectors
     points['magnitude'] = magnitudes
 
-    arrows = points.glyph(orient='vectors', scale='vectors', factor=velocity_scale[0])
+    arrows = points.glyph(orient='vectors', scale=False, factor=velocity_scale[0])
     velocity_actor[0] = pl.add_mesh(
         arrows, scalars='magnitude', cmap='coolwarm', show_scalar_bar=False,
     )
@@ -490,6 +532,7 @@ def refresh():
     _update_velocity_vectors()
 
     info_actor.SetText(2, _info_text())
+    voxel_info_actor.SetText(3, _voxel_info_text())
     pl.render()
     pl.update()
 
@@ -713,6 +756,26 @@ def toggle_help():
     pl.render()
     pl.update()
 
+# voxel selection / inspection
+def _on_pick_point(point):
+    if point is None:
+        return
+    ix = int(point[0] // VOXEL_SIZE)
+    iy = int(point[1] // VOXEL_SIZE)
+    iz = int(point[2] // VOXEL_SIZE)
+    if not (0 <= ix < grid.nx and 0 <= iy < grid.ny and 0 <= iz < grid.nz):
+        return
+    selected_voxel[0] = (ix, iy, iz)
+    voxel_info_actor.SetText(3, _voxel_info_text())
+    pl.render()
+    pl.update()
+
+def clear_voxel_selection():
+    selected_voxel[0] = None
+    voxel_info_actor.SetText(3, "")
+    pl.render()
+    pl.update()
+
 
 # -----------------------------------------------------------------------
 # key bindings
@@ -748,5 +811,9 @@ pl.add_key_event('v',            toggle_velocity_vectors)
 pl.add_key_event('less',         scale_velocity_down)
 pl.add_key_event('greater',      scale_velocity_up)
 pl.add_key_event('h',            toggle_help)
+pl.add_key_event('i',            clear_voxel_selection)
+
+pl.enable_point_picking(callback=_on_pick_point, use_picker=True,
+                         show_message=False, left_clicking=True)
 
 pl.show()
