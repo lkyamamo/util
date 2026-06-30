@@ -44,7 +44,11 @@ HYDRONIUM_PADDING =  1.3   # Å, padding around rod for H atom collection
 OH_CUTOFF         =  1.2   # Å, O-H bond distance cutoff
 
 # --- Jet tip detection ---
-JET_TIP_SPEED_THRESHOLD = 30.0  # Å/ps, minimum avg_speed to count as jet front
+# Density-based (not speed-based) to avoid spurious detections from isolated
+# fast-moving stray atoms, which can give a high avg_speed in an otherwise
+# near-empty voxel. Bulk liquid water is ~1.0 g/cm^3; this threshold should
+# be calibrated against actual bulk-water voxel density in your trajectory.
+JET_TIP_DENSITY_THRESHOLD = 0.15  # g/cm^3, minimum density to count as jet front
 
 
 def parse_header(file):
@@ -327,12 +331,13 @@ def detect_hydronium(rod_o, rod_h, attrs):
 
 
 def detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius):
-    """Jet tip = smallest-x water voxel above the speed threshold, restricted
-    to a square rod in (y, z) centered at (y_center, z_center) with half-width
-    bubble_radius (i.e. edge length = 2*bubble_radius, the initial bubble's
-    diameter)."""
-    avg_speed  = h5file['avg_speed'][:]    # (nx, ny, nz)
-    voxel_type = h5file['voxel_type'][:]   # (nx, ny, nz)
+    """Jet tip = smallest-x water voxel with density above threshold,
+    restricted to a square rod in (y, z) centered at (y_center, z_center)
+    with half-width bubble_radius (i.e. edge length = 2*bubble_radius, the
+    initial bubble's diameter). Operates on smoothed density (this is called
+    after smooth_voxel_data); voxel_type is never smoothed."""
+    density    = h5file['density'][:]      # (nx, ny, nz), smoothed
+    voxel_type = h5file['voxel_type'][:]   # (nx, ny, nz), raw
 
     ny  = attrs['ny']
     nz  = attrs['nz']
@@ -346,7 +351,7 @@ def detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius):
     z_mask = np.abs(z_bin_centers - z_center) <= bubble_radius   # (nz,)
     rod_mask = y_mask[:, np.newaxis] & z_mask[np.newaxis, :]     # (ny, nz)
 
-    water_above_threshold = (voxel_type == 1) & (avg_speed > JET_TIP_SPEED_THRESHOLD)
+    water_above_threshold = (voxel_type == 1) & (density > JET_TIP_DENSITY_THRESHOLD)
     water_above_threshold &= rod_mask[np.newaxis, :, :]
     x_layers_hit = np.any(water_above_threshold, axis=(1, 2))   # (nx,)
 
@@ -456,9 +461,11 @@ def main():
         h5file['si_surface_mask'][:] = si_surface_mask
 
         h5file['hydronium_count'][:] = detect_hydronium(rod_o, rod_h, attrs)
-        h5file['jet_tip_x'][()]      = detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius)
 
         smooth_voxel_data(h5file)
+
+        # runs after smoothing — detect_jet_tip operates on smoothed density
+        h5file['jet_tip_x'][()] = detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius)
 
         h5file.close()
         os.rename(tmp_file, output_file)
