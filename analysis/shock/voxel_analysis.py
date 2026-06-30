@@ -5,6 +5,7 @@ from collections import defaultdict
 
 import numpy as np
 import h5py
+import psutil
 from scipy.spatial import cKDTree
 from scipy.ndimage import uniform_filter
 
@@ -12,6 +13,13 @@ from scipy.ndimage import uniform_filter
 # DUMP_FILE, OUTPUT_FILE, HYDRONIUM_Y_CENTER, HYDRONIUM_Z_CENTER are CLI args
 # Usage: python voxel_analysis.py <dump_file> <output_file> <y_center> <z_center>
 VOXEL_SIZE  = 10.0      # Å (10 Å = 1 nm)
+
+MEMORY_PROFILING = os.environ.get('VOXEL_MEMORY_PROFILE', '0') == '1'
+_process = psutil.Process() if MEMORY_PROFILING else None
+
+
+def _rss_mb():
+    return _process.memory_info().rss / (1024 * 1024)
 
 # Atom type IDs (1-based, must match LAMMPS dump)
 SI_TYPE = 1
@@ -148,6 +156,10 @@ def process_voxel(arr, masses, V):
 
 
 def flush_layer(layer_buf, ix, h5file, attrs):
+    if MEMORY_PROFILING:
+        n_atoms = sum(len(v) for v in layer_buf.values())
+        rss_before = _rss_mb()
+
     ny = attrs['ny']
     nz = attrs['nz']
     vs = attrs['voxel_size']
@@ -209,6 +221,12 @@ def flush_layer(layer_buf, ix, h5file, attrs):
     h5file['number_density' ][ix] = out_number_density
     h5file['voxel_type'     ][ix] = out_voxel_type
     h5file['v_COM'          ][ix] = out_v_COM
+
+    if MEMORY_PROFILING:
+        rss_after = _rss_mb()
+        print(f"[mem] layer ix={ix} atoms={n_atoms} rss_before={rss_before:.1f}MB "
+              f"rss_after={rss_after:.1f}MB delta={rss_after - rss_before:+.1f}MB",
+              file=sys.stderr)
 
 
 def streaming_loop(file, attrs, h5file, y_center, z_center):
@@ -342,13 +360,31 @@ def _smooth_3d(arr):
 
 def smooth_voxel_data(h5file):
     for name in SMOOTH_DATASETS:
+        if MEMORY_PROFILING:
+            rss_before = _rss_mb()
+
         arr = h5file[name][:]
         h5file[name][:] = _smooth_3d(arr)
+
+        if MEMORY_PROFILING:
+            rss_after = _rss_mb()
+            print(f"[mem] smooth '{name}' shape={arr.shape} rss_before={rss_before:.1f}MB "
+                  f"rss_after={rss_after:.1f}MB delta={rss_after - rss_before:+.1f}MB",
+                  file=sys.stderr)
+
+    if MEMORY_PROFILING:
+        rss_before = _rss_mb()
 
     v_com = h5file['v_COM'][:]   # (nx, ny, nz, 3)
     for i in range(3):
         v_com[..., i] = _smooth_3d(v_com[..., i])
     h5file['v_COM'][:] = v_com
+
+    if MEMORY_PROFILING:
+        rss_after = _rss_mb()
+        print(f"[mem] smooth 'v_COM' shape={v_com.shape} rss_before={rss_before:.1f}MB "
+              f"rss_after={rss_after:.1f}MB delta={rss_after - rss_before:+.1f}MB",
+              file=sys.stderr)
 
 
 def main():

@@ -9,6 +9,11 @@
 
 source "$VENV_PATH/bin/activate"
 
+# Per-layer / per-smoothing-pass memory profiling (diagnostic, off by default).
+# Enable by adding VOXEL_MEMORY_PROFILE=1 to the --export list in
+# submit_voxel_pipeline.sh, or export it before sbatch for a one-off run.
+# Output goes to this task's .err log alongside warnings/errors.
+
 mkdir -p "$OUTPUT_DIR"
 
 DUMP=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$PENDING_FILE")
