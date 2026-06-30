@@ -35,13 +35,22 @@ echo "Task ${SLURM_ARRAY_TASK_ID}: processing ${DUMP} (frame ${FRAME_ID})"
 SUMMARY_LOG="$SCRIPT_DIR/logs/summary_${SLURM_ARRAY_JOB_ID}.log"
 TIME_LOG="$SCRIPT_DIR/logs/time_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
 
-/usr/bin/time -v -o "$TIME_LOG" \
-    python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" "$HYDRONIUM_Y_CENTER" "$HYDRONIUM_Z_CENTER" "$BUBBLE_RADIUS" \
+if command -v /usr/bin/time >/dev/null 2>&1; then
+    TIME_CMD=(/usr/bin/time -v -o "$TIME_LOG")
+else
+    TIME_CMD=()
+fi
+
+"${TIME_CMD[@]}" python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" "$HYDRONIUM_Y_CENTER" "$HYDRONIUM_Z_CENTER" "$BUBBLE_RADIUS" \
     2>"$SCRIPT_DIR/logs/voxel_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
 EXIT_CODE=$?
 
 STDERR_CONTENT=$(cat "$SCRIPT_DIR/logs/voxel_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err")
-MAX_RSS_KB=$(grep "Maximum resident set size" "$TIME_LOG" | awk '{print $NF}')
+if [ ${#TIME_CMD[@]} -gt 0 ]; then
+    MAX_RSS_KB=$(grep "Maximum resident set size" "$TIME_LOG" | awk '{print $NF}')
+else
+    MAX_RSS_KB="n/a"
+fi
 
 if [ $EXIT_CODE -ne 0 ]; then
     STATUS="ERROR (exit $EXIT_CODE)"
