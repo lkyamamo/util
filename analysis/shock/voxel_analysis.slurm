@@ -29,12 +29,15 @@ rm -f "${OUTPUT_DIR}/output_${FRAME_ID}.h5.tmp"
 echo "Task ${SLURM_ARRAY_TASK_ID}: processing ${DUMP} (frame ${FRAME_ID})"
 
 SUMMARY_LOG="$SCRIPT_DIR/logs/summary_${SLURM_ARRAY_JOB_ID}.log"
+TIME_LOG="$SCRIPT_DIR/logs/time_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
 
-python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" "$HYDRONIUM_Y_CENTER" "$HYDRONIUM_Z_CENTER" \
+/usr/bin/time -v -o "$TIME_LOG" \
+    python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" "$HYDRONIUM_Y_CENTER" "$HYDRONIUM_Z_CENTER" \
     2>"$SCRIPT_DIR/logs/voxel_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
 EXIT_CODE=$?
 
 STDERR_CONTENT=$(cat "$SCRIPT_DIR/logs/voxel_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err")
+MAX_RSS_KB=$(grep "Maximum resident set size" "$TIME_LOG" | awk '{print $NF}')
 
 if [ $EXIT_CODE -ne 0 ]; then
     STATUS="ERROR (exit $EXIT_CODE)"
@@ -45,7 +48,7 @@ else
 fi
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-echo "${TIMESTAMP}  task=${SLURM_ARRAY_TASK_ID}  frame=${FRAME_ID}  ${STATUS}" >> "$SUMMARY_LOG"
+echo "${TIMESTAMP}  task=${SLURM_ARRAY_TASK_ID}  frame=${FRAME_ID}  ${STATUS}  max_rss=${MAX_RSS_KB}KB" >> "$SUMMARY_LOG"
 
 # also print stderr to the per-task stdout log for full context
 if [ -n "$STDERR_CONTENT" ]; then

@@ -9,8 +9,14 @@
 
 source "$VENV_PATH/bin/activate"
 
-python "$SCRIPT_DIR/merge_h5.py" "$OUTPUT_DIR" "$FINAL_H5" \
+TIME_LOG="$SCRIPT_DIR/logs/time_merge_${SLURM_JOB_ID}.log"
+
+/usr/bin/time -v -o "$TIME_LOG" \
+    python "$SCRIPT_DIR/merge_h5.py" "$OUTPUT_DIR" "$FINAL_H5" \
     --initial-cutoff "$CRATER_INITIAL_CUTOFF" \
     --secondary-cutoff "$CRATER_SECONDARY_CUTOFF" \
     --sphere-y-center "$SPHERE_Y_CENTER" \
     --sphere-z-center "$SPHERE_Z_CENTER"
+
+MAX_RSS_KB=$(grep "Maximum resident set size" "$TIME_LOG" | awk '{print $NF}')
+echo "Peak memory usage: ${MAX_RSS_KB} KB"
