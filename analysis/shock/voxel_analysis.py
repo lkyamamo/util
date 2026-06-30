@@ -10,8 +10,8 @@ from scipy.spatial import cKDTree
 from scipy.ndimage import uniform_filter
 
 # --- Configuration ---
-# DUMP_FILE, OUTPUT_FILE, HYDRONIUM_Y_CENTER, HYDRONIUM_Z_CENTER are CLI args
-# Usage: python voxel_analysis.py <dump_file> <output_file> <y_center> <z_center>
+# DUMP_FILE, OUTPUT_FILE, Y_CENTER, Z_CENTER, BUBBLE_RADIUS are CLI args
+# Usage: python voxel_analysis.py <dump_file> <output_file> <y_center> <z_center> <bubble_radius>
 VOXEL_SIZE  = 10.0      # Å (10 Å = 1 nm)
 
 MEMORY_PROFILING = os.environ.get('VOXEL_MEMORY_PROFILE', '0') == '1'
@@ -326,17 +326,34 @@ def detect_hydronium(rod_o, rod_h, attrs):
     return counts
 
 
-def detect_jet_tip(h5file, attrs):
+def detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius):
+    """Jet tip = smallest-x water voxel above the speed threshold, restricted
+    to a square rod in (y, z) centered at (y_center, z_center) with half-width
+    bubble_radius (i.e. edge length = 2*bubble_radius, the initial bubble's
+    diameter)."""
     avg_speed  = h5file['avg_speed'][:]    # (nx, ny, nz)
     voxel_type = h5file['voxel_type'][:]   # (nx, ny, nz)
 
+    ny  = attrs['ny']
+    nz  = attrs['nz']
+    vs  = attrs['voxel_size']
+    ylo = attrs['ylo']
+    zlo = attrs['zlo']
+
+    y_bin_centers = (np.arange(ny) + 0.5) * vs + ylo
+    z_bin_centers = (np.arange(nz) + 0.5) * vs + zlo
+    y_mask = np.abs(y_bin_centers - y_center) <= bubble_radius   # (ny,)
+    z_mask = np.abs(z_bin_centers - z_center) <= bubble_radius   # (nz,)
+    rod_mask = y_mask[:, np.newaxis] & z_mask[np.newaxis, :]     # (ny, nz)
+
     water_above_threshold = (voxel_type == 1) & (avg_speed > JET_TIP_SPEED_THRESHOLD)
+    water_above_threshold &= rod_mask[np.newaxis, :, :]
     x_layers_hit = np.any(water_above_threshold, axis=(1, 2))   # (nx,)
 
     if not x_layers_hit.any():
         return np.float32(np.nan)
 
-    tip_ix = int(np.where(x_layers_hit)[0].max())
+    tip_ix = int(np.where(x_layers_hit)[0].min())
     return np.float32((tip_ix + 0.5) * attrs['voxel_size'])
 
 
@@ -388,10 +405,11 @@ def smooth_voxel_data(h5file):
 
 
 def main():
-    dump_file   = sys.argv[1]
-    output_file = sys.argv[2]
-    y_center    = float(sys.argv[3])
-    z_center    = float(sys.argv[4])
+    dump_file     = sys.argv[1]
+    output_file   = sys.argv[2]
+    y_center      = float(sys.argv[3])
+    z_center      = float(sys.argv[4])
+    bubble_radius = float(sys.argv[5])
 
     with open(dump_file, "r") as f:
         timestep, N, xlo, xhi, ylo, yhi, zlo, zhi = parse_header(f)
@@ -416,6 +434,7 @@ def main():
             'hydronium_voxel_x': HYDRONIUM_VOXEL_X,
             'hydronium_y_center': y_center,
             'hydronium_z_center': z_center,
+            'jet_tip_bubble_radius': bubble_radius,
         }
 
         tmp_file = output_file + ".tmp"
@@ -437,7 +456,7 @@ def main():
         h5file['si_surface_mask'][:] = si_surface_mask
 
         h5file['hydronium_count'][:] = detect_hydronium(rod_o, rod_h, attrs)
-        h5file['jet_tip_x'][()]      = detect_jet_tip(h5file, attrs)
+        h5file['jet_tip_x'][()]      = detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius)
 
         smooth_voxel_data(h5file)
 

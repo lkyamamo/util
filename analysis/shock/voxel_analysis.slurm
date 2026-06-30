@@ -36,7 +36,7 @@ SUMMARY_LOG="$SCRIPT_DIR/logs/summary_${SLURM_ARRAY_JOB_ID}.log"
 TIME_LOG="$SCRIPT_DIR/logs/time_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.log"
 
 /usr/bin/time -v -o "$TIME_LOG" \
-    python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" "$HYDRONIUM_Y_CENTER" "$HYDRONIUM_Z_CENTER" \
+    python "$SCRIPT_DIR/voxel_analysis.py" "$DUMP" "${OUTPUT_DIR}/output_${FRAME_ID}.h5" "$HYDRONIUM_Y_CENTER" "$HYDRONIUM_Z_CENTER" "$BUBBLE_RADIUS" \
     2>"$SCRIPT_DIR/logs/voxel_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
 EXIT_CODE=$?
 

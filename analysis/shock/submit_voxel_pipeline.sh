@@ -19,6 +19,15 @@ HYDRONIUM_Y_CENTER=0.0
 HYDRONIUM_Z_CENTER=0.0
 
 # =============================================================================
+# Configuration — jet tip detection
+# =============================================================================
+# Jet tip is restricted to a square rod in (y, z) centered at
+# HYDRONIUM_Y_CENTER/HYDRONIUM_Z_CENTER (same rotational symmetry axis).
+# BUBBLE_RADIUS is the radius of the initial bubble/void carved into the
+# starting geometry (Å) — rod edge length = 2*BUBBLE_RADIUS.
+BUBBLE_RADIUS=0.0
+
+# =============================================================================
 # Configuration — crater analysis
 # =============================================================================
 CRATER_INITIAL_CUTOFF=5.0    # Å below reference plane to classify a bin as crater (first pass)
@@ -94,7 +103,7 @@ echo "Submitting array 0-${ARRAY_MAX} (max ${BATCH_SIZE} simultaneous)"
 
 ARRAY_JOB=$(sbatch --parsable \
     --array=0-${ARRAY_MAX}%${BATCH_SIZE} \
-    --export=PENDING_FILE=$PENDING_FILE,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH,HYDRONIUM_Y_CENTER=$HYDRONIUM_Y_CENTER,HYDRONIUM_Z_CENTER=$HYDRONIUM_Z_CENTER,VOXEL_MEMORY_PROFILE=$VOXEL_MEMORY_PROFILE \
+    --export=PENDING_FILE=$PENDING_FILE,DUMP_GLOB=$DUMP_GLOB,OUTPUT_DIR=$OUTPUT_DIR,SCRIPT_DIR=$SCRIPT_DIR,VENV_PATH=$VENV_PATH,HYDRONIUM_Y_CENTER=$HYDRONIUM_Y_CENTER,HYDRONIUM_Z_CENTER=$HYDRONIUM_Z_CENTER,BUBBLE_RADIUS=$BUBBLE_RADIUS,VOXEL_MEMORY_PROFILE=$VOXEL_MEMORY_PROFILE \
     "$SCRIPT_DIR/voxel_analysis.slurm")
 
 if [ -z "$ARRAY_JOB" ]; then
