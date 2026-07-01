@@ -119,11 +119,11 @@ prioritized_rsync() {
         [[ -n "$pat" ]] && last_includes+=(--include="$pat") && last_excludes+=(--exclude="$pat")
     done
 
-    # pass 1: priority-first files only
+    # pass 1: priority-first files only (include dirs for recursion)
     if (( ${#first_includes[@]} > 0 )); then
         echo "  [rsync pass 1/3] priority files: ${RSYNC_PRIORITY_FIRST[*]:-}"
         robust_rsync "${logfile_arg[@]}" \
-            "${first_includes[@]}" --exclude="*" \
+            --include="*/" "${first_includes[@]}" --exclude="*" \
             "$src" "$dest"
     fi
 
@@ -133,11 +133,11 @@ prioritized_rsync() {
         "${last_excludes[@]}" \
         "$src" "$dest"
 
-    # pass 3: priority-last files
+    # pass 3: priority-last files (include dirs for recursion)
     if (( ${#last_includes[@]} > 0 )); then
         echo "  [rsync pass 3/3] deferred files: ${RSYNC_PRIORITY_LAST[*]:-}"
         robust_rsync "${logfile_arg[@]}" \
-            "${last_includes[@]}" --exclude="*" \
+            --include="*/" "${last_includes[@]}" --exclude="*" \
             "$src" "$dest"
     fi
 }
