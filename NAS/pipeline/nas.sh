@@ -60,7 +60,7 @@ robust_ssh() {
 }
 
 robust_rsync() {
-    # Usage: robust_rsync [--logfile <path>] <src> <dest>
+    # Usage: robust_rsync [--logfile <path>] [extra rsync flags...] <src> <dest>
     local logfile=""
     if [[ "${1:-}" == "--logfile" ]]; then
         logfile="$2"
@@ -95,6 +95,51 @@ robust_rsync() {
         delay=$(( delay * 2 ))
     done
     return 1
+}
+
+prioritized_rsync() {
+    # Three-pass rsync respecting RSYNC_PRIORITY_FIRST and RSYNC_PRIORITY_LAST
+    # Usage: prioritized_rsync [--logfile <path>] <src> <dest>
+    local logfile=""
+    if [[ "${1:-}" == "--logfile" ]]; then
+        logfile="$2"
+        shift 2
+    fi
+    local src="$1" dest="$2"
+
+    local logfile_arg=()
+    [[ -n "$logfile" ]] && logfile_arg=(--logfile "$logfile")
+
+    # build --include/--exclude filter args for each pass
+    local first_includes=() last_includes=() last_excludes=()
+    for pat in "${RSYNC_PRIORITY_FIRST[@]:-}"; do
+        [[ -n "$pat" ]] && first_includes+=(--include="$pat")
+    done
+    for pat in "${RSYNC_PRIORITY_LAST[@]:-}"; do
+        [[ -n "$pat" ]] && last_includes+=(--include="$pat") && last_excludes+=(--exclude="$pat")
+    done
+
+    # pass 1: priority-first files only
+    if (( ${#first_includes[@]} > 0 )); then
+        echo "  [rsync pass 1/3] priority files: ${RSYNC_PRIORITY_FIRST[*]:-}"
+        robust_rsync "${logfile_arg[@]}" \
+            "${first_includes[@]}" --exclude="*" \
+            "$src" "$dest"
+    fi
+
+    # pass 2: everything except priority-last files
+    echo "  [rsync pass 2/3] all files except deferred"
+    robust_rsync "${logfile_arg[@]}" \
+        "${last_excludes[@]}" \
+        "$src" "$dest"
+
+    # pass 3: priority-last files
+    if (( ${#last_includes[@]} > 0 )); then
+        echo "  [rsync pass 3/3] deferred files: ${RSYNC_PRIORITY_LAST[*]:-}"
+        robust_rsync "${logfile_arg[@]}" \
+            "${last_includes[@]}" --exclude="*" \
+            "$src" "$dest"
+    fi
 }
 
 # =============================================================================
@@ -518,7 +563,7 @@ process_direct() {
     echo "  [direct] rsyncing ${dirname}..."
     echo "  [rsync log] $logfile"
     manifest_update "$manifest" "$dirname" "UPLOADING"
-    if robust_rsync --logfile "$logfile" \
+    if prioritized_rsync --logfile "$logfile" \
         "${HPC}:${REMOTE_BASE}/${dirname}/" \
         "${LOCAL_BASE}/${dirname}/"; then
         manifest_update "$manifest" "$dirname" "UPLOADED"
