@@ -5,7 +5,9 @@ Usage:
     python silanol.py (--local-path PATH | --remote-path PATH) [options]
 
 Primary options:
-    --local-path PATH            Analyze a local trajectory file.
+    --local-path PATH            Analyze a local trajectory file, or a local
+                                  directory containing one file per frame
+                                  (files are sorted and loaded as a sequence).
     --remote-path PATH           Analyze a remote trajectory file via SSH/SFTP.
     --frames START END           Optional frame window [START, END).
     --surface-axis {x,y,z}       Axis used to detect the Si-gap interfaces.
@@ -451,6 +453,28 @@ def _silanol_expression_selection_text(ids_per_frame: List[List[int]]) -> str:
     return "\n".join(lines)
 
 
+def _resolve_local_import_path(local_path: Path) -> str:
+    """Return the path/pattern to hand to OVITO's import_file.
+
+    If local_path is a directory containing one file per frame, build a
+    wildcard pattern (e.g. "<dir>/*.dump") so OVITO loads the sorted files
+    as a multi-frame sequence. Otherwise return the file path unchanged.
+    """
+    if not local_path.is_dir():
+        return str(local_path)
+
+    files = sorted(p for p in local_path.iterdir() if p.is_file() and not p.name.startswith("."))
+    if not files:
+        raise ValueError(f"No frame files found in directory: {local_path}")
+
+    suffixes = {p.suffix for p in files}
+    if len(suffixes) == 1:
+        pattern = local_path / f"*{suffixes.pop()}"
+    else:
+        pattern = local_path / "*"
+    return str(pattern)
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -477,7 +501,8 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     source.add_argument("--remote-path",
                         help="Remote trajectory path; creates '<remote parent>/output'.")
     source.add_argument("--local-path", type=Path,
-                        help="Local trajectory path; creates '<local parent>/output'.")
+                        help="Local trajectory file, or a directory with one file per "
+                             "frame; creates '<local parent>/output'.")
     p.add_argument("--frames", nargs=2, type=int, default=None,
                    metavar=("START", "END"),
                    help="Analyse only frames [START, END) of a LAMMPS dump.")
@@ -706,7 +731,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             analysis_frames = (0, requested[1] - requested[0])
 
     try:
-        pipeline = import_file(str(local_input_path))
+        import_path = _resolve_local_import_path(local_input_path)
+        pipeline = import_file(import_path)
 
         stats, ids, boundary_si_ids_per_frame = compute_silanols(
             pipeline,
