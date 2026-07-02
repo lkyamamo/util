@@ -17,6 +17,9 @@ Primary options:
     --no-surface-filter          Disable surface filtering and count all
                                   silanol candidates within the padded Si extent.
     --type-si/--type-o/--type-h  Optional explicit particle type IDs.
+    --atoms-frame INT            Frame to export full silanol atom membership
+                                  (O + bonded Si/H) for. Defaults to the first
+                                  analysed frame.
 
 A silanol is an O atom bonded to exactly 1 Si and at least 1 H (Si-O-H).
 
@@ -26,6 +29,7 @@ Output behavior:
       boundary_si_ids.csv
       silanol_ids_per_frame.jsonl
       silanol_expression_selection.txt
+      silanol_atoms_expression_selection.txt
       silanol_counts_per_frame.csv
       silanol_statistics.txt
 """
@@ -195,8 +199,9 @@ def compute_silanols(
     surface_axis: str = "x",
     apply_surface_filter: bool = True,
     surface_thickness_angstrom: float = 5.0,
-) -> Tuple[SilanolStatistics, List[List[int]], List[Tuple[int, int]]]:
-    """Return (statistics, ids_per_frame, boundary_si_ids_per_frame).
+    atoms_frame: Optional[int] = None,
+) -> Tuple[SilanolStatistics, List[List[int]], List[Tuple[int, int]], List[int]]:
+    """Return (statistics, ids_per_frame, boundary_si_ids_per_frame, silanol_atom_ids).
 
     A silanol is an O atom bonded to exactly 1 Si and at least 1 H.
     ids are OVITO particle identifiers if present, otherwise particle indices (0-based).
@@ -208,6 +213,10 @@ def compute_silanols(
     atoms sit strictly inside the box. The other two axes may still be
     periodic; OVITO's CreateBondsModifier handles that automatically via the
     cell's PBC flags.
+
+    silanol_atom_ids collects every atom (the O plus its bonded Si and H
+    neighbors) belonging to any silanol in a single frame: atoms_frame if
+    given, otherwise the first analysed frame.
     """
     t_Si, t_O, t_H = _ensure_bonds(
         pipeline,
@@ -224,6 +233,14 @@ def compute_silanols(
 
     start_frame = frames[0] if frames else 0
     end_frame = frames[1] if frames else len(pipeline.frames)
+
+    effective_atoms_frame = atoms_frame if atoms_frame is not None else start_frame
+    if not (start_frame <= effective_atoms_frame < end_frame):
+        raise ValueError(
+            f"atoms_frame={effective_atoms_frame} is outside the analysed "
+            f"frame range [{start_frame}, {end_frame})."
+        )
+    silanol_atom_ids: List[int] = []
 
     axis = surface_axis.lower()
     axis_to_idx = {"x": 0, "y": 1, "z": 2}
@@ -293,11 +310,20 @@ def compute_silanols(
         else:
             matched_ids = matched_indices
 
+        if frame == effective_atoms_frame:
+            atom_id_set: set[int] = set()
+            for i in matched_indices:
+                atom_id_set.add(int(pid_arr[i]) if has_pid else i)
+                for j in neighbors[i]:
+                    if ptype[j] == t_Si or ptype[j] == t_H:
+                        atom_id_set.add(int(pid_arr[j]) if has_pid else j)
+            silanol_atom_ids = sorted(atom_id_set)
+
         stats.counts_per_frame.append(len(matched_ids))
         ids.append(matched_ids)
 
     stats.finalize()
-    return stats, ids, boundary_si_ids_per_frame
+    return stats, ids, boundary_si_ids_per_frame, silanol_atom_ids
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +445,10 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--frames", nargs=2, type=int, default=None,
                    metavar=("START", "END"),
                    help="Analyse only frames [START, END) of a LAMMPS dump.")
+    p.add_argument("--atoms-frame", type=int, default=None,
+                   help="Frame index to export the full silanol atom "
+                        "membership (O + bonded Si/H) for. Defaults to the "
+                        "first analysed frame.")
     return p.parse_args(argv)
 
 
@@ -432,6 +462,7 @@ def _write_outputs_local(
     stats: SilanolStatistics,
     ids: List[List[int]],
     boundary_si_ids_per_frame: List[Tuple[int, int]],
+    silanol_atom_ids: List[int],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "boundary_si_ids.csv").write_text(_boundary_si_csv(boundary_si_ids_per_frame))
@@ -441,6 +472,9 @@ def _write_outputs_local(
         _silanol_expression_selection_text(ids)
     )
     (output_dir / "silanol_statistics.txt").write_text(stats.as_text())
+    (output_dir / "silanol_atoms_expression_selection.txt").write_text(
+        _ovito_expression_for_particle_identifiers(silanol_atom_ids) + "\n"
+    )
     print(f"output_dir={output_dir}")
 
 
@@ -460,7 +494,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     import_path = _resolve_local_import_path(local_input_path)
     pipeline = import_file(import_path)
 
-    stats, ids, boundary_si_ids_per_frame = compute_silanols(
+    stats, ids, boundary_si_ids_per_frame, silanol_atom_ids = compute_silanols(
         pipeline,
         frames=analysis_frames,
         type_si=args.type_si,
@@ -469,6 +503,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         surface_axis=args.surface_axis,
         apply_surface_filter=not args.no_surface_filter,
         surface_thickness_angstrom=args.surface_thickness,
+        atoms_frame=args.atoms_frame,
     )
 
     print(stats.as_text())
@@ -479,6 +514,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         stats=stats,
         ids=ids,
         boundary_si_ids_per_frame=boundary_si_ids_per_frame,
+        silanol_atom_ids=silanol_atom_ids,
     )
 
 
