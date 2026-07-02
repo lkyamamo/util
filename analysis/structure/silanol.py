@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -453,12 +454,36 @@ def _silanol_expression_selection_text(ids_per_frame: List[List[int]]) -> str:
     return "\n".join(lines)
 
 
+def _infer_frame_wildcard(names: List[str]) -> Optional[str]:
+    """Infer a wildcard pattern like 'dump.*.lammpstrj' from per-frame filenames.
+
+    Splits each name into alternating non-digit/digit tokens and requires
+    that exactly one digit-run token varies across all files (the frame
+    number), with everything else identical. This avoids mis-detecting the
+    extension when the frame number is the last dot-separated component
+    (e.g. "dump.100000", where Path.suffix would wrongly be ".100000").
+    """
+    tokenized = [re.split(r"(\d+)", n) for n in names]
+    if len({len(t) for t in tokenized}) != 1:
+        return None
+
+    n_tokens = len(tokenized[0])
+    varying = [i for i in range(n_tokens) if len({t[i] for t in tokenized}) > 1]
+    if len(varying) != 1 or varying[0] % 2 == 0:
+        return None
+
+    template = list(tokenized[0])
+    template[varying[0]] = "*"
+    return "".join(template)
+
+
 def _resolve_local_import_path(local_path: Path) -> str:
     """Return the path/pattern to hand to OVITO's import_file.
 
     If local_path is a directory containing one file per frame, build a
-    wildcard pattern (e.g. "<dir>/*.dump") so OVITO loads the sorted files
-    as a multi-frame sequence. Otherwise return the file path unchanged.
+    wildcard pattern (e.g. "<dir>/dump.*.lammpstrj") so OVITO loads the
+    sorted files as a multi-frame sequence. Otherwise return the file path
+    unchanged.
     """
     if not local_path.is_dir():
         return str(local_path)
@@ -466,13 +491,18 @@ def _resolve_local_import_path(local_path: Path) -> str:
     files = sorted(p for p in local_path.iterdir() if p.is_file() and not p.name.startswith("."))
     if not files:
         raise ValueError(f"No frame files found in directory: {local_path}")
+    if len(files) == 1:
+        return str(files[0])
 
-    suffixes = {p.suffix for p in files}
-    if len(suffixes) == 1:
-        pattern = local_path / f"*{suffixes.pop()}"
-    else:
-        pattern = local_path / "*"
-    return str(pattern)
+    pattern_name = _infer_frame_wildcard([p.name for p in files])
+    if pattern_name is None:
+        raise ValueError(
+            "Could not infer a per-frame filename pattern from the files in "
+            f"{local_path}. Expected filenames to share a common prefix/suffix "
+            f"around a single varying frame number. Example filenames: "
+            f"{[p.name for p in files[:5]]}"
+        )
+    return str(local_path / pattern_name)
 
 
 # ---------------------------------------------------------------------------
