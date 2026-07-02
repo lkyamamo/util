@@ -24,8 +24,8 @@ Primary options:
 A silanol is an O atom bonded to exactly 1 Si and at least 1 H (Si-O-H).
 
 Output behavior:
-    - Creates output directory next to trajectory source: <local parent>/output
-    - Writes:
+    - Creates an "output" directory next to this script (not next to the
+      trajectory source) and writes:
       boundary_si_ids.csv
       silanol_ids_per_frame.jsonl
       silanol_expression_selection.txt
@@ -430,7 +430,7 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compute silanol count (OVITO).")
     p.add_argument("--local-path", type=Path, required=True,
                    help="Local trajectory file, or a directory with one file per "
-                        "frame; creates '<local parent>/output'.")
+                        "frame.")
     p.add_argument("--type-si", type=int, default=None, help="Particle type ID for Si.")
     p.add_argument("--type-o",  type=int, default=None, help="Particle type ID for O.")
     p.add_argument("--type-h",  type=int, default=None, help="Particle type ID for H.")
@@ -486,7 +486,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
 
     local_input_path = args.local_path.expanduser().resolve()
-    output_dir = local_input_path.parent / "output"
+    output_dir = Path(__file__).resolve().parent / "output"
     analysis_frames = (
         (int(args.frames[0]), int(args.frames[1])) if args.frames is not None else None
     )
