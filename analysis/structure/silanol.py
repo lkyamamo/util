@@ -10,10 +10,26 @@ Primary options:
                                   sorted and loaded as a sequence).
     --frames START END           Optional frame window [START, END).
     --surface-axis {x,y,z}       Axis along which the Si slab extent is measured.
+    --surface-method {padded-extent,alpha-shape}
+                                  How to decide which silanols are "surface"
+                                  silanols. padded-extent (default) uses two
+                                  flat planes at the lowest/highest Si
+                                  position; only correct for flat slabs.
+                                  alpha-shape builds an alpha-shape surface
+                                  mesh from the Si sublattice and uses region
+                                  topology to find Si atoms bordering the
+                                  surrounding medium (vacuum, water, etc.);
+                                  shape-agnostic (also works for curved
+                                  surfaces).
     --surface-thickness FLOAT    Depth (Angstrom) inward from the padded Si
                                  extent (lowest/highest Si position, each
                                  extended by 2 Angstrom); unrestricted beyond
-                                 that padding.
+                                 that padding. Only used by --surface-method
+                                 padded-extent.
+    --alpha-shape-radius FLOAT   Probe sphere radius (Angstrom) for
+                                  --surface-method alpha-shape.
+    --alpha-shape-smoothing INT  Mesh smoothing iterations for
+                                  --surface-method alpha-shape.
     --no-surface-filter          Disable surface filtering and count all
                                   silanol candidates within the padded Si extent.
     --type-si/--type-o/--type-h  Optional explicit particle type IDs.
@@ -32,6 +48,8 @@ Output behavior:
       silanol_atoms_expression_selection.txt
       silanol_counts_per_frame.csv
       silanol_statistics.txt
+      surface_si_ids_per_frame.jsonl
+      surface_si_expression_selection.txt
 """
 
 from __future__ import annotations
@@ -44,7 +62,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ovito.io import import_file
-from ovito.modifiers import CreateBondsModifier
+from ovito.modifiers import ConstructSurfaceModifier, CreateBondsModifier, SelectTypeModifier
 
 
 # ---------------------------------------------------------------------------
@@ -141,11 +159,6 @@ def _ensure_bonds(
     type_h: Optional[int] = None,
 ) -> Tuple[int, int, int]:
     """Ensure the pipeline has a CreateBondsModifier with desired cutoffs."""
-    cb = next((m for m in pipeline.modifiers if isinstance(m, CreateBondsModifier)), None)
-    if cb is None:
-        cb = CreateBondsModifier(mode=CreateBondsModifier.Mode.Pairwise)
-        pipeline.modifiers.append(cb)
-
     if type_si is None or type_o is None or type_h is None:
         data0 = pipeline.compute(0)
         available = [(int(t.id), str(t.name)) for t in data0.particles.particle_types.types]
@@ -176,9 +189,74 @@ def _ensure_bonds(
     t_si = int(type_si)
     t_o = int(type_o)
     t_h = int(type_h)
+
+    cb = next((m for m in pipeline.modifiers if isinstance(m, CreateBondsModifier)), None)
+    if cb is None:
+        cb = CreateBondsModifier(mode=CreateBondsModifier.Mode.Pairwise)
+        pipeline.modifiers.append(cb)
     cb.set_pairwise_cutoff(t_si, t_o, si_o_cutoff)
     cb.set_pairwise_cutoff(t_o, t_h, o_h_cutoff)
     return t_si, t_o, t_h
+
+
+def _ensure_alpha_shape_surface(
+    pipeline, *, type_si: int, radius: float, smoothing_level: int
+) -> None:
+    """Add a Si-only alpha-shape surface mesh (with region identification) to the pipeline."""
+    select_si = SelectTypeModifier(operate_on="particles", property="Particle Type")
+    select_si.types = {int(type_si)}
+    pipeline.modifiers.append(select_si)
+    pipeline.modifiers.append(ConstructSurfaceModifier(
+        method=ConstructSurfaceModifier.Method.AlphaShape,
+        radius=radius,
+        smoothing_level=smoothing_level,
+        identify_regions=True,
+        only_selected=True,
+    ))
+
+
+def _alpha_shape_surface_si_indices(data) -> set[int]:
+    """Particle indices of Si atoms on the true surrounding-medium surface, any shape.
+
+    Distinguishes the real surface from internal voids/pores by region
+    topology (OVITO's identify_regions), not by position, so it treats flat
+    and curved surfaces the same way, and doesn't care whether the medium on
+    the other side is vacuum or something else (e.g. water in a fully
+    periodic cell, where nothing is ever "Exterior" since every region is
+    topologically enclosed). The surrounding medium is simply the largest
+    non-filled region by volume — internal voids/pores in an amorphous
+    network are orders of magnitude smaller.
+
+    A mesh face's Region tag is whichever region its normal points into; a
+    boundary triangle is represented as two oppositely-oriented faces (one
+    into the filled region, one into whatever region is on the other side),
+    so filtering faces to those pointing into the largest non-filled region
+    picks out exactly the true-surface triangles.
+    """
+    surf = data.surfaces["surface"]
+    filled = surf.regions["Filled"].array
+    volume = surf.regions["Volume"].array
+    medium_region_id = max(
+        (i for i, is_filled in enumerate(filled) if not is_filled),
+        key=lambda i: volume[i],
+    )
+
+    face_region = surf.faces["Region"].array
+    particle_index = surf.vertices["Particle Index"].array
+    topo = surf.topology
+
+    surface_si_indices: set[int] = set()
+    for face in range(topo.face_count):
+        if int(face_region[face]) != medium_region_id:
+            continue
+        e0 = topo.first_face_edge(face)
+        e = e0
+        while True:
+            surface_si_indices.add(int(particle_index[topo.first_edge_vertex(e)]))
+            e = topo.next_face_edge(e)
+            if e == e0:
+                break
+    return surface_si_indices
 
 
 # ---------------------------------------------------------------------------
@@ -199,25 +277,50 @@ def compute_silanols(
     surface_axis: str = "x",
     apply_surface_filter: bool = True,
     surface_thickness_angstrom: float = 5.0,
+    surface_method: str = "padded-extent",
+    alpha_shape_radius: float = 4.2,
+    alpha_shape_smoothing: int = 0,
     atoms_frame: Optional[int] = None,
-) -> Tuple[SilanolStatistics, List[List[int]], List[Tuple[int, int]], List[int]]:
-    """Return (statistics, ids_per_frame, boundary_si_ids_per_frame, silanol_atom_ids).
+) -> Tuple[
+    SilanolStatistics, List[List[int]], List[Tuple[int, int]], List[int], List[List[int]]
+]:
+    """Return (statistics, ids_per_frame, boundary_si_ids_per_frame,
+    silanol_atom_ids, surface_si_ids_per_frame).
 
     A silanol is an O atom bonded to exactly 1 Si and at least 1 H.
     ids are OVITO particle identifiers if present, otherwise particle indices (0-based).
 
-    The surface region is defined by the lowest and highest Si position along
-    surface_axis, each padded outward by SI_EDGE_PADDING_ANGSTROM. Surface
-    filtering then keeps only silanols within surface_thickness_angstrom of
-    those padded edges. Assumes the surface axis is non-periodic and all Si
-    atoms sit strictly inside the box. The other two axes may still be
-    periodic; OVITO's CreateBondsModifier handles that automatically via the
-    cell's PBC flags.
+    Two surface_method choices for deciding which silanols count as "surface":
+    - "padded-extent" (default): the lowest and highest Si position along
+      surface_axis, each padded outward by SI_EDGE_PADDING_ANGSTROM, define
+      two flat planes; a silanol counts if its O is within
+      surface_thickness_angstrom of either plane. Assumes a flat slab.
+    - "alpha-shape": builds an alpha-shape surface mesh from the Si
+      sublattice (radius=alpha_shape_radius, smoothing_level=
+      alpha_shape_smoothing) and, via region topology, finds Si atoms
+      bordering the surrounding medium (see _alpha_shape_surface_si_indices)
+      — a silanol counts if its bonded Si is one of those atoms. Shape-agnostic:
+      treats flat and curved surfaces identically, with no distance
+      threshold. surface_thickness_angstrom is not used by this method.
+
+    Assumes the surface axis is non-periodic and all Si atoms sit strictly
+    inside the box. The other two axes may still be periodic; OVITO's
+    CreateBondsModifier (and ConstructSurfaceModifier) handle that
+    automatically via the cell's PBC flags.
 
     silanol_atom_ids collects every atom (the O plus its bonded Si and H
     neighbors) belonging to any silanol in a single frame: atoms_frame if
     given, otherwise the first analysed frame.
+
+    surface_si_ids_per_frame lists, for every analysed frame, the Si atoms
+    classified as "surface" by surface_method (empty per frame if
+    apply_surface_filter is False, since no surface classification applies).
     """
+    if surface_method not in ("padded-extent", "alpha-shape"):
+        raise ValueError(
+            f"surface_method must be 'padded-extent' or 'alpha-shape', got: {surface_method!r}"
+        )
+
     t_Si, t_O, t_H = _ensure_bonds(
         pipeline,
         si_o_cutoff=si_o_cutoff,
@@ -227,9 +330,18 @@ def compute_silanols(
         type_h=type_h,
     )
 
+    if apply_surface_filter and surface_method == "alpha-shape":
+        _ensure_alpha_shape_surface(
+            pipeline,
+            type_si=t_Si,
+            radius=alpha_shape_radius,
+            smoothing_level=alpha_shape_smoothing,
+        )
+
     stats = SilanolStatistics()
     ids: List[List[int]] = []
     boundary_si_ids_per_frame: List[Tuple[int, int]] = []
+    surface_si_ids_per_frame: List[List[int]] = []
 
     start_frame = frames[0] if frames else 0
     end_frame = frames[1] if frames else len(pipeline.frames)
@@ -278,6 +390,23 @@ def compute_silanols(
             neighbors[i].append(j)
             neighbors[j].append(i)
 
+        surface_si_indices: set[int] = set()
+        if apply_surface_filter:
+            if surface_method == "alpha-shape":
+                surface_si_indices = _alpha_shape_surface_si_indices(data)
+            elif surface_thickness_angstrom > 0:
+                thickness = float(surface_thickness_angstrom)
+                surface_si_indices = {
+                    i
+                    for i, v in zip(si_indices, si_axis_values)
+                    if v - si_lowest <= thickness or si_highest - v <= thickness
+                }
+
+        if has_pid:
+            surface_si_ids_per_frame.append(sorted(int(pid_arr[i]) for i in surface_si_indices))
+        else:
+            surface_si_ids_per_frame.append(sorted(surface_si_indices))
+
         matched_indices: List[int] = []
         for i in range(data.particles.count):
             if ptype[i] != t_O:
@@ -286,24 +415,24 @@ def compute_silanols(
                 continue
 
             nb = neighbors[i]
-            n_si = sum(ptype[j] == t_Si for j in nb)
+            si_neighbors = [j for j in nb if ptype[j] == t_Si]
             n_h = sum(ptype[j] == t_H for j in nb)
-            if n_si == 1 and n_h >= 1:
-                matched_indices.append(i)
+            if len(si_neighbors) != 1 or n_h < 1:
+                continue
 
-        if apply_surface_filter:
-            if surface_thickness_angstrom <= 0:
-                matched_indices = []
-            else:
-                thickness = float(surface_thickness_angstrom)
-                matched_indices = [
-                    i
-                    for i in matched_indices
-                    if (
-                        float(pos[i, ax]) - lower_bound <= thickness
-                        or upper_bound - float(pos[i, ax]) <= thickness
-                    )
-                ]
+            if apply_surface_filter:
+                if surface_method == "padded-extent":
+                    if surface_thickness_angstrom <= 0:
+                        continue
+                    p = float(pos[i, ax])
+                    thickness = float(surface_thickness_angstrom)
+                    if not (p - lower_bound <= thickness or upper_bound - p <= thickness):
+                        continue
+                else:  # alpha-shape
+                    if si_neighbors[0] not in surface_si_indices:
+                        continue
+
+            matched_indices.append(i)
 
         if has_pid:
             matched_ids = [int(pid_arr[i]) for i in matched_indices]
@@ -323,7 +452,7 @@ def compute_silanols(
         ids.append(matched_ids)
 
     stats.finalize()
-    return stats, ids, boundary_si_ids_per_frame, silanol_atom_ids
+    return stats, ids, boundary_si_ids_per_frame, silanol_atom_ids, surface_si_ids_per_frame
 
 
 # ---------------------------------------------------------------------------
@@ -348,9 +477,9 @@ def _counts_per_frame_csv(stats: SilanolStatistics) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _silanol_ids_jsonl(ids_per_frame: List[List[int]]) -> str:
+def _ids_per_frame_jsonl(ids_per_frame: List[List[int]], key: str) -> str:
     lines = [
-        f'{{"frame": {int(frame)}, "silanol_ids": [{", ".join(str(int(pid)) for pid in frame_ids)}]}}'
+        f'{{"frame": {int(frame)}, "{key}": [{", ".join(str(int(pid)) for pid in frame_ids)}]}}'
         for frame, frame_ids in enumerate(ids_per_frame)
     ]
     return "\n".join(lines) + "\n"
@@ -362,7 +491,7 @@ def _ovito_expression_for_particle_identifiers(frame_ids: List[int]) -> str:
     return " || ".join(f"(ParticleIdentifier == {int(pid)})" for pid in frame_ids)
 
 
-def _silanol_expression_selection_text(ids_per_frame: List[List[int]]) -> str:
+def _expression_selection_text_per_frame(ids_per_frame: List[List[int]]) -> str:
     lines: List[str] = []
     for frame, frame_ids in enumerate(ids_per_frame):
         lines.append(f"# frame {frame}")
@@ -436,10 +565,27 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--type-h",  type=int, default=None, help="Particle type ID for H.")
     p.add_argument("--surface-axis", default="x", choices=["x", "y", "z"],
                    help="Surface normal axis used to identify top/bottom surfaces.")
+    p.add_argument("--surface-method", default="padded-extent",
+                   choices=["padded-extent", "alpha-shape"],
+                   help="How to decide which silanols are 'surface' silanols. "
+                        "'padded-extent' (default) uses two flat planes at "
+                        "the lowest/highest Si position; only correct for "
+                        "flat slabs. 'alpha-shape' builds an alpha-shape "
+                        "surface mesh from the Si sublattice and uses region "
+                        "topology to find Si atoms bordering the surrounding "
+                        "medium (vacuum, water, etc.); shape-agnostic (works "
+                        "for curved surfaces too).")
     p.add_argument("--surface-thickness", type=float, default=5.0,
                    help="Depth in Å inward from the padded Si extent "
                         "(lowest/highest Si position, each extended by "
-                        f"{SI_EDGE_PADDING_ANGSTROM} Å).")
+                        f"{SI_EDGE_PADDING_ANGSTROM} Å). Only used by "
+                        "--surface-method padded-extent.")
+    p.add_argument("--alpha-shape-radius", type=float, default=4.2,
+                   help="Probe sphere radius in Å for --surface-method "
+                        "alpha-shape.")
+    p.add_argument("--alpha-shape-smoothing", type=int, default=0,
+                   help="Mesh smoothing iterations for --surface-method "
+                        "alpha-shape.")
     p.add_argument("--no-surface-filter", action="store_true",
                    help="Count all silanols (do not restrict to surface slabs).")
     p.add_argument("--frames", nargs=2, type=int, default=None,
@@ -463,17 +609,26 @@ def _write_outputs_local(
     ids: List[List[int]],
     boundary_si_ids_per_frame: List[Tuple[int, int]],
     silanol_atom_ids: List[int],
+    surface_si_ids_per_frame: List[List[int]],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "boundary_si_ids.csv").write_text(_boundary_si_csv(boundary_si_ids_per_frame))
     (output_dir / "silanol_counts_per_frame.csv").write_text(_counts_per_frame_csv(stats))
-    (output_dir / "silanol_ids_per_frame.jsonl").write_text(_silanol_ids_jsonl(ids))
+    (output_dir / "silanol_ids_per_frame.jsonl").write_text(
+        _ids_per_frame_jsonl(ids, "silanol_ids")
+    )
     (output_dir / "silanol_expression_selection.txt").write_text(
-        _silanol_expression_selection_text(ids)
+        _expression_selection_text_per_frame(ids)
     )
     (output_dir / "silanol_statistics.txt").write_text(stats.as_text())
     (output_dir / "silanol_atoms_expression_selection.txt").write_text(
         _ovito_expression_for_particle_identifiers(silanol_atom_ids) + "\n"
+    )
+    (output_dir / "surface_si_ids_per_frame.jsonl").write_text(
+        _ids_per_frame_jsonl(surface_si_ids_per_frame, "surface_si_ids")
+    )
+    (output_dir / "surface_si_expression_selection.txt").write_text(
+        _expression_selection_text_per_frame(surface_si_ids_per_frame)
     )
     print(f"output_dir={output_dir}")
 
@@ -494,16 +649,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     import_path = _resolve_local_import_path(local_input_path)
     pipeline = import_file(import_path)
 
-    stats, ids, boundary_si_ids_per_frame, silanol_atom_ids = compute_silanols(
-        pipeline,
-        frames=analysis_frames,
-        type_si=args.type_si,
-        type_o=args.type_o,
-        type_h=args.type_h,
-        surface_axis=args.surface_axis,
-        apply_surface_filter=not args.no_surface_filter,
-        surface_thickness_angstrom=args.surface_thickness,
-        atoms_frame=args.atoms_frame,
+    stats, ids, boundary_si_ids_per_frame, silanol_atom_ids, surface_si_ids_per_frame = (
+        compute_silanols(
+            pipeline,
+            frames=analysis_frames,
+            type_si=args.type_si,
+            type_o=args.type_o,
+            type_h=args.type_h,
+            surface_axis=args.surface_axis,
+            apply_surface_filter=not args.no_surface_filter,
+            surface_thickness_angstrom=args.surface_thickness,
+            surface_method=args.surface_method,
+            alpha_shape_radius=args.alpha_shape_radius,
+            alpha_shape_smoothing=args.alpha_shape_smoothing,
+            atoms_frame=args.atoms_frame,
+        )
     )
 
     print(stats.as_text())
@@ -515,6 +675,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         ids=ids,
         boundary_si_ids_per_frame=boundary_si_ids_per_frame,
         silanol_atom_ids=silanol_atom_ids,
+        surface_si_ids_per_frame=surface_si_ids_per_frame,
     )
 
 
