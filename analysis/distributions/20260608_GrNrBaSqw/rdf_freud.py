@@ -324,6 +324,14 @@ if __name__ == '__main__':
     rho = np.array([f['number_density'] for f in frames])   # atoms/Å³, shape (n_frames,)
     print(f"Number density: {rho.mean():.6e} atoms/Å³")
 
+    min_box_dim = min(min(f['box'].Lx, f['box'].Ly, f['box'].Lz) for f in frames)
+    print(f"Shortest box edge (min over frames): {min_box_dim:.3f} Å")
+    if R_MAX >= min_box_dim / 2:
+        raise ValueError(
+            f"R_MAX={R_MAX} is too large: freud requires r_max < half the shortest "
+            f"box dimension ({min_box_dim / 2:.3f} Å). Lower R_MAX in the config section."
+        )
+
     pairs = build_pair_getters(elements)
     gr_results = {}
     nr_results = {}
