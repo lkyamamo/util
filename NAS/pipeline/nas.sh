@@ -25,6 +25,7 @@ source "$CONFIG"
 
 HPC="${HPC_USER}@${HPC_HOST}"
 REMOTE_LOG_BASE="${REMOTE_BASE}/logs"
+FORCE="false"
 
 # =============================================================================
 # SSH helpers
@@ -468,7 +469,7 @@ process_archive() {
             local cur_status
             cur_status=$(manifest_status "$manifest" "$tname")
 
-            if [[ "$cur_status" == "UPLOADED" ]]; then
+            if [[ "$cur_status" == "UPLOADED" && "$FORCE" != "true" ]]; then
                 echo "  [skip] $tname already UPLOADED"
                 continue
             fi
@@ -551,7 +552,7 @@ process_direct() {
 
     local cur_status
     cur_status=$(manifest_status "$manifest" "$dirname")
-    if [[ "$cur_status" == "UPLOADED" ]]; then
+    if [[ "$cur_status" == "UPLOADED" && "$FORCE" != "true" ]]; then
         echo "  [skip] $dirname already UPLOADED"
         return 0
     fi
@@ -593,7 +594,14 @@ resolve_entry() {
 # =============================================================================
 
 cmd_sync() {
-    local target="${1:-}"
+    local target=""
+    for arg in "$@"; do
+        if [[ "$arg" == "--force" ]]; then
+            FORCE="true"
+        else
+            target="$arg"
+        fi
+    done
     setup_ssh_control
     trap cleanup_ssh_control EXIT
 
@@ -645,8 +653,15 @@ cmd_status() {
 }
 
 cmd_manifest() {
-    local dirname="${1:-}"
-    [[ -z "$dirname" ]] && { echo "Usage: ./nas.sh manifest <dirname>"; exit 1; }
+    local dirname=""
+    for arg in "$@"; do
+        if [[ "$arg" == "--force" ]]; then
+            FORCE="true"
+        else
+            dirname="$arg"
+        fi
+    done
+    [[ -z "$dirname" ]] && { echo "Usage: ./nas.sh manifest [--force] <dirname>"; exit 1; }
     setup_ssh_control
     trap cleanup_ssh_control EXIT
 
@@ -667,6 +682,10 @@ cmd_manifest() {
 
     local manifest
     manifest=$(manifest_path "$dirname")
+    if [[ "$FORCE" == "true" && -f "$manifest" ]]; then
+        echo "  [force] removing existing manifest: $manifest"
+        rm -f "$manifest"
+    fi
     manifest_init "$manifest"
 
     if [[ "$mode" == "archive" ]]; then
@@ -687,15 +706,17 @@ cmd_manifest() {
 
 usage() {
     echo "Usage:"
-    echo "  ./nas.sh sync [dirname]     sync all or one directory"
-    echo "  ./nas.sh status             show manifest summary"
-    echo "  ./nas.sh manifest <dirname> rebuild manifest for a directory"
+    echo "  ./nas.sh sync [--force] [dirname]     sync all or one directory"
+    echo "  ./nas.sh status                       show manifest summary"
+    echo "  ./nas.sh manifest [--force] <dirname> rebuild manifest for a directory"
+    echo ""
+    echo "  --force  ignore UPLOADED status and re-run transfers/rebuild manifest from scratch"
     exit 1
 }
 
 case "${1:-}" in
-    sync)     cmd_sync "${2:-}" ;;
+    sync)     shift; cmd_sync "$@" ;;
     status)   cmd_status ;;
-    manifest) cmd_manifest "${2:-}" ;;
+    manifest) shift; cmd_manifest "$@" ;;
     *)        usage ;;
 esac
