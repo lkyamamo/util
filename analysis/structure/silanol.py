@@ -2,32 +2,60 @@
 """Count surface silanols and export analysis artifacts with OVITO.
 
 Usage:
-    python silanol.py (--local-path PATH | --remote-path PATH) [options]
+    python silanol.py --local-path PATH [options]
 
 Primary options:
-    --local-path PATH            Analyze a local trajectory file, or a local
-                                  directory containing one file per frame
-                                  (files are sorted and loaded as a sequence).
-    --remote-path PATH           Analyze a remote trajectory file via SSH/SFTP.
+    --local-path PATH            Local trajectory file, or a local directory
+                                  containing one file per frame (files are
+                                  sorted and loaded as a sequence).
     --frames START END           Optional frame window [START, END).
-    --surface-axis {x,y,z}       Axis used to detect the Si-gap interfaces.
-    --surface-thickness FLOAT    Depth (Angstrom) into the bulk from each
-                                 Si-gap interface; unrestricted towards the vacuum.
-    --no-surface-filter          Disable interface filtering and count all
-                                 silanol candidates.
-    --type-si/--type-o/--type-h  Optional explicit particle type IDs.
-    --require-h / --no-require-h Require at least one bonded H on silanol O.
+    --type-si/--type-o/--type-h  Numeric particle type IDs for Si/O/H. Only
+                                  needed if the file has no element names
+                                  (opaque numeric types); ignored if it does.
+    --surface-axis {x,y,z}       Axis along which the Si slab extent is measured.
+    --surface-method {padded-extent,alpha-shape}
+                                  How to decide which silanols are "surface"
+                                  silanols. padded-extent (default) uses two
+                                  flat planes at the lowest/highest Si
+                                  position; only correct for flat slabs.
+                                  alpha-shape builds an alpha-shape surface
+                                  mesh from the Si sublattice and uses region
+                                  topology to find Si atoms bordering the
+                                  surrounding medium (vacuum, water, etc.);
+                                  shape-agnostic (also works for curved
+                                  surfaces).
+    --surface-thickness FLOAT    Depth (Angstrom) inward from the padded Si
+                                 extent (lowest/highest Si position, each
+                                 extended by 2 Angstrom); unrestricted beyond
+                                 that padding. Only used by --surface-method
+                                 padded-extent.
+    --alpha-shape-radius FLOAT   Probe sphere radius (Angstrom) for
+                                  --surface-method alpha-shape.
+    --alpha-shape-smoothing INT  Mesh smoothing iterations for
+                                  --surface-method alpha-shape.
+    --no-surface-filter          Disable surface filtering and count all
+                                  silanol candidates within the padded Si extent.
+    --atoms-frame INT            Frame to export full silanol atom membership
+                                  (O + bonded Si/H) for. Defaults to the first
+                                  analysed frame.
+
+A silanol is an O atom bonded to exactly 1 Si and at least 1 H (Si-O-H).
+If the file labels particle types by element, Si/O/H are found by matching
+each type's name to its element symbol (case-insensitive) and --type-si/
+--type-o/--type-h are ignored. If the file only has opaque numeric types (no
+element names), --type-si/--type-o/--type-h are required.
 
 Output behavior:
-    - Creates output directory next to trajectory source:
-      local:  <local parent>/output
-      remote: <remote parent>/output
-    - Writes:
+    - Creates an "output" directory next to this script (not next to the
+      trajectory source) and writes:
       boundary_si_ids.csv
       silanol_ids_per_frame.jsonl
       silanol_expression_selection.txt
+      silanol_atoms_expression_selection.txt
       silanol_counts_per_frame.csv
       silanol_statistics.txt
+      surface_si_ids_per_frame.jsonl
+      surface_si_expression_selection.txt
 """
 
 from __future__ import annotations
@@ -35,14 +63,12 @@ from __future__ import annotations
 import argparse
 import math
 import re
-import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import paramiko
 from ovito.io import import_file
-from ovito.modifiers import CreateBondsModifier
+from ovito.modifiers import ConstructSurfaceModifier, CreateBondsModifier, SelectTypeModifier
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +76,7 @@ from ovito.modifiers import CreateBondsModifier
 # ---------------------------------------------------------------------------
 
 @dataclass
-class SilanoilStatistics:
+class SilanolStatistics:
     """Summary statistics over all analysed frames."""
 
     counts_per_frame: List[int] = field(default_factory=list)
@@ -110,22 +136,6 @@ class SilanoilStatistics:
         ]
         return "\n".join(lines) + "\n"
 
-    def as_dict(self) -> Dict[str, float]:
-        return {
-            "n_frames": self.n_frames,
-            "mean": self.mean,
-            "median": self.median,
-            "std": self.std,
-            "variance": self.variance,
-            "sem": self.sem,
-            "minimum": self.minimum,
-            "maximum": self.maximum,
-            "range": self.count_range,
-            "q1": self.q1,
-            "q3": self.q3,
-            "iqr": self.iqr,
-        }
-
 
 def _percentile(sorted_data: List[int], pct: float) -> float:
     """Linear-interpolation percentile on a pre-sorted list."""
@@ -154,105 +164,120 @@ def _ensure_bonds(
     type_o: Optional[int] = None,
     type_h: Optional[int] = None,
 ) -> Tuple[int, int, int]:
-    """Ensure the pipeline has a CreateBondsModifier with desired cutoffs."""
+    """Ensure the pipeline has a CreateBondsModifier with desired cutoffs.
+
+    Reads the file's particle types to decide how Si/O/H are identified:
+    - If types are labelled by element (e.g. a LAMMPS dump "element"
+      column), Si/O/H are found by matching each type's name to its element
+      symbol (case-insensitive) — type_si/type_o/type_h are ignored.
+    - If types are only opaque numeric IDs (no element names), type_si/
+      type_o/type_h must be passed explicitly (--type-si/--type-o/
+      --type-h).
+    - If the file has no particle types at all, raises ValueError.
+    """
+    data0 = pipeline.compute(0)
+    if "Particle Type" not in data0.particles:
+        raise ValueError(
+            "The input file provides no particle types (neither element "
+            "names nor numeric types); cannot identify Si/O/H atoms."
+        )
+
+    available = [(int(t.id), str(t.name)) for t in data0.particles.particle_types.types]
+    has_element_names = any(tname.strip() for _, tname in available)
+
+    if has_element_names:
+        type_by_symbol = {tname.strip().lower(): tid for tid, tname in available}
+        t_si = type_by_symbol.get("si")
+        t_o = type_by_symbol.get("o")
+        t_h = type_by_symbol.get("h")
+        if t_si is None or t_o is None or t_h is None:
+            raise ValueError(
+                "File labels types by element, but Si/O/H were not all "
+                f"found among them. Available types: {available}"
+            )
+    else:
+        if type_si is None or type_o is None or type_h is None:
+            raise ValueError(
+                "File provides only numeric particle types (no element "
+                "names); pass --type-si/--type-o/--type-h explicitly. "
+                f"Available types: {available}"
+            )
+        t_si, t_o, t_h = int(type_si), int(type_o), int(type_h)
+
     cb = next((m for m in pipeline.modifiers if isinstance(m, CreateBondsModifier)), None)
     if cb is None:
         cb = CreateBondsModifier(mode=CreateBondsModifier.Mode.Pairwise)
         pipeline.modifiers.append(cb)
-
-    if type_si is None or type_o is None or type_h is None:
-        data0 = pipeline.compute(0)
-        available = [(int(t.id), str(t.name)) for t in data0.particles.particle_types.types]
-
-        def _norm(s: str) -> str:
-            return "".join(ch for ch in s.lower() if ch.isalpha())
-
-        norm_to_id: dict[str, int] = {}
-        for tid, tname in available:
-            n = _norm(tname)
-            if n:
-                norm_to_id.setdefault(n, tid)
-
-        if type_si is None:
-            type_si = norm_to_id.get("si")
-        if type_o is None:
-            type_o = norm_to_id.get("o")
-        if type_h is None:
-            type_h = norm_to_id.get("h")
-
-        if type_si is None or type_o is None or type_h is None:
-            raise ValueError(
-                "Could not infer particle type IDs for Si/O/H from the file. "
-                "Pass them explicitly with --type-si/--type-o/--type-h. "
-                f"Available types: {available}"
-            )
-
-    t_si = int(type_si)
-    t_o = int(type_o)
-    t_h = int(type_h)
     cb.set_pairwise_cutoff(t_si, t_o, si_o_cutoff)
     cb.set_pairwise_cutoff(t_o, t_h, o_h_cutoff)
     return t_si, t_o, t_h
 
 
-# ---------------------------------------------------------------------------
-# PBC helpers
-# ---------------------------------------------------------------------------
+def _ensure_alpha_shape_surface(
+    pipeline, *, type_si: int, radius: float, smoothing_level: int
+) -> None:
+    """Add a Si-only alpha-shape surface mesh (with region identification) to the pipeline."""
+    select_si = SelectTypeModifier(operate_on="particles", property="Particle Type")
+    select_si.types = {int(type_si)}
+    pipeline.modifiers.append(select_si)
+    pipeline.modifiers.append(ConstructSurfaceModifier(
+        method=ConstructSurfaceModifier.Method.AlphaShape,
+        radius=radius,
+        smoothing_level=smoothing_level,
+        identify_regions=True,
+        only_selected=True,
+    ))
 
-def _signed_mic(ref: float, pos: float, box_length: float) -> float:
-    """Signed minimum-image displacement from ref to pos along one periodic axis.
 
-    Positive: pos is on the vacuum/gap side of si_lo (or away from bulk for si_hi).
-    Negative: pos is on the bulk side of si_lo (or towards bulk for si_hi).
+def _alpha_shape_surface_si_indices(data) -> set[int]:
+    """Particle indices of Si atoms on the true surrounding-medium surface, any shape.
+
+    Distinguishes the real surface from internal voids/pores by region
+    topology (OVITO's identify_regions), not by position, so it treats flat
+    and curved surfaces the same way, and doesn't care whether the medium on
+    the other side is vacuum or something else (e.g. water in a fully
+    periodic cell, where nothing is ever "Exterior" since every region is
+    topologically enclosed). The surrounding medium is simply the largest
+    non-filled region by volume — internal voids/pores in an amorphous
+    network are orders of magnitude smaller.
+
+    A mesh face's Region tag is whichever region its normal points into; a
+    boundary triangle is represented as two oppositely-oriented faces (one
+    into the filled region, one into whatever region is on the other side),
+    so filtering faces to those pointing into the largest non-filled region
+    picks out exactly the true-surface triangles.
     """
-    d = pos - ref
-    d -= box_length * round(d / box_length)
-    return d
+    surf = data.surfaces["surface"]
+    filled = surf.regions["Filled"].array
+    volume = surf.regions["Volume"].array
+    medium_region_id = max(
+        (i for i, is_filled in enumerate(filled) if not is_filled),
+        key=lambda i: volume[i],
+    )
 
+    face_region = surf.faces["Region"].array
+    particle_index = surf.vertices["Particle Index"].array
+    topo = surf.topology
 
-def _si_gap_boundaries(
-    si_axis_values: List[float],
-    si_ids: List[int],
-    *,
-    axis: str,
-    box_length: float,
-) -> Tuple[int, int, float, float]:
-    """Return boundary Si IDs and coordinates for the largest Si-Si gap along axis.
-
-    Considers both interior gaps and the periodic wraparound gap so that slabs
-    whose vacuum region straddles the box boundary are handled correctly.
-    """
-    if len(si_axis_values) < 2:
-        raise ValueError(
-            f"Need at least 2 Si atoms to detect a gap along axis {axis!r}; "
-            f"found {int(len(si_axis_values))}."
-        )
-
-    paired = sorted(zip(si_axis_values, si_ids), key=lambda t: t[0])
-
-    max_gap = -1.0
-    lower_coord, lower_id = paired[0]
-    upper_coord, upper_id = paired[1]
-
-    for i in range(len(paired) - 1):
-        gap = paired[i + 1][0] - paired[i][0]
-        if gap > max_gap:
-            max_gap = gap
-            lower_coord, lower_id = paired[i]
-            upper_coord, upper_id = paired[i + 1]
-
-    # Wraparound gap: vacuum straddles the periodic boundary.
-    wrap_gap = (paired[0][0] + box_length) - paired[-1][0]
-    if wrap_gap > max_gap:
-        lower_coord, lower_id = paired[-1]
-        upper_coord, upper_id = paired[0]
-
-    return int(lower_id), int(upper_id), float(lower_coord), float(upper_coord)
+    surface_si_indices: set[int] = set()
+    for face in range(topo.face_count):
+        if int(face_region[face]) != medium_region_id:
+            continue
+        e0 = topo.first_face_edge(face)
+        e = e0
+        while True:
+            surface_si_indices.add(int(particle_index[topo.first_edge_vertex(e)]))
+            e = topo.next_face_edge(e)
+            if e == e0:
+                break
+    return surface_si_indices
 
 
 # ---------------------------------------------------------------------------
 # Core analysis
 # ---------------------------------------------------------------------------
+
+SI_EDGE_PADDING_ANGSTROM = 2.0
 
 def compute_silanols(
     pipeline,
@@ -260,20 +285,61 @@ def compute_silanols(
     frames: Optional[Tuple[int, int]] = None,
     si_o_cutoff: float = 1.9,
     o_h_cutoff: float = 1.2,
-    allow_other_neighbors: bool = True,
-    return_identifiers_if_available: bool = True,
     type_si: Optional[int] = None,
     type_o: Optional[int] = None,
     type_h: Optional[int] = None,
     surface_axis: str = "x",
     apply_surface_filter: bool = True,
     surface_thickness_angstrom: float = 5.0,
-    require_at_least_one_h: bool = True,
-) -> Tuple[SilanoilStatistics, List[List[int]], List[Tuple[int, int]]]:
-    """Return (statistics, ids_per_frame, boundary_si_ids_per_frame).
+    surface_method: str = "padded-extent",
+    alpha_shape_radius: float = 4.2,
+    alpha_shape_smoothing: int = 0,
+    atoms_frame: Optional[int] = None,
+) -> Tuple[
+    SilanolStatistics, List[List[int]], List[Tuple[int, int]], List[int], List[List[int]]
+]:
+    """Return (statistics, ids_per_frame, boundary_si_ids_per_frame,
+    silanol_atom_ids, surface_si_ids_per_frame).
 
+    A silanol is an O atom bonded to exactly 1 Si and at least 1 H.
     ids are OVITO particle identifiers if present, otherwise particle indices (0-based).
+
+    type_si/type_o/type_h are only used if the file's particle types are
+    opaque numeric IDs with no element names; if the file labels types by
+    element, Si/O/H are found by matching type names to element symbols and
+    these arguments are ignored. See _ensure_bonds.
+
+    Two surface_method choices for deciding which silanols count as "surface":
+    - "padded-extent" (default): the lowest and highest Si position along
+      surface_axis, each padded outward by SI_EDGE_PADDING_ANGSTROM, define
+      two flat planes; a silanol counts if its O is within
+      surface_thickness_angstrom of either plane. Assumes a flat slab.
+    - "alpha-shape": builds an alpha-shape surface mesh from the Si
+      sublattice (radius=alpha_shape_radius, smoothing_level=
+      alpha_shape_smoothing) and, via region topology, finds Si atoms
+      bordering the surrounding medium (see _alpha_shape_surface_si_indices)
+      — a silanol counts if its bonded Si is one of those atoms. Shape-agnostic:
+      treats flat and curved surfaces identically, with no distance
+      threshold. surface_thickness_angstrom is not used by this method.
+
+    Assumes the surface axis is non-periodic and all Si atoms sit strictly
+    inside the box. The other two axes may still be periodic; OVITO's
+    CreateBondsModifier (and ConstructSurfaceModifier) handle that
+    automatically via the cell's PBC flags.
+
+    silanol_atom_ids collects every atom (the O plus its bonded Si and H
+    neighbors) belonging to any silanol in a single frame: atoms_frame if
+    given, otherwise the first analysed frame.
+
+    surface_si_ids_per_frame lists, for every analysed frame, the Si atoms
+    classified as "surface" by surface_method (empty per frame if
+    apply_surface_filter is False, since no surface classification applies).
     """
+    if surface_method not in ("padded-extent", "alpha-shape"):
+        raise ValueError(
+            f"surface_method must be 'padded-extent' or 'alpha-shape', got: {surface_method!r}"
+        )
+
     t_Si, t_O, t_H = _ensure_bonds(
         pipeline,
         si_o_cutoff=si_o_cutoff,
@@ -283,12 +349,29 @@ def compute_silanols(
         type_h=type_h,
     )
 
-    stats = SilanoilStatistics()
+    if apply_surface_filter and surface_method == "alpha-shape":
+        _ensure_alpha_shape_surface(
+            pipeline,
+            type_si=t_Si,
+            radius=alpha_shape_radius,
+            smoothing_level=alpha_shape_smoothing,
+        )
+
+    stats = SilanolStatistics()
     ids: List[List[int]] = []
     boundary_si_ids_per_frame: List[Tuple[int, int]] = []
+    surface_si_ids_per_frame: List[List[int]] = []
 
     start_frame = frames[0] if frames else 0
     end_frame = frames[1] if frames else len(pipeline.frames)
+
+    effective_atoms_frame = atoms_frame if atoms_frame is not None else start_frame
+    if not (start_frame <= effective_atoms_frame < end_frame):
+        raise ValueError(
+            f"atoms_frame={effective_atoms_frame} is outside the analysed "
+            f"frame range [{start_frame}, {end_frame})."
+        )
+    silanol_atom_ids: List[int] = []
 
     axis = surface_axis.lower()
     axis_to_idx = {"x": 0, "y": 1, "z": 2}
@@ -302,11 +385,9 @@ def compute_silanols(
         bonds = data.particles.bonds
         pos = data.particles.positions
 
-        box_length = float(data.cell[ax, ax])
-
         si_indices = [i for i in range(data.particles.count) if ptype[i] == t_Si]
         if len(si_indices) == 0:
-            raise ValueError("No Si particles found; cannot define surface by Si-gap interfaces.")
+            raise ValueError("No Si particles found; cannot define surface extent.")
 
         si_axis_values = [float(pos[i, ax]) for i in si_indices]
         has_pid = "Particle Identifier" in data.particles
@@ -316,97 +397,81 @@ def compute_silanols(
         else:
             si_ids = [int(i) for i in si_indices]
 
-        boundary_lo_id, boundary_hi_id, si_lo, si_hi = _si_gap_boundaries(
-            si_axis_values,
-            si_ids,
-            axis=axis,
-            box_length=box_length,
-        )
+        si_lowest, boundary_lo_id = min(zip(si_axis_values, si_ids))
+        si_highest, boundary_hi_id = max(zip(si_axis_values, si_ids))
         boundary_si_ids_per_frame.append((boundary_lo_id, boundary_hi_id))
+
+        lower_bound = si_lowest - SI_EDGE_PADDING_ANGSTROM
+        upper_bound = si_highest + SI_EDGE_PADDING_ANGSTROM
 
         neighbors: List[List[int]] = [[] for _ in range(data.particles.count)]
         for i, j in bonds.topology:
             neighbors[i].append(j)
             neighbors[j].append(i)
 
+        surface_si_indices: set[int] = set()
+        if apply_surface_filter:
+            if surface_method == "alpha-shape":
+                surface_si_indices = _alpha_shape_surface_si_indices(data)
+            elif surface_thickness_angstrom > 0:
+                thickness = float(surface_thickness_angstrom)
+                surface_si_indices = {
+                    i
+                    for i, v in zip(si_indices, si_axis_values)
+                    if v - si_lowest <= thickness or si_highest - v <= thickness
+                }
+
+        if has_pid:
+            surface_si_ids_per_frame.append(sorted(int(pid_arr[i]) for i in surface_si_indices))
+        else:
+            surface_si_ids_per_frame.append(sorted(surface_si_indices))
+
         matched_indices: List[int] = []
         for i in range(data.particles.count):
             if ptype[i] != t_O:
                 continue
-
-            nb = neighbors[i]
-            n_si = sum(ptype[j] == t_Si for j in nb)
-            if n_si != 1:
+            if not (lower_bound <= float(pos[i, ax]) <= upper_bound):
                 continue
 
-            if require_at_least_one_h:
-                n_h = sum(ptype[j] == t_H for j in nb)
-                if n_h < 1:
-                    continue
+            nb = neighbors[i]
+            si_neighbors = [j for j in nb if ptype[j] == t_Si]
+            n_h = sum(ptype[j] == t_H for j in nb)
+            if len(si_neighbors) != 1 or n_h < 1:
+                continue
 
-            if not allow_other_neighbors:
-                if any((ptype[j] != t_Si and ptype[j] != t_H) for j in nb):
-                    continue
+            if apply_surface_filter:
+                if surface_method == "padded-extent":
+                    if surface_thickness_angstrom <= 0:
+                        continue
+                    p = float(pos[i, ax])
+                    thickness = float(surface_thickness_angstrom)
+                    if not (p - lower_bound <= thickness or upper_bound - p <= thickness):
+                        continue
+                else:  # alpha-shape
+                    if si_neighbors[0] not in surface_si_indices:
+                        continue
 
             matched_indices.append(i)
 
-        if apply_surface_filter:
-            if surface_thickness_angstrom <= 0:
-                matched_indices = []
-            else:
-                thickness = float(surface_thickness_angstrom)
-                matched_indices = [
-                    i
-                    for i in matched_indices
-                    if (
-                        _signed_mic(si_lo, float(pos[i, ax]), box_length) >= -thickness
-                        or _signed_mic(si_hi, float(pos[i, ax]), box_length) <= thickness
-                    )
-                ]
-
-        if return_identifiers_if_available and has_pid:
+        if has_pid:
             matched_ids = [int(pid_arr[i]) for i in matched_indices]
         else:
             matched_ids = matched_indices
 
-        # Diagnostics on the first frame only.
-        if frame == start_frame:
-            import numpy as np
-            print(f"\n=== DIAGNOSTICS for frame {frame} ===")
-            print(f"  Particle Identifier property present: {has_pid}")
-            if has_pid:
-                unique_pids = len(set(int(x) for x in pid_arr))
-                print(f"  Total particles: {data.particles.count}, Unique PIDs: {unique_pids}")
-                if unique_pids < data.particles.count:
-                    print("  WARNING: Duplicate Particle Identifiers detected!")
-            print(f"  Type IDs -> Si={t_Si}, O={t_O}, H={t_H}")
-            print(f"  Box length along {axis!r}: {box_length:.4f} Å")
-            print(f"  Boundary Si coords: si_lo={si_lo:.4f}, si_hi={si_hi:.4f}")
-            print(f"  Selected {len(matched_indices)} silanols (indices) -> {len(matched_ids)} IDs")
-            for idx in matched_indices[:20]:
-                nb = neighbors[idx]
-                n_si_nb = sum(ptype[j] == t_Si for j in nb)
-                n_h_nb  = sum(ptype[j] == t_H  for j in nb)
-                n_o_nb  = sum(ptype[j] == t_O  for j in nb)
-                pid_val = int(pid_arr[idx]) if has_pid else idx
-                si_dists = [
-                    float(np.linalg.norm(
-                        data.particles.positions[j] - data.particles.positions[idx]
-                    ))
-                    for j in nb if ptype[j] == t_Si
-                ]
-                print(
-                    f"  idx={idx} PID={pid_val} type={int(ptype[idx])} "
-                    f"pos=({pos[idx,0]:.2f},{pos[idx,1]:.2f},{pos[idx,2]:.2f}) "
-                    f"n_Si={n_si_nb} n_H={n_h_nb} n_O={n_o_nb} Si_dists={si_dists}"
-                )
-            print("=== END DIAGNOSTICS ===\n")
+        if frame == effective_atoms_frame:
+            atom_id_set: set[int] = set()
+            for i in matched_indices:
+                atom_id_set.add(int(pid_arr[i]) if has_pid else i)
+                for j in neighbors[i]:
+                    if ptype[j] == t_Si or ptype[j] == t_H:
+                        atom_id_set.add(int(pid_arr[j]) if has_pid else j)
+            silanol_atom_ids = sorted(atom_id_set)
 
         stats.counts_per_frame.append(len(matched_ids))
         ids.append(matched_ids)
 
     stats.finalize()
-    return stats, ids, boundary_si_ids_per_frame
+    return stats, ids, boundary_si_ids_per_frame, silanol_atom_ids, surface_si_ids_per_frame
 
 
 # ---------------------------------------------------------------------------
@@ -422,7 +487,7 @@ def _boundary_si_csv(boundary_si_ids_per_frame: List[Tuple[int, int]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _counts_per_frame_csv(stats: SilanoilStatistics) -> str:
+def _counts_per_frame_csv(stats: SilanolStatistics) -> str:
     lines = ["frame,silanol_count"]
     lines.extend(
         f"{frame},{count}"
@@ -431,9 +496,9 @@ def _counts_per_frame_csv(stats: SilanoilStatistics) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _silanol_ids_jsonl(ids_per_frame: List[List[int]]) -> str:
+def _ids_per_frame_jsonl(ids_per_frame: List[List[int]], key: str) -> str:
     lines = [
-        f'{{"frame": {int(frame)}, "silanol_ids": [{", ".join(str(int(pid)) for pid in frame_ids)}]}}'
+        f'{{"frame": {int(frame)}, "{key}": [{", ".join(str(int(pid)) for pid in frame_ids)}]}}'
         for frame, frame_ids in enumerate(ids_per_frame)
     ]
     return "\n".join(lines) + "\n"
@@ -445,7 +510,7 @@ def _ovito_expression_for_particle_identifiers(frame_ids: List[int]) -> str:
     return " || ".join(f"(ParticleIdentifier == {int(pid)})" for pid in frame_ids)
 
 
-def _silanol_expression_selection_text(ids_per_frame: List[List[int]]) -> str:
+def _expression_selection_text_per_frame(ids_per_frame: List[List[int]]) -> str:
     lines: List[str] = []
     for frame, frame_ids in enumerate(ids_per_frame):
         lines.append(f"# frame {frame}")
@@ -510,212 +575,87 @@ def _resolve_local_import_path(local_path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Compute silanol count and RDF (OVITO).")
-    p.add_argument("--base-dir", type=Path, default=None,
-                   help="Deprecated: no longer used for output location.")
-    p.add_argument("--host", default="endeavour.usc.edu", help="SSH hostname.")
-    p.add_argument("--username", default="lkyamamo", help="SSH username.")
-    p.add_argument("--type-si", type=int, default=None, help="Particle type ID for Si.")
-    p.add_argument("--type-o",  type=int, default=None, help="Particle type ID for O.")
-    p.add_argument("--type-h",  type=int, default=None, help="Particle type ID for H.")
-    p.add_argument("--require-h", action=argparse.BooleanOptionalAction, default=True,
-                   help="Require at least one H bonded to the silanol O (Si–O–H).")
+    p = argparse.ArgumentParser(description="Compute silanol count (OVITO).")
+    p.add_argument("--local-path", type=Path, required=True,
+                   help="Local trajectory file, or a directory with one file per "
+                        "frame.")
+    p.add_argument("--type-si", type=int, default=None,
+                   help="Numeric particle type ID for Si. Only needed if the "
+                        "file has no element names (opaque numeric types).")
+    p.add_argument("--type-o", type=int, default=None,
+                   help="Numeric particle type ID for O. Only needed if the "
+                        "file has no element names (opaque numeric types).")
+    p.add_argument("--type-h", type=int, default=None,
+                   help="Numeric particle type ID for H. Only needed if the "
+                        "file has no element names (opaque numeric types).")
     p.add_argument("--surface-axis", default="x", choices=["x", "y", "z"],
                    help="Surface normal axis used to identify top/bottom surfaces.")
+    p.add_argument("--surface-method", default="padded-extent",
+                   choices=["padded-extent", "alpha-shape"],
+                   help="How to decide which silanols are 'surface' silanols. "
+                        "'padded-extent' (default) uses two flat planes at "
+                        "the lowest/highest Si position; only correct for "
+                        "flat slabs. 'alpha-shape' builds an alpha-shape "
+                        "surface mesh from the Si sublattice and uses region "
+                        "topology to find Si atoms bordering the surrounding "
+                        "medium (vacuum, water, etc.); shape-agnostic (works "
+                        "for curved surfaces too).")
     p.add_argument("--surface-thickness", type=float, default=5.0,
-                   help="Symmetric half-width in Å around each Si-gap interface.")
+                   help="Depth in Å inward from the padded Si extent "
+                        "(lowest/highest Si position, each extended by "
+                        f"{SI_EDGE_PADDING_ANGSTROM} Å). Only used by "
+                        "--surface-method padded-extent.")
+    p.add_argument("--alpha-shape-radius", type=float, default=4.2,
+                   help="Probe sphere radius in Å for --surface-method "
+                        "alpha-shape.")
+    p.add_argument("--alpha-shape-smoothing", type=int, default=0,
+                   help="Mesh smoothing iterations for --surface-method "
+                        "alpha-shape.")
     p.add_argument("--no-surface-filter", action="store_true",
                    help="Count all silanols (do not restrict to surface slabs).")
-
-    source = p.add_mutually_exclusive_group(required=True)
-    source.add_argument("--remote-path",
-                        help="Remote trajectory path; creates '<remote parent>/output'.")
-    source.add_argument("--local-path", type=Path,
-                        help="Local trajectory file, or a directory with one file per "
-                             "frame; creates '<local parent>/output'.")
     p.add_argument("--frames", nargs=2, type=int, default=None,
                    metavar=("START", "END"),
                    help="Analyse only frames [START, END) of a LAMMPS dump.")
+    p.add_argument("--atoms-frame", type=int, default=None,
+                   help="Frame index to export the full silanol atom "
+                        "membership (O + bonded Si/H) for. Defaults to the "
+                        "first analysed frame.")
     return p.parse_args(argv)
 
 
 # ---------------------------------------------------------------------------
-# Remote I/O helpers
-# ---------------------------------------------------------------------------
-
-def _download_remote_file_to_temp(*, host: str, username: str, remote_path: str) -> Path:
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, username=username)
-    sftp = ssh.open_sftp()
-    try:
-        with tempfile.NamedTemporaryFile(
-            prefix="silanol_input_", suffix=".data", delete=False
-        ) as tmp:
-            local_path = Path(tmp.name)
-            with sftp.open(remote_path, "rb") as src:
-                while True:
-                    chunk = src.read(8 * 1024 * 1024)
-                    if not chunk:
-                        break
-                    tmp.write(chunk)
-    finally:
-        sftp.close()
-        ssh.close()
-    return local_path
-
-
-def _download_lammps_dump_frames_to_temp(
-    *,
-    host: str,
-    username: str,
-    remote_path: str,
-    frames: Tuple[int, int],
-) -> Path:
-    start, end = frames
-    if start < 0 or end <= start:
-        raise ValueError(f"Invalid frames range: {frames}. Expected START >= 0 and END > START.")
-
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, username=username)
-    sftp = ssh.open_sftp()
-    try:
-        with tempfile.NamedTemporaryFile(
-            prefix="silanol_input_", suffix=".dump", delete=False, mode="w"
-        ) as tmp:
-            local_path = Path(tmp.name)
-
-            with sftp.open(remote_path, "r") as src:
-                first = src.readline()
-                if not first.startswith("ITEM: TIMESTEP"):
-                    raise ValueError(
-                        "Expected LAMMPS dump format beginning with 'ITEM: TIMESTEP'. "
-                        f"First line was: {first[:80]!r}"
-                    )
-                lines_per_frame = 1
-                while True:
-                    line = src.readline()
-                    if line == "":
-                        raise ValueError(
-                            "Reached EOF before finding the second 'ITEM: TIMESTEP' marker."
-                        )
-                    if line.startswith("ITEM: TIMESTEP"):
-                        break
-                    lines_per_frame += 1
-
-            skip_lines = start * lines_per_frame
-            copy_lines = (end - start) * lines_per_frame
-
-            with sftp.open(remote_path, "r") as src:
-                for _ in range(skip_lines):
-                    if src.readline() == "":
-                        raise ValueError(
-                            f"Reached EOF while skipping to START frame {start}. "
-                            f"(lines_per_frame={lines_per_frame})"
-                        )
-                for _ in range(copy_lines):
-                    line = src.readline()
-                    if line == "":
-                        raise ValueError(
-                            f"Reached EOF while copying frame range {frames}. "
-                            f"(lines_per_frame={lines_per_frame})"
-                        )
-                    tmp.write(line)
-    finally:
-        sftp.close()
-        ssh.close()
-    return local_path
-
-
-def _ensure_remote_output_dir(*, host: str, username: str, remote_path: str) -> str:
-    rpath = PurePosixPath(remote_path)
-    parent = str(rpath.parent) if str(rpath.parent) else "."
-    remote_output = str(PurePosixPath(parent) / "output")
-
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, username=username)
-    sftp = ssh.open_sftp()
-    try:
-        current = ""
-        for part in PurePosixPath(remote_output).parts:
-            if part == "/":
-                current = "/"
-                continue
-            current = f"{current}/{part}" if current not in ("", "/") else f"{current}{part}"
-            try:
-                sftp.stat(current)
-            except OSError:
-                sftp.mkdir(current)
-    finally:
-        sftp.close()
-        ssh.close()
-    return remote_output
-
-
-def _write_remote_text_file(
-    *, host: str, username: str, remote_file_path: str, contents: str
-) -> None:
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(host, username=username)
-    sftp = ssh.open_sftp()
-    try:
-        with sftp.open(remote_file_path, "w") as f:
-            f.write(contents)
-    finally:
-        sftp.close()
-        ssh.close()
-
-
-# ---------------------------------------------------------------------------
-# Output writing (local / remote)
+# Output writing
 # ---------------------------------------------------------------------------
 
 def _write_outputs_local(
     output_dir: Path,
     *,
-    stats: SilanoilStatistics,
+    stats: SilanolStatistics,
     ids: List[List[int]],
     boundary_si_ids_per_frame: List[Tuple[int, int]],
+    silanol_atom_ids: List[int],
+    surface_si_ids_per_frame: List[List[int]],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "boundary_si_ids.csv").write_text(_boundary_si_csv(boundary_si_ids_per_frame))
     (output_dir / "silanol_counts_per_frame.csv").write_text(_counts_per_frame_csv(stats))
-    (output_dir / "silanol_ids_per_frame.jsonl").write_text(_silanol_ids_jsonl(ids))
+    (output_dir / "silanol_ids_per_frame.jsonl").write_text(
+        _ids_per_frame_jsonl(ids, "silanol_ids")
+    )
     (output_dir / "silanol_expression_selection.txt").write_text(
-        _silanol_expression_selection_text(ids)
+        _expression_selection_text_per_frame(ids)
     )
     (output_dir / "silanol_statistics.txt").write_text(stats.as_text())
+    (output_dir / "silanol_atoms_expression_selection.txt").write_text(
+        _ovito_expression_for_particle_identifiers(silanol_atom_ids) + "\n"
+    )
+    (output_dir / "surface_si_ids_per_frame.jsonl").write_text(
+        _ids_per_frame_jsonl(surface_si_ids_per_frame, "surface_si_ids")
+    )
+    (output_dir / "surface_si_expression_selection.txt").write_text(
+        _expression_selection_text_per_frame(surface_si_ids_per_frame)
+    )
     print(f"output_dir={output_dir}")
-
-
-def _write_outputs_remote(
-    remote_output_dir: str,
-    *,
-    host: str,
-    username: str,
-    stats: SilanoilStatistics,
-    ids: List[List[int]],
-    boundary_si_ids_per_frame: List[Tuple[int, int]],
-) -> None:
-    base = PurePosixPath(remote_output_dir)
-    files = {
-        "boundary_si_ids.csv":              _boundary_si_csv(boundary_si_ids_per_frame),
-        "silanol_counts_per_frame.csv":     _counts_per_frame_csv(stats),
-        "silanol_ids_per_frame.jsonl":      _silanol_ids_jsonl(ids),
-        "silanol_expression_selection.txt": _silanol_expression_selection_text(ids),
-        "silanol_statistics.txt":           stats.as_text(),
-    }
-    for filename, contents in files.items():
-        _write_remote_text_file(
-            host=host,
-            username=username,
-            remote_file_path=str(base / filename),
-            contents=contents,
-        )
-    print(f"remote_output_dir={remote_output_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -725,46 +665,17 @@ def _write_outputs_remote(
 def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
 
-    cleanup_local_input = False
-    analysis_frames: Optional[Tuple[int, int]] = None
-    output_dir: Optional[Path] = None
-    remote_output_dir: Optional[str] = None
+    local_input_path = args.local_path.expanduser().resolve()
+    output_dir = Path(__file__).resolve().parent / "output"
+    analysis_frames = (
+        (int(args.frames[0]), int(args.frames[1])) if args.frames is not None else None
+    )
 
-    if args.local_path is not None:
-        local_input_path = args.local_path.expanduser().resolve()
-        output_dir = local_input_path.parent / "output"
-        analysis_frames = (
-            (int(args.frames[0]), int(args.frames[1])) if args.frames is not None else None
-        )
-    else:
-        cleanup_local_input = True
-        remote_output_dir = _ensure_remote_output_dir(
-            host=args.host,
-            username=args.username,
-            remote_path=args.remote_path,
-        )
-        if args.frames is None:
-            local_input_path = _download_remote_file_to_temp(
-                host=args.host,
-                username=args.username,
-                remote_path=args.remote_path,
-            )
-            analysis_frames = None
-        else:
-            requested = (int(args.frames[0]), int(args.frames[1]))
-            local_input_path = _download_lammps_dump_frames_to_temp(
-                host=args.host,
-                username=args.username,
-                remote_path=args.remote_path,
-                frames=requested,
-            )
-            analysis_frames = (0, requested[1] - requested[0])
+    import_path = _resolve_local_import_path(local_input_path)
+    pipeline = import_file(import_path)
 
-    try:
-        import_path = _resolve_local_import_path(local_input_path)
-        pipeline = import_file(import_path)
-
-        stats, ids, boundary_si_ids_per_frame = compute_silanols(
+    stats, ids, boundary_si_ids_per_frame, silanol_atom_ids, surface_si_ids_per_frame = (
+        compute_silanols(
             pipeline,
             frames=analysis_frames,
             type_si=args.type_si,
@@ -773,34 +684,24 @@ def main(argv: Optional[List[str]] = None) -> None:
             surface_axis=args.surface_axis,
             apply_surface_filter=not args.no_surface_filter,
             surface_thickness_angstrom=args.surface_thickness,
-            require_at_least_one_h=args.require_h,
+            surface_method=args.surface_method,
+            alpha_shape_radius=args.alpha_shape_radius,
+            alpha_shape_smoothing=args.alpha_shape_smoothing,
+            atoms_frame=args.atoms_frame,
         )
+    )
 
-        print(stats.as_text())
-        print(f"boundary_si_ids[:20]={boundary_si_ids_per_frame[:20]}")
+    print(stats.as_text())
+    print(f"boundary_si_ids[:20]={boundary_si_ids_per_frame[:20]}")
 
-        if output_dir is not None:
-            _write_outputs_local(
-                output_dir,
-                stats=stats,
-                ids=ids,
-                boundary_si_ids_per_frame=boundary_si_ids_per_frame,
-            )
-        elif remote_output_dir is not None:
-            _write_outputs_remote(
-                remote_output_dir,
-                host=args.host,
-                username=args.username,
-                stats=stats,
-                ids=ids,
-                boundary_si_ids_per_frame=boundary_si_ids_per_frame,
-            )
-    finally:
-        if cleanup_local_input:
-            try:
-                local_input_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+    _write_outputs_local(
+        output_dir,
+        stats=stats,
+        ids=ids,
+        boundary_si_ids_per_frame=boundary_si_ids_per_frame,
+        silanol_atom_ids=silanol_atom_ids,
+        surface_si_ids_per_frame=surface_si_ids_per_frame,
+    )
 
 
 if __name__ == "__main__":
