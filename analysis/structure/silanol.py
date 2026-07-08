@@ -9,6 +9,9 @@ Primary options:
                                   containing one file per frame (files are
                                   sorted and loaded as a sequence).
     --frames START END           Optional frame window [START, END).
+    --type-si/--type-o/--type-h  Numeric particle type IDs for Si/O/H. Only
+                                  needed if the file has no element names
+                                  (opaque numeric types); ignored if it does.
     --surface-axis {x,y,z}       Axis along which the Si slab extent is measured.
     --surface-method {padded-extent,alpha-shape}
                                   How to decide which silanols are "surface"
@@ -37,8 +40,10 @@ Primary options:
                                   analysed frame.
 
 A silanol is an O atom bonded to exactly 1 Si and at least 1 H (Si-O-H).
-Si/O/H particle types are found by matching each type's name to its element
-symbol (case-insensitive) — the file must label types by element.
+If the file labels particle types by element, Si/O/H are found by matching
+each type's name to its element symbol (case-insensitive) and --type-si/
+--type-o/--type-h are ignored. If the file only has opaque numeric types (no
+element names), --type-si/--type-o/--type-h are required.
 
 Output behavior:
     - Creates an "output" directory next to this script (not next to the
@@ -155,25 +160,49 @@ def _ensure_bonds(
     *,
     si_o_cutoff: float = 1.9,
     o_h_cutoff: float = 1.2,
+    type_si: Optional[int] = None,
+    type_o: Optional[int] = None,
+    type_h: Optional[int] = None,
 ) -> Tuple[int, int, int]:
     """Ensure the pipeline has a CreateBondsModifier with desired cutoffs.
 
-    Si/O/H type IDs are found by matching each particle type's name against
-    the element symbols Si/O/H (case-insensitive) — the file is expected to
-    label types by element, not by opaque numeric type alone.
+    Reads the file's particle types to decide how Si/O/H are identified:
+    - If types are labelled by element (e.g. a LAMMPS dump "element"
+      column), Si/O/H are found by matching each type's name to its element
+      symbol (case-insensitive) — type_si/type_o/type_h are ignored.
+    - If types are only opaque numeric IDs (no element names), type_si/
+      type_o/type_h must be passed explicitly (--type-si/--type-o/
+      --type-h).
+    - If the file has no particle types at all, raises ValueError.
     """
     data0 = pipeline.compute(0)
-    available = [(int(t.id), str(t.name)) for t in data0.particles.particle_types.types]
-    type_by_symbol = {tname.strip().lower(): tid for tid, tname in available}
-
-    t_si = type_by_symbol.get("si")
-    t_o = type_by_symbol.get("o")
-    t_h = type_by_symbol.get("h")
-    if t_si is None or t_o is None or t_h is None:
+    if "Particle Type" not in data0.particles:
         raise ValueError(
-            "Could not find particle types named Si/O/H (case-insensitive) "
-            f"in the file. Available types: {available}"
+            "The input file provides no particle types (neither element "
+            "names nor numeric types); cannot identify Si/O/H atoms."
         )
+
+    available = [(int(t.id), str(t.name)) for t in data0.particles.particle_types.types]
+    has_element_names = any(tname.strip() for _, tname in available)
+
+    if has_element_names:
+        type_by_symbol = {tname.strip().lower(): tid for tid, tname in available}
+        t_si = type_by_symbol.get("si")
+        t_o = type_by_symbol.get("o")
+        t_h = type_by_symbol.get("h")
+        if t_si is None or t_o is None or t_h is None:
+            raise ValueError(
+                "File labels types by element, but Si/O/H were not all "
+                f"found among them. Available types: {available}"
+            )
+    else:
+        if type_si is None or type_o is None or type_h is None:
+            raise ValueError(
+                "File provides only numeric particle types (no element "
+                "names); pass --type-si/--type-o/--type-h explicitly. "
+                f"Available types: {available}"
+            )
+        t_si, t_o, t_h = int(type_si), int(type_o), int(type_h)
 
     cb = next((m for m in pipeline.modifiers if isinstance(m, CreateBondsModifier)), None)
     if cb is None:
@@ -256,6 +285,9 @@ def compute_silanols(
     frames: Optional[Tuple[int, int]] = None,
     si_o_cutoff: float = 1.9,
     o_h_cutoff: float = 1.2,
+    type_si: Optional[int] = None,
+    type_o: Optional[int] = None,
+    type_h: Optional[int] = None,
     surface_axis: str = "x",
     apply_surface_filter: bool = True,
     surface_thickness_angstrom: float = 5.0,
@@ -271,6 +303,11 @@ def compute_silanols(
 
     A silanol is an O atom bonded to exactly 1 Si and at least 1 H.
     ids are OVITO particle identifiers if present, otherwise particle indices (0-based).
+
+    type_si/type_o/type_h are only used if the file's particle types are
+    opaque numeric IDs with no element names; if the file labels types by
+    element, Si/O/H are found by matching type names to element symbols and
+    these arguments are ignored. See _ensure_bonds.
 
     Two surface_method choices for deciding which silanols count as "surface":
     - "padded-extent" (default): the lowest and highest Si position along
@@ -307,6 +344,9 @@ def compute_silanols(
         pipeline,
         si_o_cutoff=si_o_cutoff,
         o_h_cutoff=o_h_cutoff,
+        type_si=type_si,
+        type_o=type_o,
+        type_h=type_h,
     )
 
     if apply_surface_filter and surface_method == "alpha-shape":
@@ -539,6 +579,15 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p.add_argument("--local-path", type=Path, required=True,
                    help="Local trajectory file, or a directory with one file per "
                         "frame.")
+    p.add_argument("--type-si", type=int, default=None,
+                   help="Numeric particle type ID for Si. Only needed if the "
+                        "file has no element names (opaque numeric types).")
+    p.add_argument("--type-o", type=int, default=None,
+                   help="Numeric particle type ID for O. Only needed if the "
+                        "file has no element names (opaque numeric types).")
+    p.add_argument("--type-h", type=int, default=None,
+                   help="Numeric particle type ID for H. Only needed if the "
+                        "file has no element names (opaque numeric types).")
     p.add_argument("--surface-axis", default="x", choices=["x", "y", "z"],
                    help="Surface normal axis used to identify top/bottom surfaces.")
     p.add_argument("--surface-method", default="padded-extent",
@@ -629,6 +678,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         compute_silanols(
             pipeline,
             frames=analysis_frames,
+            type_si=args.type_si,
+            type_o=args.type_o,
+            type_h=args.type_h,
             surface_axis=args.surface_axis,
             apply_surface_filter=not args.no_surface_filter,
             surface_thickness_angstrom=args.surface_thickness,
