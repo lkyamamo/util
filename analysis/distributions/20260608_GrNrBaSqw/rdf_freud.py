@@ -23,6 +23,7 @@ Column positions are read automatically from the ITEM: ATOMS header line.
 
 import itertools
 import os
+from datetime import date
 
 import numpy as np
 import freud
@@ -58,6 +59,15 @@ OUTPUT_NR_CSV  = "nrs.csv"
 # =============================================================================
 # END CONFIGURATION
 # =============================================================================
+
+# Prepend today's date (YYYYMMDD_) to every output filename.
+def _dated(filename):
+    return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
+
+OUTPUT_PLOT    = _dated(OUTPUT_PLOT)
+OUTPUT_CSV     = _dated(OUTPUT_CSV)
+OUTPUT_NR_PLOT = _dated(OUTPUT_NR_PLOT)
+OUTPUT_NR_CSV  = _dated(OUTPUT_NR_CSV)
 
 # Coherent neutron scattering lengths (fm).  Add elements as needed.
 # Values from NIST: https://www.ncnr.nist.gov/resources/n-lengths/

@@ -17,6 +17,7 @@ OUTPUT
 Set either INPUT_*_CSV to None to skip that set entirely.
 """
 
+import glob
 import os
 
 import numpy as np
@@ -27,9 +28,10 @@ import matplotlib.pyplot as plt
 # CONFIGURATION — edit these variables between runs
 # =============================================================================
 
-# Input CSVs produced by rdf_freud.py; set to None to skip
-INPUT_RDF_CSV = "rdfs.csv"
-INPUT_NR_CSV  = "nrs.csv"
+# Glob patterns matching the dated CSVs produced by rdf_freud.py
+# (e.g. 20260707_rdfs.csv); the most recent match is used. Set to None to skip.
+INPUT_RDF_CSV = "*_rdfs.csv"
+INPUT_NR_CSV  = "*_nrs.csv"
 
 # Subdirectories for individual PNGs
 OUTPUT_RDF_DIR = "rdfs"
@@ -61,6 +63,14 @@ REF_LINE_LWIDTH  = 1.0
 # =============================================================================
 # END CONFIGURATION
 # =============================================================================
+
+
+def _resolve_latest(pattern):
+    """Return the most recent file matching pattern (YYYYMMDD_ prefixes sort chronologically)."""
+    matches = sorted(glob.glob(pattern))
+    if not matches:
+        raise FileNotFoundError(f"No files match pattern: {pattern!r}")
+    return matches[-1]
 
 
 def load_csv(filename):
@@ -135,8 +145,9 @@ if __name__ == '__main__':
     _apply_style()
 
     if INPUT_RDF_CSV is not None:
-        print(f"Reading g(r) CSV: {INPUT_RDF_CSV}")
-        r, rdf_labels, rdf_data = load_csv(INPUT_RDF_CSV)
+        rdf_csv = _resolve_latest(INPUT_RDF_CSV)
+        print(f"Reading g(r) CSV: {rdf_csv}")
+        r, rdf_labels, rdf_data = load_csv(rdf_csv)
         print(f"Pairs found: {rdf_labels}")
         _save_plots(r, rdf_labels, rdf_data,
                     out_dir=OUTPUT_RDF_DIR,
@@ -146,8 +157,9 @@ if __name__ == '__main__':
         print(f"Done. {len(rdf_labels)} g(r) plot(s) written to '{OUTPUT_RDF_DIR}/'")
 
     if INPUT_NR_CSV is not None:
-        print(f"Reading n(r) CSV: {INPUT_NR_CSV}")
-        r, nr_labels, nr_data = load_csv(INPUT_NR_CSV)
+        nr_csv = _resolve_latest(INPUT_NR_CSV)
+        print(f"Reading n(r) CSV: {nr_csv}")
+        r, nr_labels, nr_data = load_csv(nr_csv)
         print(f"Pairs found: {nr_labels}")
         _save_plots(r, nr_labels, nr_data,
                     out_dir=OUTPUT_NR_DIR,

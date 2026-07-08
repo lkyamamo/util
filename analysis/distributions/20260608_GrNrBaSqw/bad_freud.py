@@ -34,6 +34,7 @@ Column positions are read automatically from the ITEM: ATOMS header line.
 """
 
 import os
+from datetime import date
 
 import numpy as np
 import freud
@@ -103,6 +104,13 @@ PLOT_DPI   = 150
 # =============================================================================
 # END CONFIGURATION
 # =============================================================================
+
+# Prepend today's date (YYYYMMDD_) to every output filename.
+def _dated(filename):
+    return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
+
+OUTPUT_PLOT = _dated(OUTPUT_PLOT)
+OUTPUT_CSV  = _dated(OUTPUT_CSV)
 
 
 def _pair_key(el1, el2):

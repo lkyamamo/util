@@ -15,6 +15,7 @@ OUTPUT
 One PNG per triplet column in the CSV, written to OUTPUT_DIR/<label>.png.
 """
 
+import glob
 import os
 
 import numpy as np
@@ -25,8 +26,9 @@ import matplotlib.pyplot as plt
 # CONFIGURATION — edit these variables between runs
 # =============================================================================
 
-# Input CSV produced by bad_freud.py
-INPUT_CSV  = "bads.csv"
+# Glob pattern matching the dated CSV produced by bad_freud.py
+# (e.g. 20260707_bads.csv); the most recent match is used.
+INPUT_CSV  = "*_bads.csv"
 
 # Subdirectory where individual PNGs are written
 OUTPUT_DIR = "bads"
@@ -51,6 +53,14 @@ YTICKS        = False        # set True to show y-axis tick marks and labels
 # =============================================================================
 # END CONFIGURATION
 # =============================================================================
+
+
+def _resolve_latest(pattern):
+    """Return the most recent file matching pattern (YYYYMMDD_ prefixes sort chronologically)."""
+    matches = sorted(glob.glob(pattern))
+    if not matches:
+        raise FileNotFoundError(f"No files match pattern: {pattern!r}")
+    return matches[-1]
 
 
 def load_csv(filename):
@@ -114,8 +124,9 @@ def plot_individual(angles, labels, hists):
 
 
 if __name__ == '__main__':
-    print(f"Reading CSV: {INPUT_CSV}")
-    angles, labels, hists = load_csv(INPUT_CSV)
+    input_csv = _resolve_latest(INPUT_CSV)
+    print(f"Reading CSV: {input_csv}")
+    angles, labels, hists = load_csv(input_csv)
     print(f"Triplets found: {labels}")
     plot_individual(angles, labels, hists)
     print(f"Done. {len(labels)} plot(s) written to '{OUTPUT_DIR}/'")

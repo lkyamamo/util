@@ -30,6 +30,7 @@ PARALLELIZATION
 """
 
 import os
+from datetime import date
 
 # =============================================================================
 # CONFIGURATION — edit these variables between runs
@@ -73,6 +74,15 @@ PLOT_DPI   = 150
 # =============================================================================
 # END CONFIGURATION
 # =============================================================================
+
+# Prepend today's date (YYYYMMDD_) to every output filename.
+def _dated(filename):
+    return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
+
+OUTPUT_SQ_CSV   = _dated(OUTPUT_SQ_CSV)
+OUTPUT_SQ_PLOT  = _dated(OUTPUT_SQ_PLOT)
+OUTPUT_DSF_CSV  = _dated(OUTPUT_DSF_CSV)
+OUTPUT_DSF_PLOT = _dated(OUTPUT_DSF_PLOT)
 
 # Must be set before importing dynasor/numba — numba reads thread count at JIT time.
 # os.environ.setdefault only writes when OMP_NUM_THREADS is not already present
