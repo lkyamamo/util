@@ -6,7 +6,9 @@ QUICK START
 1. Set DUMP_FILE to your LAMMPS custom dump trajectory.
 2. Set ELEMENTS to the list of element symbols present in the simulation.
 3. Set R_CUTOFF and R_MINCUT pairwise cutoff radii for every element pair.
-4. Populate TRIPLET_CUTOFFS with the BADs to compute and their per-arm cutoffs.
+4. Optionally add entries to TRIPLET_CUTOFFS for BADs that need custom
+   per-arm cutoffs; every other symmetric-unique A-B-C triplet from ELEMENTS
+   is computed automatically with the default R_CUTOFF/R_MINCUT.
 5. Run:  python bad_freud.py
 
 OUTPUT
@@ -14,9 +16,17 @@ OUTPUT
 - A PNG plot of all BAD curves  (OUTPUT_PLOT)
 - A CSV table of angle vs P(θ)  (OUTPUT_CSV; set to None to skip)
 
+DEFAULT TRIPLET SWEEP
+----------------------
+For every central element B in ELEMENTS and every symmetric-unique pair of
+wing elements (A, C) — A-B-C and C-B-A are the same angle, so wings are only
+enumerated once — a BAD is computed using the default R_CUTOFF/R_MINCUT for
+the A-B and C-B pairs, labeled plainly as 'A-B-C'.
+
 TRIPLET_CUTOFFS
 ---------------
-Each entry in TRIPLET_CUTOFFS is a dict specifying one BAD:
+Each entry in TRIPLET_CUTOFFS is a dict specifying one additional, independently
+cutoff BAD:
     'triplet' : (el_a, el_b, el_c)  — B is the central atom; wings sorted alphabetically
     'label'   : str                 — column name in the CSV / plot title (unique per triplet)
     'r_max_ab', 'r_min_ab'          — radial cutoffs for the A-B bond
@@ -26,6 +36,8 @@ Each entry in TRIPLET_CUTOFFS is a dict specifying one BAD:
 The same triplet may appear more than once under different labels to compute
 the BAD with different cutoff windows; each entry is an independent calculation.
 Two entries sharing the same (triplet, label) raise a ValueError at startup.
+If a TRIPLET_CUTOFFS entry's triplet collides with one from the default sweep,
+its label gets a '-specific' suffix so the two calculations stay distinct.
 
 COLUMN LAYOUT
 -------------
@@ -33,6 +45,7 @@ Expects LAMMPS custom dump format with at minimum columns: id type element x y z
 Column positions are read automatically from the ITEM: ATOMS header line.
 """
 
+import itertools
 import os
 from datetime import date
 
@@ -116,6 +129,45 @@ OUTPUT_CSV  = _dated(OUTPUT_CSV)
 def _pair_key(el1, el2):
     """Return canonical pairwise key with elements sorted alphabetically."""
     return '-'.join(sorted([el1, el2]))
+
+
+def _canonical_triplet(el_a, el_b, el_c):
+    """Sort wing elements so A-B-C and C-B-A map to the same key (same angle)."""
+    wing1, wing2 = sorted([el_a, el_c])
+    return (wing1, el_b, wing2)
+
+
+def _default_triplet_cutoffs(elements):
+    """
+    Generate every symmetric-unique A-B-C triplet (B central) from `elements`,
+    using the default R_CUTOFF/R_MINCUT pairwise radii (no explicit r_max_*/r_min_*
+    keys — the main loop falls back to R_CUTOFF/R_MINCUT for those).
+    """
+    entries = []
+    for el_b in elements:
+        for el_a, el_c in itertools.combinations_with_replacement(sorted(elements), 2):
+            entries.append({'triplet': (el_a, el_b, el_c), 'label': f'{el_a}-{el_b}-{el_c}'})
+    return entries
+
+
+def _build_triplet_cutoffs():
+    """
+    Combine the auto-generated default-cutoff sweep with the user-specified
+    TRIPLET_CUTOFFS. If a TRIPLET_CUTOFFS entry's triplet collides with one
+    from the default sweep, its label gets a '-specific' suffix so both stay
+    distinct in the results.
+    """
+    defaults = _default_triplet_cutoffs(ELEMENTS)
+    default_keys = {tuple(e['triplet']) for e in defaults}
+
+    specifics = []
+    for entry in TRIPLET_CUTOFFS:
+        entry = dict(entry)
+        if _canonical_triplet(*entry['triplet']) in default_keys:
+            entry['label'] = f"{entry['label']}-specific"
+        specifics.append(entry)
+
+    return defaults + specifics
 
 
 def _validate_triplet_cutoffs(entries):
@@ -370,7 +422,14 @@ def plot_bads(results):
 
 
 if __name__ == '__main__':
-    _validate_triplet_cutoffs(TRIPLET_CUTOFFS)
+    if not ELEMENTS:
+        raise ValueError("ELEMENTS is empty — set it to the element symbols present in the simulation.")
+
+    all_triplet_cutoffs = _build_triplet_cutoffs()
+    _validate_triplet_cutoffs(all_triplet_cutoffs)
+
+    if not all_triplet_cutoffs:
+        raise ValueError("No BADs configured: ELEMENTS and TRIPLET_CUTOFFS are both empty.")
 
     print(f"Reading trajectory: {DUMP_FILE}")
     frames = read_lammps_dump(DUMP_FILE)
@@ -380,10 +439,12 @@ if __name__ == '__main__':
     print(f"Atoms range: {min(atom_counts)} – {max(atom_counts)}")
     print(f"Atoms mean:  {np.mean(atom_counts):.1f}")
 
-    print(f"BADs to compute: {len(TRIPLET_CUTOFFS)}")
+    n_default = len(all_triplet_cutoffs) - len(TRIPLET_CUTOFFS)
+    print(f"BADs to compute: {len(all_triplet_cutoffs)} "
+          f"({n_default} default + {len(TRIPLET_CUTOFFS)} specific)")
 
     results = {}
-    for entry in TRIPLET_CUTOFFS:
+    for entry in all_triplet_cutoffs:
         el_a, el_b, el_c = entry['triplet']
         label    = entry['label']
         key_ab   = _pair_key(el_a, el_b)
