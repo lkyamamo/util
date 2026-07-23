@@ -1,0 +1,69 @@
+## Ar  FCC lattice
+echo            both
+units           metal
+dimension       3
+boundary        p p p
+processors      * * *
+atom_style      atomic
+
+read_data       start.data
+replicate       2 2 2
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+mass 1 28.0855  # Si
+mass 2 15.9994  # O
+#mass 3 1.00784	# H 
+
+pair_style      usc
+pair_coeff  * * SiO.usc Si O 
+
+#cg relax
+thermo_style    custom step temp pe ke etotal press vol
+thermo          50
+dump            1 all xyz 10 1.SiO2_cg.xyz
+min_style       cg
+minimize        1.0e-8 1.0e-8 5000 10000
+
+undump 1
+reset_timestep  0
+
+dump            2 all xyz 100 dump.lammpstrj
+
+# random initialize 500K
+velocity        all create 500.0 156467 mom yes rot yes dist gaussian
+timestep        0.001
+
+fix		1 all nvt temp 500 500 $(100*dt)
+run		5000
+unfix		1
+
+fix		1 all nvt temp 500 1000 $(100*dt)
+run		5000
+unfix		1
+
+fix		1 all nvt temp 1000 2000 $(100*dt)
+run		5000
+unfix		1
+
+fix             1 all nvt temp 2000 2700 $(100*dt)
+run             10000
+unfix           1
+
+fix		1 all nvt temp 2700 2700 $(100*dt)
+run		200000
+unfix		1
+
+fix             1 all nvt temp 2700 300 $(100*dt)
+run             20000
+unfix           1
+
+fix             1 all nvt temp 300 300 $(100*dt)
+run             100000
+unfix           1
+
+undump		2
+
+write_restart	final.restart
+write_data	final.data
