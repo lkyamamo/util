@@ -62,10 +62,14 @@ Optional:
   --time HH:MM:SS           --analysis-time HH:MM:SS
   --job-name NAME           --analysis-job-name NAME
   --constraint NAME         --analysis-constraint NAME
+                           --analysis-cpus-per-task N
       Overrides for the corresponding #SBATCH directives — the left column
       overrides jobs/slurm/lammps_submit.slurm (the LAMMPS run), the right
       column overrides dsf_submit.slurm (the analysis job). Omit any of
-      these to leave the template's own value in effect.
+      these to leave the template's own value in effect. --analysis-cpus-per-task
+      has no LAMMPS-side counterpart; it also drives OMP_NUM_THREADS for
+      dsf.py/rdf_freud.py/bad_freud.py (dsf_submit.slurm sets
+      OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK).
 
   --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
                                   existing <run_id>_distribution_analysis/ (stage 2)
@@ -91,6 +95,7 @@ log_overwrite() {
   echo "$msg" >> "$LOG_FILE"
 }
 
+# general input parameters
 INPUT_SCRIPT="/scratch1/lkyamamo/test-runs/potential-verify/runs/0168/OH-therm.input"
 STARTING_STRUCTURE="/home1/lkyamamo/util/starting-structures/ICE_CUBIC.data"
 POTENTIAL_FILE="/scratch1/lkyamamo/test-runs/potential-verify/potentials/20260723_OH.vashishta"
@@ -99,16 +104,23 @@ ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
 RUN_DSF="0"
 RUN_RDF="1"
 RUN_BAD="1"
+
+# trajectory creation slurm parameters
 NODES="1"
 NTASKS="128"
 TIME="1:00:00"
 JOB_NAME="water-setup"
 CONSTRAINT="epyc-9554"
+
+# analysis slurm parameters
 ANALYSIS_NODES="1"
 ANALYSIS_NTASKS="1"
 ANALYSIS_TIME="1:00:00"
 ANALYSIS_JOB_NAME="water-distributions"
 ANALYSIS_CONSTRAINT="epyc-9554"
+ANALYSIS_CPUS_PER_TASK=""
+
+# distribution code parameters
 RDF_R_MAX="8"
 RDF_BINS_VAL="800"
 BAD_ELEMENTS="O;H"
@@ -145,6 +157,7 @@ while [[ $# -gt 0 ]]; do
     --analysis-time) ANALYSIS_TIME="$2"; shift 2 ;;
     --analysis-job-name) ANALYSIS_JOB_NAME="$2"; shift 2 ;;
     --analysis-constraint) ANALYSIS_CONSTRAINT="$2"; shift 2 ;;
+    --analysis-cpus-per-task) ANALYSIS_CPUS_PER_TASK="$2"; shift 2 ;;
     --rdf-r-max) RDF_R_MAX="$2"; shift 2 ;;
     --rdf-bins) RDF_BINS_VAL="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
@@ -266,6 +279,7 @@ analysis_sbatch_args=()
 [[ -n "$ANALYSIS_TIME" ]]       && analysis_sbatch_args+=(--time="$ANALYSIS_TIME")
 [[ -n "$ANALYSIS_JOB_NAME" ]]   && analysis_sbatch_args+=(--job-name="$ANALYSIS_JOB_NAME")
 [[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
+[[ -n "$ANALYSIS_CPUS_PER_TASK" ]] && analysis_sbatch_args+=(--cpus-per-task="$ANALYSIS_CPUS_PER_TASK")
 
 # None of these values may contain a comma — sbatch --export is
 # comma-delimited and silently truncates anything after an embedded one.
