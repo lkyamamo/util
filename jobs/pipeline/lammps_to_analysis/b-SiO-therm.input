@@ -7,7 +7,7 @@ processors      * * *
 atom_style      atomic
 
 read_data       start.data
-replicate       2 2 2
+replicate       6 6 6
 
 neighbor        0.3 bin
 neigh_modify    delay 0 every 1 check yes
@@ -35,8 +35,14 @@ dump            2 all xyz 100 silica_setup.xyz
 velocity        all create 500.0 156467 mom yes rot yes dist gaussian
 timestep        0.001
 
+fix		def all deform 10 x final 0.0 42.7934 y final 0.0 42.7934 z final 0 42.7934
 fix		1 all nvt temp 500 500 $(100*dt)
-run		5000
+run		50000
+unfix		def
+unfix		1
+
+fix		1 all nvt temp 500 500 $(100*dt)
+run		50000
 unfix		1
 
 fix		1 all nvt temp 500 1000 $(100*dt)
