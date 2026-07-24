@@ -86,6 +86,8 @@ EOF
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_submit.slurm"
 DUMP_FILE="dump.lammpstrj"
+FORCE="0"
+FORCE_REASON=""
 LOG_FILE="$REPO_ROOT/jobs/pipeline/lammps_to_analysis/overwrite.log"
 
 log_overwrite() {
@@ -134,8 +136,7 @@ DSF_STRIDE=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
-FORCE="0"
-FORCE_REASON=""
+
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
