@@ -66,9 +66,23 @@ unfix           1
 ############### end temp 303K #################
 
 
+undump		1
+
+variable        thermo_frequency equal 50
+variable        dump_frequency equal 50
+variable        nve_length equal 50000
+
+reset_timestep  0
+dump            mydump all custom ${dump_frequency} dump.lammpstrj id element x y z vx vy vz
+dump_modify     mydump element O H
+dump_modify     mydump sort id
+
+fix             1 all nve temp
+run             ${nve_length}
+unfix           1
+undump          mydump
+
 write_restart   final.restart
 write_data      final.data
-
-undump		1
 
 
