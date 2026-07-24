@@ -52,32 +52,75 @@ OUTPUT_PLOT = "bads.png"
 # Output data table (CSV); set to None to skip
 OUTPUT_CSV = "bads.csv"
 
+# R_CUTOFF/R_MINCUT/TRIPLET_CUTOFFS are read from plain delimited strings
+# (not JSON) because sbatch --export=... is comma-delimited and silently
+# truncates any value containing a literal comma.
+
+def _parse_pair_dict(env_name, default):
+    """Parse 'H-H:2.0;H-O:1.4' into {'H-H': 2.0, 'H-O': 1.4}, or return default if unset."""
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    result = {}
+    for entry in raw.split(";"):
+        key, value = entry.split(":")
+        result[key] = float(value)
+    return result
+
+
+def _parse_triplet_cutoffs(env_name, default):
+    """Parse 'label:elA-elB-elC:r_max_ab:r_min_ab:r_max_cb:r_min_cb|...' into the
+    TRIPLET_CUTOFFS list-of-dicts structure, or return default if unset.
+    A trailing cutoff field left empty (e.g. 'label:elA-elB-elC:::: ') omits
+    that key so it falls back to R_CUTOFF/R_MINCUT, same as a dict literal
+    simply not including it.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return default
+    entries = []
+    for chunk in raw.split("|"):
+        label, triplet_str, r_max_ab, r_min_ab, r_max_cb, r_min_cb = chunk.split(":")
+        entry = {'triplet': tuple(triplet_str.split("-")), 'label': label}
+        if r_max_ab:
+            entry['r_max_ab'] = float(r_max_ab)
+        if r_min_ab:
+            entry['r_min_ab'] = float(r_min_ab)
+        if r_max_cb:
+            entry['r_max_cb'] = float(r_max_cb)
+        if r_min_cb:
+            entry['r_min_cb'] = float(r_min_cb)
+        entries.append(entry)
+    return entries
+
+
 # Elements present in the simulation.
 # The code trusts this list and never auto-detects species from the trajectory.
 # Order does not matter — code sorts internally.
-ELEMENTS = ['Si', 'O', 'H']
+# Semicolon-separated (not comma) since sbatch --export=... is comma-delimited.
+ELEMENTS = [e.strip() for e in os.environ.get("ELEMENTS", "Si;O;H").split(";")]
 
 # Pairwise upper neighbor cutoff radii in Angstroms.
 # Keys must be "El1-El2" with elements sorted alphabetically.
-R_CUTOFF = {
+R_CUTOFF = _parse_pair_dict("R_CUTOFF", {
     'H-H':   2.0,
     'H-O':   1.4,
     'H-Si':  2.0,
     'O-O':   2.8,
     'O-Si':  2.2,
     'Si-Si': 3.2,
-}
+})
 
 # Pairwise lower neighbor cutoff radii in Angstroms.
 # Pairs closer than this are excluded (removes self-interactions and unphysical contacts).
-R_MINCUT = {
+R_MINCUT = _parse_pair_dict("R_MINCUT", {
     'H-H':   0.5,
     'H-O':   0.5,
     'H-Si':  0.5,
     'O-O':   0.5,
     'O-Si':  0.5,
     'Si-Si': 0.5,
-}
+})
 
 # List of BADs to compute. Each entry is a dict with:
 #   'triplet' : (el_a, el_b, el_c)  — B is the central atom; wings sorted alphabetically
@@ -88,13 +131,13 @@ R_MINCUT = {
 # The same triplet may appear more than once with different labels and cutoffs;
 # each entry is treated as an independent BAD.
 # Two entries with identical (triplet, label) raise a ValueError at startup.
-TRIPLET_CUTOFFS = [
+TRIPLET_CUTOFFS = _parse_triplet_cutoffs("TRIPLET_CUTOFFS", [
     {'triplet': ('O', 'Si', 'O'), 'label': 'O-Si-O',
      'r_max_ab': 2.2, 'r_min_ab': 0.5, 'r_max_cb': 2.2, 'r_min_cb': 0.5},
-]
+])
 
 # Number of bins spanning 0–180°
-BINS = 180
+BINS = int(os.environ.get("BAD_BINS", "180"))
 
 # Plot layout
 PLOT_NCOLS = 3

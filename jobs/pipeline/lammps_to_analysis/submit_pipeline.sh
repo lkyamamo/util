@@ -30,6 +30,33 @@ Optional:
   --run-rdf {0|1}                Run rdf_freud.py (radial distribution function) (default: 1)
   --run-bad {0|1}                Run bad_freud.py (bond angle distribution) (default: 1)
 
+  Physics config — each overrides that script's own hardcoded default
+  (see the CONFIGURATION block at the top of each .py) when passed; omit
+  to leave the script's built-in default in effect:
+    --rdf-r-max FLOAT            rdf_freud.py R_MAX (Å), e.g. 20.0
+    --rdf-bins INT                rdf_freud.py BINS, e.g. 2000
+    --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
+    --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
+                                    entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
+    --bad-r-mincut STR             bad_freud.py R_MINCUT, same format, e.g.
+                                    "H-H:0.5;H-O:0.5;O-O:0.5"
+    --bad-triplet-cutoffs STR       bad_freud.py TRIPLET_CUTOFFS, pipe-separated entries of
+                                    colon-separated fields
+                                    label:elA-elB-elC:r_max_ab:r_min_ab:r_max_cb:r_min_cb
+                                    (leave a cutoff field empty to fall back to
+                                    R_CUTOFF/R_MINCUT), e.g.
+                                    "O-Si-O:O-Si-O:2.2:0.5:2.2:0.5|H-O-H:H-O-H:1.4:0.5:1.4:0.5"
+    --bad-bins INT                bad_freud.py BINS, e.g. 180
+    --dsf-dt FLOAT                dsf.py DT (fs between dumped frames), e.g. 1.0
+    --dsf-n-frames INT             dsf.py N_FRAMES, e.g. 500
+    --dsf-stride INT               dsf.py STRIDE, e.g. 1
+    --dsf-window-size INT           dsf.py WINDOW_SIZE, e.g. 500
+    --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
+    --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
+  None of these use commas (sbatch --export is comma-delimited and silently
+  truncates any value containing one), so no quoting/encoding is needed
+  beyond normal shell quoting of the whole flag value.
+
   --nodes N               --analysis-nodes N
   --ntasks N               --analysis-ntasks N
   --time HH:MM:SS           --analysis-time HH:MM:SS
@@ -66,6 +93,19 @@ ANALYSIS_NTASKS=""
 ANALYSIS_TIME=""
 ANALYSIS_JOB_NAME=""
 ANALYSIS_CONSTRAINT=""
+RDF_R_MAX=""
+RDF_BINS_VAL=""
+BAD_ELEMENTS=""
+BAD_R_CUTOFF=""
+BAD_R_MINCUT=""
+BAD_TRIPLET_CUTOFFS=""
+BAD_BINS_VAL=""
+DSF_DT=""
+DSF_N_FRAMES=""
+DSF_STRIDE=""
+DSF_WINDOW_SIZE=""
+DSF_Q_MAX=""
+DSF_N_Q_BINS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -87,6 +127,19 @@ while [[ $# -gt 0 ]]; do
     --analysis-time) ANALYSIS_TIME="$2"; shift 2 ;;
     --analysis-job-name) ANALYSIS_JOB_NAME="$2"; shift 2 ;;
     --analysis-constraint) ANALYSIS_CONSTRAINT="$2"; shift 2 ;;
+    --rdf-r-max) RDF_R_MAX="$2"; shift 2 ;;
+    --rdf-bins) RDF_BINS_VAL="$2"; shift 2 ;;
+    --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
+    --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
+    --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
+    --bad-triplet-cutoffs) BAD_TRIPLET_CUTOFFS="$2"; shift 2 ;;
+    --bad-bins) BAD_BINS_VAL="$2"; shift 2 ;;
+    --dsf-dt) DSF_DT="$2"; shift 2 ;;
+    --dsf-n-frames) DSF_N_FRAMES="$2"; shift 2 ;;
+    --dsf-stride) DSF_STRIDE="$2"; shift 2 ;;
+    --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
+    --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
+    --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -180,10 +233,27 @@ analysis_sbatch_args=()
 [[ -n "$ANALYSIS_JOB_NAME" ]]   && analysis_sbatch_args+=(--job-name="$ANALYSIS_JOB_NAME")
 [[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
 
+# None of these values may contain a comma — sbatch --export is
+# comma-delimited and silently truncates anything after an embedded one.
+export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD"
+[[ -n "$RDF_R_MAX" ]]           && export_vars+=",R_MAX=$RDF_R_MAX"
+[[ -n "$RDF_BINS_VAL" ]]        && export_vars+=",RDF_BINS=$RDF_BINS_VAL"
+[[ -n "$BAD_ELEMENTS" ]]        && export_vars+=",ELEMENTS=$BAD_ELEMENTS"
+[[ -n "$BAD_R_CUTOFF" ]]        && export_vars+=",R_CUTOFF=$BAD_R_CUTOFF"
+[[ -n "$BAD_R_MINCUT" ]]        && export_vars+=",R_MINCUT=$BAD_R_MINCUT"
+[[ -n "$BAD_TRIPLET_CUTOFFS" ]] && export_vars+=",TRIPLET_CUTOFFS=$BAD_TRIPLET_CUTOFFS"
+[[ -n "$BAD_BINS_VAL" ]]        && export_vars+=",BAD_BINS=$BAD_BINS_VAL"
+[[ -n "$DSF_DT" ]]              && export_vars+=",DT=$DSF_DT"
+[[ -n "$DSF_N_FRAMES" ]]        && export_vars+=",N_FRAMES=$DSF_N_FRAMES"
+[[ -n "$DSF_STRIDE" ]]          && export_vars+=",STRIDE=$DSF_STRIDE"
+[[ -n "$DSF_WINDOW_SIZE" ]]     && export_vars+=",WINDOW_SIZE=$DSF_WINDOW_SIZE"
+[[ -n "$DSF_Q_MAX" ]]           && export_vars+=",Q_MAX=$DSF_Q_MAX"
+[[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",N_Q_BINS=$DSF_N_Q_BINS"
+
 echo "Submitting distribution analysis from $STAGE2_DIR, dependent on job $JOBID1 ..."
 JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable --dependency=afterok:"$JOBID1" \
   "${analysis_sbatch_args[@]+"${analysis_sbatch_args[@]}"}" \
-  --export=ALL,TRAJ="$DUMP_FILE",RUN_DSF="$RUN_DSF",RUN_RDF="$RUN_RDF",RUN_BAD="$RUN_BAD" \
+  --export="$export_vars" \
   dsf_submit.slurm)"
 echo "  distribution-analysis job id: $JOBID2"
 
@@ -201,8 +271,8 @@ Pipeline submitted:
   analysis scripts enabled        : ${enabled_scripts:-none}
 
 $(if [[ -n "$enabled_scripts" ]]; then
-  echo "Reminder: edit $STAGE2_DIR/{${enabled_scripts// /,}}'s physics config"
-  echo "(ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, ...) before job $JOBID2 actually runs —"
-  echo "the dependency only guarantees it won't start early."
+  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, ...) not"
+  echo "passed via --rdf-*/--bad-*/--dsf-* flags is using each script's own default —"
+  echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY

@@ -42,8 +42,8 @@ OUTPUT_PLOT = "rdfs.png"
 OUTPUT_CSV = "rdfs.csv"
 
 # RDF parameters
-R_MAX = 20.0        # maximum r in Angstroms; must be < half shortest box dimension
-BINS  = 2000         # number of bins
+R_MAX = float(os.environ.get("R_MAX", "20.0"))   # maximum r in Angstroms; must be < half shortest box dimension
+BINS  = int(os.environ.get("RDF_BINS", "2000"))  # number of bins
 
 # Plot layout: how many columns in the subplot grid
 PLOT_NCOLS = 2

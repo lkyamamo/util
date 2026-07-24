@@ -38,22 +38,22 @@ import os
 DUMP_FILE       = os.environ.get("TRAJ", "dump.lammpstrj")
 
 # Trajectory sampling
-N_FRAMES        = 500       # max frames to read (frame_stop in Trajectory)
-STRIDE          = 1         # read every Nth frame (frame_step in Trajectory)
+N_FRAMES        = int(os.environ.get("N_FRAMES", "500"))    # max frames to read (frame_stop in Trajectory)
+STRIDE          = int(os.environ.get("STRIDE", "1"))        # read every Nth frame (frame_step in Trajectory)
 
 # Threading — 0 = use all available cores
 # Only applied when OMP_NUM_THREADS is not already set in the environment.
 N_THREADS       = 0
 
 # Time axis
-DT              = 1.0       # fs between consecutive dumped frames
+DT              = float(os.environ.get("DT", "1.0"))        # fs between consecutive dumped frames
 
 # Dynamic S(q,ω) parameters
-WINDOW_SIZE     = 500       # number of time lags; frequency resolution Δω ~ 1/(WINDOW_SIZE × DT)
+WINDOW_SIZE     = int(os.environ.get("WINDOW_SIZE", "500")) # number of time lags; frequency resolution Δω ~ 1/(WINDOW_SIZE × DT)
 
 # q-space
-Q_MAX           = 20.0      # Å⁻¹, passed to get_spherical_qpoints
-N_Q_BINS        = 200       # radial q-bins after spherical averaging
+Q_MAX           = float(os.environ.get("Q_MAX", "20.0"))    # Å⁻¹, passed to get_spherical_qpoints
+N_Q_BINS        = int(os.environ.get("N_Q_BINS", "200"))    # radial q-bins after spherical averaging
 
 # What to compute
 COMPUTE_STATIC  = True      # S(q)
