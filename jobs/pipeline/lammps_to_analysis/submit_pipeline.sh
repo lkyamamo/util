@@ -67,6 +67,14 @@ Optional:
       column overrides dsf_submit.slurm (the analysis job). Omit any of
       these to leave the template's own value in effect.
 
+  --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
+                                  existing <run_id>_distribution_analysis/ (stage 2)
+                                  instead of refusing to run. REASON is required (a
+                                  short explanation of why you're overwriting) and is
+                                  logged, with a timestamp and the exact path removed,
+                                  to both stderr and
+                                  jobs/pipeline/lammps_to_analysis/overwrite.log.
+
   -h, --help                    Show this help
 EOF
 }
@@ -74,38 +82,48 @@ EOF
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_submit.slurm"
 DUMP_FILE="dump.lammpstrj"
+LOG_FILE="$REPO_ROOT/jobs/pipeline/lammps_to_analysis/overwrite.log"
 
-INPUT_SCRIPT=""
-STARTING_STRUCTURE=""
-POTENTIAL_FILE=""
-ANALYSIS_PARENT_DIR=""
+log_overwrite() {
+  local msg
+  msg="[$(date "+%Y-%m-%dT%H:%M:%S%z")] $1"
+  echo "WARNING: $msg" >&2
+  echo "$msg" >> "$LOG_FILE"
+}
+
+INPUT_SCRIPT="/scratch1/lkyamamo/test-runs/potential-verify/runs/0168/OH-therm.input"
+STARTING_STRUCTURE="/home1/lkyamamo/util/starting-structures/ICE_CUBIC.data"
+POTENTIAL_FILE="/scratch1/lkyamamo/test-runs/potential-verify/potentials/20260723_OH.vashishta"
+ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/test-runs/potential-verify/analysis"
 ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
-RUN_DSF="1"
+RUN_DSF="0"
 RUN_RDF="1"
 RUN_BAD="1"
-NODES=""
-NTASKS=""
-TIME=""
-JOB_NAME=""
-CONSTRAINT=""
-ANALYSIS_NODES=""
-ANALYSIS_NTASKS=""
-ANALYSIS_TIME=""
-ANALYSIS_JOB_NAME=""
-ANALYSIS_CONSTRAINT=""
-RDF_R_MAX=""
-RDF_BINS_VAL=""
-BAD_ELEMENTS=""
+NODES="1"
+NTASKS="128"
+TIME="1:00:00"
+JOB_NAME="water-setup"
+CONSTRAINT="epyc-9554"
+ANALYSIS_NODES="1"
+ANALYSIS_NTASKS="1"
+ANALYSIS_TIME="1:00:00"
+ANALYSIS_JOB_NAME="water-distributions"
+ANALYSIS_CONSTRAINT="epyc-9554"
+RDF_R_MAX="8"
+RDF_BINS_VAL="800"
+BAD_ELEMENTS="O;H"
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
-BAD_TRIPLET_CUTOFFS=""
-BAD_BINS_VAL=""
+BAD_TRIPLET_CUTOFFS="H-O-H:H-O-H:1.2:0.5:1.2:0.5|H--O--H:H-O-H:2.4:1.49:2.4:1.49|O-H--O:O-H-O:1.2:0.5:2.4:1.49"
+BAD_BINS_VAL="360"
 DSF_DT=""
 DSF_N_FRAMES=""
 DSF_STRIDE=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
+FORCE="0"
+FORCE_REASON=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -140,6 +158,7 @@ while [[ $# -gt 0 ]]; do
     --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
+    --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -171,12 +190,22 @@ check_zero_or_one "$RUN_DSF" --run-dsf
 check_zero_or_one "$RUN_RDF" --run-rdf
 check_zero_or_one "$RUN_BAD" --run-bad
 
+if [[ "$FORCE" == "1" && -z "$FORCE_REASON" ]]; then
+  echo 'Error: --force requires a non-empty reason, e.g. --force "re-running after fixing potential file"' >&2
+  exit 1
+fi
+
 STAGE1_DIR="$(pwd)"
 RUN_ID="$(basename "$STAGE1_DIR")"
 
 if [[ -e "$STAGE1_DIR/input_files" || -e "$STAGE1_DIR/run" ]]; then
-  echo "Error: $STAGE1_DIR already has input_files/ or run/ — refusing to overwrite." >&2
-  exit 1
+  if [[ "$FORCE" == "1" ]]; then
+    log_overwrite "--force ($FORCE_REASON): removing existing $STAGE1_DIR/input_files and/or $STAGE1_DIR/run (run id: $RUN_ID)"
+    rm -rf "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
+  else
+    echo "Error: $STAGE1_DIR already has input_files/ or run/ — refusing to overwrite (use --force to override)." >&2
+    exit 1
+  fi
 fi
 
 ############################
@@ -213,8 +242,13 @@ ANALYSIS_PARENT_DIR="$(cd "$ANALYSIS_PARENT_DIR" && pwd)"
 STAGE2_DIR="$ANALYSIS_PARENT_DIR/${RUN_ID}_distribution_analysis"
 
 if [[ -e "$STAGE2_DIR" ]]; then
-  echo "Error: $STAGE2_DIR already exists — refusing to overwrite." >&2
-  exit 1
+  if [[ "$FORCE" == "1" ]]; then
+    log_overwrite "--force ($FORCE_REASON): removing existing $STAGE2_DIR"
+    rm -rf "$STAGE2_DIR"
+  else
+    echo "Error: $STAGE2_DIR already exists — refusing to overwrite (use --force to override)." >&2
+    exit 1
+  fi
 fi
 
 mkdir -p "$STAGE2_DIR"
