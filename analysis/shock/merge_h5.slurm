@@ -14,3 +14,11 @@ python "$SCRIPT_DIR/merge_h5.py" "$OUTPUT_DIR" "$FINAL_H5" \
     --secondary-cutoff "$CRATER_SECONDARY_CUTOFF" \
     --sphere-y-center "$SPHERE_Y_CENTER" \
     --sphere-z-center "$SPHERE_Z_CENTER"
+
+############################
+# Ledger
+############################
+
+python3 /home1/lkyamamo/util/jobs/ledger/ledger.py add-analysis --dir "$DUMP_DIR" voxel_shock_density \
+    --output "$FINAL_H5" \
+    || echo "WARNING: ledger add-analysis failed" >&2

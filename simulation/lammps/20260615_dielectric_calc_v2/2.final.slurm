@@ -61,3 +61,12 @@ python "$SCRIPT_DIR/2.dipole_std.py" \
 
 echo "Final job finished at $(date)"
 echo "Dielectric CSV: $OUTPUT_DIR/dipole_output_timestep_data_${AVERAGING_METHOD:-binned}.csv"
+
+############################
+# Ledger
+############################
+
+SOURCE_DIR="$(cd "$SCRIPT_DIR" && cd "$DUMP_DIR" && pwd)"
+python3 /home1/lkyamamo/util/jobs/ledger/ledger.py add-analysis --dir "$SOURCE_DIR" dielectric_constant \
+    --output "$OUTPUT_DIR/dipole_output_timestep_data_${AVERAGING_METHOD:-binned}.csv" \
+    || echo "WARNING: ledger add-analysis failed" >&2

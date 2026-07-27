@@ -86,3 +86,12 @@ python "$SCRIPT_DIR/2.dipole_std.py" \
     "$AVERAGING_METHOD"
 
 echo "Job ${SLURM_JOB_ID} finished at $(date)"
+
+############################
+# Ledger
+############################
+
+SOURCE_DIR="$(cd "$DUMP_DIR" && pwd)"
+python3 /home1/lkyamamo/util/jobs/ledger/ledger.py add-analysis --dir "$SOURCE_DIR" dielectric_constant \
+    --output "$OUTPUT_DIR" \
+    || echo "WARNING: ledger add-analysis failed" >&2

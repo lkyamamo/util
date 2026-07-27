@@ -50,4 +50,13 @@ srun --mpi=pmix -n $SLURM_NTASKS $vsp
 date
 echo “simulation finished **************************************”
 echo
+
+############################
+# Ledger
+############################
+
+python3 /home1/lkyamamo/util/jobs/ledger/ledger.py record "$RUN_DIR" \
+  --slurm-script "$0" --status completed --run-type job \
+  || echo "WARNING: ledger record failed" >&2
+
 exit 0
