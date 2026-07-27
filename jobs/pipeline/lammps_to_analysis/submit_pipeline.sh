@@ -62,14 +62,16 @@ Optional:
   --time HH:MM:SS           --analysis-time HH:MM:SS
   --job-name NAME           --analysis-job-name NAME
   --constraint NAME         --analysis-constraint NAME
+  --nodelist NODES          --analysis-nodelist NODES
                            --analysis-cpus-per-task N
       Overrides for the corresponding #SBATCH directives — the left column
       overrides jobs/slurm/lammps_submit.slurm (the LAMMPS run), the right
       column overrides dsf_submit.slurm (the analysis job). Omit any of
-      these to leave the template's own value in effect. --analysis-cpus-per-task
-      has no LAMMPS-side counterpart; it also drives OMP_NUM_THREADS for
-      dsf.py/rdf_freud.py/bad_freud.py (dsf_submit.slurm sets
-      OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK).
+      these to leave the template's own value in effect. --nodelist pins the
+      job to specific compute node(s) (SLURM's --nodelist, e.g. "b19-05" or
+      "b19-[05-07]"). --analysis-cpus-per-task has no LAMMPS-side counterpart;
+      it also drives OMP_NUM_THREADS for dsf.py/rdf_freud.py/bad_freud.py
+      (dsf_submit.slurm sets OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK).
 
   --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
                                   existing <run_id>_distribution_analysis/ (stage 2)
@@ -79,7 +81,23 @@ Optional:
                                   to both stderr and
                                   jobs/pipeline/lammps_to_analysis/overwrite.log.
 
+  --interactive                   Run both stages in the foreground via plain
+                                  bash instead of submitting them with sbatch.
+                                  Assumes you already have an interactive
+                                  allocation (e.g. via salloc) — this does not
+                                  request one. --nodes/--time/--job-name/
+                                  --constraint/--nodelist (and their
+                                  --analysis-* counterparts) are ignored in
+                                  this mode, since no new job is submitted.
+                                  --ntasks and --analysis-cpus-per-task still
+                                  apply (default 64 if not given) since they
+                                  drive srun -n and OMP_NUM_THREADS.
+
   -h, --help                    Show this help
+
+All terminal output from this script (not the SLURM jobs themselves) is
+also appended to submit_pipeline.log in the run directory (cwd) each time
+it's invoked.
 EOF
 }
 
@@ -113,6 +131,7 @@ NTASKS="128"
 TIME="1:00:00"
 JOB_NAME="water-setup"
 CONSTRAINT="epyc-9554"
+NODELIST=""
 
 # analysis slurm parameters
 ANALYSIS_NODES="1"
@@ -121,6 +140,7 @@ ANALYSIS_TIME="1:00:00"
 ANALYSIS_JOB_NAME="water-distributions"
 ANALYSIS_CONSTRAINT="epyc-9554"
 ANALYSIS_CPUS_PER_TASK=""
+ANALYSIS_NODELIST=""
 
 # distribution code parameters
 RDF_R_MAX="8"
@@ -136,6 +156,7 @@ DSF_STRIDE=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
+INTERACTIVE="0"
 
 
 while [[ $# -gt 0 ]]; do
@@ -153,11 +174,13 @@ while [[ $# -gt 0 ]]; do
     --time) TIME="$2"; shift 2 ;;
     --job-name) JOB_NAME="$2"; shift 2 ;;
     --constraint) CONSTRAINT="$2"; shift 2 ;;
+    --nodelist) NODELIST="$2"; shift 2 ;;
     --analysis-nodes) ANALYSIS_NODES="$2"; shift 2 ;;
     --analysis-ntasks) ANALYSIS_NTASKS="$2"; shift 2 ;;
     --analysis-time) ANALYSIS_TIME="$2"; shift 2 ;;
     --analysis-job-name) ANALYSIS_JOB_NAME="$2"; shift 2 ;;
     --analysis-constraint) ANALYSIS_CONSTRAINT="$2"; shift 2 ;;
+    --analysis-nodelist) ANALYSIS_NODELIST="$2"; shift 2 ;;
     --analysis-cpus-per-task) ANALYSIS_CPUS_PER_TASK="$2"; shift 2 ;;
     --rdf-r-max) RDF_R_MAX="$2"; shift 2 ;;
     --rdf-bins) RDF_BINS_VAL="$2"; shift 2 ;;
@@ -173,10 +196,18 @@ while [[ $# -gt 0 ]]; do
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
+    --interactive) INTERACTIVE="1"; shift 1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+STAGE1_DIR="$(pwd)"
+RUN_ID="$(basename "$STAGE1_DIR")"
+PIPELINE_LOG="$STAGE1_DIR/submit_pipeline.log"
+exec > >(tee -a "$PIPELINE_LOG") 2>&1
+echo "=== submit_pipeline.sh started $(date "+%Y-%m-%dT%H:%M:%S%z") — run id: $RUN_ID ==="
+echo "Logging this run's output to: $PIPELINE_LOG"
 
 missing=0
 require() {
@@ -209,8 +240,13 @@ if [[ "$FORCE" == "1" && -z "$FORCE_REASON" ]]; then
   exit 1
 fi
 
-STAGE1_DIR="$(pwd)"
-RUN_ID="$(basename "$STAGE1_DIR")"
+if [[ "$INTERACTIVE" == "1" && -z "${SLURM_JOB_ID:-}" ]]; then
+  echo "Error: --interactive requires an active Slurm allocation (run 'salloc ...' first)." >&2
+  echo "No \$SLURM_JOB_ID is set in this shell, so srun would fail to allocate resources —" >&2
+  echo "and lammps_submit.slurm's unconditional 'exit 0' would silently mask that failure" >&2
+  echo "instead of stopping the pipeline before stage 2." >&2
+  exit 1
+fi
 
 if [[ -e "$STAGE1_DIR/input_files" || -e "$STAGE1_DIR/run" ]]; then
   if [[ "$FORCE" == "1" ]]; then
@@ -234,18 +270,6 @@ ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE1_DIR/input_files/$(basename "$POTE
 
 cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/lammps_submit.slurm"
 cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/run/lammps_submit.slurm"
-
-sbatch_args=()
-[[ -n "$NODES" ]]      && sbatch_args+=(--nodes="$NODES")
-[[ -n "$NTASKS" ]]     && sbatch_args+=(--ntasks="$NTASKS")
-[[ -n "$TIME" ]]       && sbatch_args+=(--time="$TIME")
-[[ -n "$JOB_NAME" ]]   && sbatch_args+=(--job-name="$JOB_NAME")
-[[ -n "$CONSTRAINT" ]] && sbatch_args+=(--constraint="$CONSTRAINT")
-
-echo "Submitting LAMMPS run from $STAGE1_DIR/run ..."
-JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
-  "${sbatch_args[@]+"${sbatch_args[@]}"}" lammps_submit.slurm)"
-echo "  LAMMPS job id: $JOBID1"
 
 ############################
 # Stage 2: distribution analysis (reads the trajectory as input; never modifies it)
@@ -274,14 +298,6 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$STAGE2_DIR/"
 ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
 
-analysis_sbatch_args=()
-[[ -n "$ANALYSIS_NODES" ]]      && analysis_sbatch_args+=(--nodes="$ANALYSIS_NODES")
-[[ -n "$ANALYSIS_NTASKS" ]]     && analysis_sbatch_args+=(--ntasks="$ANALYSIS_NTASKS")
-[[ -n "$ANALYSIS_TIME" ]]       && analysis_sbatch_args+=(--time="$ANALYSIS_TIME")
-[[ -n "$ANALYSIS_JOB_NAME" ]]   && analysis_sbatch_args+=(--job-name="$ANALYSIS_JOB_NAME")
-[[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
-[[ -n "$ANALYSIS_CPUS_PER_TASK" ]] && analysis_sbatch_args+=(--cpus-per-task="$ANALYSIS_CPUS_PER_TASK")
-
 # None of these values may contain a comma — sbatch --export is
 # comma-delimited and silently truncates anything after an embedded one.
 export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD"
@@ -299,20 +315,79 @@ export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_
 [[ -n "$DSF_Q_MAX" ]]           && export_vars+=",Q_MAX=$DSF_Q_MAX"
 [[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",N_Q_BINS=$DSF_N_Q_BINS"
 
-echo "Submitting distribution analysis from $STAGE2_DIR, dependent on job $JOBID1 ..."
-JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable --dependency=afterok:"$JOBID1" \
-  "${analysis_sbatch_args[@]+"${analysis_sbatch_args[@]}"}" \
-  --export="$export_vars" \
-  dsf_submit.slurm)"
-echo "  distribution-analysis job id: $JOBID2"
-
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
 [[ "$RUN_RDF" == "1" ]] && enabled_scripts+="rdf_freud.py "
 [[ "$RUN_BAD" == "1" ]] && enabled_scripts+="bad_freud.py "
 enabled_scripts="${enabled_scripts% }"
 
-cat <<SUMMARY
+############################
+# Execution: one branch runs both stages
+############################
+
+if [[ "$INTERACTIVE" == "1" ]]; then
+  echo "Running LAMMPS interactively in $STAGE1_DIR/run ..."
+  (
+    export SLURM_SUBMIT_DIR="$STAGE1_DIR/run"
+    export SLURM_NTASKS="${NTASKS:-64}"
+    cd "$STAGE1_DIR/run" && bash lammps_submit.slurm
+  )
+  echo "LAMMPS run finished."
+
+  echo "Running distribution analysis interactively in $STAGE2_DIR ..."
+  (
+    export SLURM_SUBMIT_DIR="$STAGE2_DIR"
+    export SLURM_CPUS_PER_TASK="${ANALYSIS_CPUS_PER_TASK:-64}"
+    IFS=',' read -ra _kv_pairs <<< "${export_vars#ALL,}"
+    for pair in "${_kv_pairs[@]}"; do export "$pair"; done
+    cd "$STAGE2_DIR" && bash dsf_submit.slurm
+  )
+  echo "Distribution analysis finished."
+
+  cat <<SUMMARY
+
+Pipeline completed interactively:
+  LAMMPS run (setup + trajectory) : $STAGE1_DIR
+  distribution analysis           : $STAGE2_DIR
+  analysis scripts enabled        : ${enabled_scripts:-none}
+
+$(if [[ -n "$enabled_scripts" ]]; then
+  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, ...) not"
+  echo "passed via --rdf-*/--bad-*/--dsf-* flags is using each script's own default —"
+  echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
+fi)
+SUMMARY
+else
+  sbatch_args=()
+  [[ -n "$NODES" ]]      && sbatch_args+=(--nodes="$NODES")
+  [[ -n "$NTASKS" ]]     && sbatch_args+=(--ntasks="$NTASKS")
+  [[ -n "$TIME" ]]       && sbatch_args+=(--time="$TIME")
+  [[ -n "$JOB_NAME" ]]   && sbatch_args+=(--job-name="$JOB_NAME")
+  [[ -n "$CONSTRAINT" ]] && sbatch_args+=(--constraint="$CONSTRAINT")
+  [[ -n "$NODELIST" ]]   && sbatch_args+=(--nodelist="$NODELIST")
+
+  echo "Submitting LAMMPS run from $STAGE1_DIR/run ..."
+  JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
+    "${sbatch_args[@]+"${sbatch_args[@]}"}" lammps_submit.slurm)"
+  echo "  LAMMPS job id: $JOBID1"
+
+  analysis_sbatch_args=()
+  [[ -n "$ANALYSIS_NODES" ]]      && analysis_sbatch_args+=(--nodes="$ANALYSIS_NODES")
+  [[ -n "$ANALYSIS_NTASKS" ]]     && analysis_sbatch_args+=(--ntasks="$ANALYSIS_NTASKS")
+  [[ -n "$ANALYSIS_TIME" ]]       && analysis_sbatch_args+=(--time="$ANALYSIS_TIME")
+  [[ -n "$ANALYSIS_JOB_NAME" ]]   && analysis_sbatch_args+=(--job-name="$ANALYSIS_JOB_NAME")
+  [[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
+  [[ -n "$ANALYSIS_NODELIST" ]]   && analysis_sbatch_args+=(--nodelist="$ANALYSIS_NODELIST")
+  [[ -n "$ANALYSIS_CPUS_PER_TASK" ]] && analysis_sbatch_args+=(--cpus-per-task="$ANALYSIS_CPUS_PER_TASK")
+
+  echo "Submitting distribution analysis from $STAGE2_DIR, dependent on job $JOBID1 ..."
+  JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable --dependency=afterok:"$JOBID1" \
+    "${analysis_sbatch_args[@]+"${analysis_sbatch_args[@]}"}" \
+    --export="$export_vars" \
+    dsf_submit.slurm)"
+  echo "  distribution-analysis job id: $JOBID2"
+
+  cat <<SUMMARY
 
 Pipeline submitted:
   LAMMPS run (setup + trajectory) : $STAGE1_DIR  (job $JOBID1)
@@ -325,3 +400,4 @@ $(if [[ -n "$enabled_scripts" ]]; then
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY
+fi

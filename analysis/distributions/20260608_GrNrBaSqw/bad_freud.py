@@ -57,13 +57,17 @@ OUTPUT_CSV = "bads.csv"
 # truncates any value containing a literal comma.
 
 def _parse_pair_dict(env_name, default):
-    """Parse 'H-H:2.0;H-O:1.4' into {'H-H': 2.0, 'H-O': 1.4}, or return default if unset."""
+    """Parse 'H-H:2.0;H-O:1.4' into {'H-H': 2.0, 'H-O': 1.4}, or return default if unset.
+    Keys are normalized to alphabetical element order (e.g. 'Si-O' and 'O-Si' both
+    become 'O-Si'), matching _pair_key()'s convention used for triplet cutoff lookups.
+    """
     raw = os.environ.get(env_name)
     if raw is None:
         return default
     result = {}
     for entry in raw.split(";"):
         key, value = entry.split(":")
+        key = "-".join(sorted(key.split("-")))
         result[key] = float(value)
     return result
 
@@ -423,10 +427,15 @@ if __name__ == '__main__':
         label    = entry['label']
         key_ab   = _pair_key(el_a, el_b)
         key_cb   = _pair_key(el_c, el_b)
-        r_max_ab = entry.get('r_max_ab', R_CUTOFF[key_ab])
-        r_min_ab = entry.get('r_min_ab', R_MINCUT[key_ab])
-        r_max_cb = entry.get('r_max_cb', R_CUTOFF[key_cb])
-        r_min_cb = entry.get('r_min_cb', R_MINCUT[key_cb])
+        # NOTE: dict.get(key, default_expr) always evaluates default_expr eagerly,
+        # even when key is already present — so R_CUTOFF[key_ab] would raise
+        # KeyError even for entries that fully specify their own cutoffs. Use an
+        # explicit conditional instead so R_CUTOFF/R_MINCUT are only consulted
+        # when actually needed.
+        r_max_ab = entry['r_max_ab'] if 'r_max_ab' in entry else R_CUTOFF[key_ab]
+        r_min_ab = entry['r_min_ab'] if 'r_min_ab' in entry else R_MINCUT[key_ab]
+        r_max_cb = entry['r_max_cb'] if 'r_max_cb' in entry else R_CUTOFF[key_cb]
+        r_min_cb = entry['r_min_cb'] if 'r_min_cb' in entry else R_MINCUT[key_cb]
         print(f"Computing BAD: {label}...")
         angles, hist = compute_bad(frames, el_a, el_b, el_c,
                                    r_max_ab, r_min_ab, r_max_cb, r_min_cb)
