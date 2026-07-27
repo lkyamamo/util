@@ -69,23 +69,31 @@ fi
 ############################
 # Thermodynamics post-processing
 #
-# Only runs when LAMMPS succeeded. Reads log.lammps from the run directory
-# (still cwd) and writes thermodynamics.csv + thermodynamics_plots.png there.
+# Only runs when LAMMPS succeeded. Reads log.lammps from the run directory and
+# keeps everything it touches inside $POST_DIR: a copy of the script that was
+# run, plus thermodynamics.csv, temperature.png and total_energy.png. Copying
+# the script means each run records the version that produced its results.
+#
 # A failure here is reported but does not fail the job, since the simulation
 # itself already completed.
 ############################
 
 VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
 THERMO_SCRIPT="/home1/lkyamamo/util/plotting/lammps/thermodynamics.py"
+POST_DIR="$RUN_DIR/postprocess"
 
 if [ ! -f "$VENV_PATH/bin/activate" ]; then
   echo "WARNING: no virtualenv at $VENV_PATH -- skipping thermodynamics analysis"
 elif [ ! -f "$THERMO_SCRIPT" ]; then
   echo "WARNING: $THERMO_SCRIPT not found -- skipping thermodynamics analysis"
 else
-  echo "running thermodynamics analysis in $(pwd)"
+  mkdir -p "$POST_DIR"
+  cp "$THERMO_SCRIPT" "$POST_DIR/"
+  echo "running thermodynamics analysis, output in $POST_DIR"
   source "$VENV_PATH/bin/activate"
-  python "$THERMO_SCRIPT" || echo "WARNING: thermodynamics analysis failed"
+  python "$POST_DIR/$(basename "$THERMO_SCRIPT")" \
+    --log "$RUN_DIR/log.lammps" \
+    --outdir "$POST_DIR" || echo "WARNING: thermodynamics analysis failed"
   date
 fi
 
