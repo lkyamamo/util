@@ -101,6 +101,7 @@ it's invoked.
 EOF
 }
 
+INTERACTIVE="0"
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_submit.slurm"
 DUMP_FILE="dump.lammpstrj"
@@ -156,7 +157,7 @@ DSF_STRIDE=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
-INTERACTIVE="0"
+
 
 
 while [[ $# -gt 0 ]]; do
