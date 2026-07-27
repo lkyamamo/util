@@ -166,7 +166,9 @@ def compute_region_density(
 def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compute region density from a LAMMPS dump (OVITO).")
     p.add_argument("--local-path", type=Path, required=True, help="Local LAMMPS dump file.")
-    p.add_argument("--frame", type=int, default=0, help="Frame index to read.")
+    p.add_argument("--frame", type=int, default=None,
+                    help="Frame index to read. If omitted and the file has "
+                         "multiple frames, you will be prompted for one.")
 
     p.add_argument("--xlo", type=float, default=None)
     p.add_argument("--xhi", type=float, default=None)
@@ -182,15 +184,37 @@ def _parse_args(argv: Optional[list] = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _resolve_frame(pipeline, requested_frame: Optional[int]) -> int:
+    if requested_frame is not None:
+        return requested_frame
+
+    num_frames = pipeline.source.num_frames
+    if num_frames <= 1:
+        return 0
+
+    while True:
+        raw = input(f"File has {num_frames} frames. Enter frame index to compute density on (0-{num_frames - 1}): ")
+        try:
+            frame = int(raw)
+        except ValueError:
+            print("Please enter an integer.")
+            continue
+        if not (0 <= frame < num_frames):
+            print(f"Frame index must be between 0 and {num_frames - 1}.")
+            continue
+        return frame
+
+
 def main(argv: Optional[list] = None) -> None:
     args = _parse_args(argv)
 
     local_path = args.local_path.expanduser().resolve()
     pipeline = import_file(str(local_path))
+    frame = _resolve_frame(pipeline, args.frame)
 
     result = compute_region_density(
         pipeline,
-        frame=args.frame,
+        frame=frame,
         xlo=args.xlo, xhi=args.xhi,
         ylo=args.ylo, yhi=args.yhi,
         zlo=args.zlo, zhi=args.zhi,
