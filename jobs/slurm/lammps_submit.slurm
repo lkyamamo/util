@@ -56,8 +56,37 @@ echo "Running in $(pwd)"
 srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp \
   -log log.lammps \
   -in in.input
+LAMMPS_STATUS=$?
 date
 echo “simulation finished **************************************”
 echo
+
+if [ $LAMMPS_STATUS -ne 0 ]; then
+  echo "LAMMPS exited with status $LAMMPS_STATUS -- skipping thermodynamics analysis"
+  exit $LAMMPS_STATUS
+fi
+
+############################
+# Thermodynamics post-processing
+#
+# Only runs when LAMMPS succeeded. Reads log.lammps from the run directory
+# (still cwd) and writes thermodynamics.csv + thermodynamics_plots.png there.
+# A failure here is reported but does not fail the job, since the simulation
+# itself already completed.
+############################
+
+VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
+THERMO_SCRIPT="/home1/lkyamamo/util/plotting/lammps/thermodynamics.py"
+
+if [ ! -f "$VENV_PATH/bin/activate" ]; then
+  echo "WARNING: no virtualenv at $VENV_PATH -- skipping thermodynamics analysis"
+elif [ ! -f "$THERMO_SCRIPT" ]; then
+  echo "WARNING: $THERMO_SCRIPT not found -- skipping thermodynamics analysis"
+else
+  echo "running thermodynamics analysis in $(pwd)"
+  source "$VENV_PATH/bin/activate"
+  python "$THERMO_SCRIPT" || echo "WARNING: thermodynamics analysis failed"
+  date
+fi
 
 exit 0
