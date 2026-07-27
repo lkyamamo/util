@@ -71,8 +71,10 @@ fi
 #
 # Only runs when LAMMPS succeeded. Reads log.lammps from the run directory and
 # keeps everything it touches inside $POST_DIR: a copy of the script that was
-# run, plus thermodynamics.csv, temperature.png and total_energy.png. Copying
-# the script means each run records the version that produced its results.
+# run, plus thermodynamics.csv, statistics.csv and publication-sized pdf/png
+# figures. Runs containing a reset_timestep are split into numbered segments
+# (thermodynamics_01.csv, temperature_01.pdf, ...) rather than concatenated.
+# Copying the script means each run records the version that produced its results.
 #
 # A failure here is reported but does not fail the job, since the simulation
 # itself already completed.
