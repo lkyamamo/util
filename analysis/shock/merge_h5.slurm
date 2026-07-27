@@ -37,3 +37,11 @@ if [ -n "$TIME_BIN" ]; then
 else
     echo "GNU time not available — peak memory not logged (use seff/sacct after the job completes)"
 fi
+
+############################
+# Ledger
+############################
+
+python3 /home1/lkyamamo/util/jobs/ledger/ledger.py add-analysis --dir "$DUMP_DIR" voxel_shock_density \
+    --output "$FINAL_H5" \
+    || echo "WARNING: ledger add-analysis failed" >&2

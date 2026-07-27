@@ -77,4 +77,12 @@ python3 "${SCRIPT_DIR}/cleanup_orphan_atoms.py" \
 date
 echo "bubble creation finished **************************************"
 
+############################
+# Ledger
+############################
+
+python3 /home1/lkyamamo/util/jobs/ledger/ledger.py record "$SCRIPT_DIR" \
+  --slurm-script "$0" --status completed --run-type setup \
+  || echo "WARNING: ledger record failed" >&2
+
 exit 0

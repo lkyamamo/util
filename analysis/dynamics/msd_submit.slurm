@@ -125,3 +125,11 @@ cd "${OUT_DIR}" || exit 1
 
 echo "Wrote ${OUT_DIR}/msd.dat and ${OUT_DIR}/dos.dat"
 date
+
+############################
+# Ledger
+############################
+
+python3 /home1/lkyamamo/util/jobs/ledger/ledger.py add-analysis --dir "$INPUT_DIR" msd \
+    --output "${OUT_DIR}/msd.dat" --field temperature_C="${T}" \
+    || echo "WARNING: ledger add-analysis failed" >&2
