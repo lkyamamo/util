@@ -20,7 +20,7 @@ date
 # Trajectory — set this before submitting
 ############################
 
-TRAJ="../OH.lammpstrj"
+TRAJ="${TRAJ:-../OH.lammpstrj}"
 export TRAJ
 echo "Trajectory: $TRAJ"
 
@@ -28,9 +28,9 @@ echo "Trajectory: $TRAJ"
 # Run flags — set 1 to run, 0 to skip
 ############################
 
-RUN_DSF=1
-RUN_RDF=1
-RUN_BAD=1
+RUN_DSF="${RUN_DSF:-1}"
+RUN_RDF="${RUN_RDF:-1}"
+RUN_BAD="${RUN_BAD:-1}"
 
 ############################
 # Paths
