@@ -37,6 +37,8 @@ import os
 
 import numpy as np
 import freud
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # =============================================================================
@@ -404,7 +406,7 @@ def plot_bads(results):
 
     plt.tight_layout()
     plt.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
-    plt.show()
+    plt.close(fig)
     print(f"Plot saved to {OUTPUT_PLOT}")
 
 

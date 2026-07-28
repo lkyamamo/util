@@ -26,6 +26,8 @@ import os
 
 import numpy as np
 import freud
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # =============================================================================
@@ -279,7 +281,7 @@ def plot_rdfs(results):
     if OUTPUT_PLOT is not None:
         fig.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
         print(f"Plot saved to {OUTPUT_PLOT}")
-    plt.show()
+    plt.close(fig)
 
 
 def plot_nrs(nr_results):
@@ -303,7 +305,7 @@ def plot_nrs(nr_results):
     if OUTPUT_NR_PLOT is not None:
         fig.savefig(OUTPUT_NR_PLOT, dpi=PLOT_DPI)
         print(f"n(r) plot saved to {OUTPUT_NR_PLOT}")
-    plt.show()
+    plt.close(fig)
 
 
 if __name__ == '__main__':

@@ -15,8 +15,15 @@ Run from inside the LAMMPS run directory, whose name is the run id
 Required:
   --input-script FILE          LAMMPS .input script (setup + trajectory generation)
   --starting-structure FILE    Starting structure .data file, symlinked as start.data
-  --potential-file FILE        Potential file, symlinked by basename
+  --potential-file FILE        Potential file, symlinked into input_files/
   --analysis-parent-dir DIR    Where <run_id>_distribution_analysis/ is created
+
+Note: --potential-link-name NAME (optional but often required in practice)
+sets the symlink's name in input_files/ (e.g. "OH.usc"). It must match
+whatever your in.input's pair_coeff line expects, which frequently differs
+from --potential-file's own basename (e.g. a real potential file named
+20260723_OH.vashishta but pair_coeff expects OH.usc). Defaults to
+--potential-file's basename if omitted.
 
 Note: --input-script's in.input must write its trajectory dump, flat (no
 subdirectory), to dump.lammpstrj (the standardized output name) — this is
@@ -120,6 +127,7 @@ log_overwrite() {
 INPUT_SCRIPT="/scratch1/lkyamamo/test-runs/potential-verify/runs/0168/OH-therm.input"
 STARTING_STRUCTURE="/home1/lkyamamo/util/starting-structures/ICE_CUBIC.data"
 POTENTIAL_FILE="/scratch1/lkyamamo/test-runs/potential-verify/potentials/20260723_OH.vashishta"
+POTENTIAL_LINK_NAME="OH.usc"
 ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/test-runs/potential-verify/analysis"
 ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
 RUN_DSF="0"
@@ -165,6 +173,7 @@ while [[ $# -gt 0 ]]; do
     --input-script) INPUT_SCRIPT="$2"; shift 2 ;;
     --starting-structure) STARTING_STRUCTURE="$2"; shift 2 ;;
     --potential-file) POTENTIAL_FILE="$2"; shift 2 ;;
+    --potential-link-name) POTENTIAL_LINK_NAME="$2"; shift 2 ;;
     --analysis-parent-dir) ANALYSIS_PARENT_DIR="$2"; shift 2 ;;
     --analysis-template-dir) ANALYSIS_TEMPLATE_DIR="$2"; shift 2 ;;
     --run-dsf) RUN_DSF="$2"; shift 2 ;;
@@ -267,7 +276,7 @@ mkdir -p "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
 
 cp "$INPUT_SCRIPT" "$STAGE1_DIR/input_files/in.input"
 ln -s "$(realpath "$STARTING_STRUCTURE")" "$STAGE1_DIR/input_files/start.data"
-ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE1_DIR/input_files/$(basename "$POTENTIAL_FILE")"
+ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE1_DIR/input_files/${POTENTIAL_LINK_NAME:-$(basename "$POTENTIAL_FILE")}"
 
 cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/lammps_submit.slurm"
 cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/run/lammps_submit.slurm"
