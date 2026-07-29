@@ -4,6 +4,9 @@ dsf.py — Dynamic and Static Structure Factor from LAMMPS dump trajectories.
 QUICK START
 -----------
 1. Set DUMP_FILE to your LAMMPS custom dump trajectory (element column required).
+   Defaults to dynamics.lammpstrj (env var DYNAMICS_TRAJ) — the higher-frequency
+   trajectory dumped alongside dump.lammpstrj specifically for dsf.py/vdos.py;
+   see OH-therm.input/b-SiO-therm.input's second dump block.
 2. Set DT to the time between consecutive dumped frames in femtoseconds.
 3. Set N_FRAMES and WINDOW_SIZE.
 4. Run:  python dsf.py
@@ -36,7 +39,7 @@ from datetime import date
 # CONFIGURATION — edit these variables between runs
 # =============================================================================
 
-DUMP_FILE       = os.environ.get("TRAJ", "dump.lammpstrj")
+DUMP_FILE       = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
 # Trajectory sampling
 N_FRAMES        = int(os.environ.get("N_FRAMES", "500"))    # max frames to read (frame_stop in Trajectory)

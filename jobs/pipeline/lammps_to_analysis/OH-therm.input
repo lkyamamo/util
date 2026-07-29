@@ -70,6 +70,7 @@ undump		1
 
 variable        thermo_frequency equal 50
 variable        dump_frequency equal 50
+variable        dynamics_dump_frequency equal 10
 variable        nve_length equal 50000
 
 reset_timestep  0
@@ -77,10 +78,18 @@ dump            mydump all custom ${dump_frequency} dump.lammpstrj id element x 
 dump_modify     mydump element O H
 dump_modify     mydump sort id
 
+# Separate, higher-frequency trajectory for dsf.py/vdos.py (dynamic structure
+# factor / vibrational density of states) — resolving vibrational frequencies
+# needs much finer time sampling than the structural dump above.
+dump            mydyn all custom ${dynamics_dump_frequency} dynamics.lammpstrj id element x y z vx vy vz
+dump_modify     mydyn element O H
+dump_modify     mydyn sort id
+
 fix             1 all nve temp
 run             ${nve_length}
 unfix           1
 undump          mydump
+undump          mydyn
 
 write_restart   final.restart
 write_data      final.data

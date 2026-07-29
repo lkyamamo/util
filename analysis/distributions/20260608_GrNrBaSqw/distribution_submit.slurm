@@ -17,12 +17,19 @@ echo "starting analysis **************************************"
 date
 
 ############################
-# Trajectory — set this before submitting
+# Trajectory — set these before submitting
 ############################
 
+# TRAJ: structural trajectory (rdf_freud.py/bad_freud.py).
+# DYNAMICS_TRAJ: separate, higher-frequency trajectory (dsf.py/vdos.py) —
+# resolving vibrational frequencies needs much finer time sampling than
+# structural analysis does. See OH-therm.input/b-SiO-therm.input's two dump
+# commands (dump.lammpstrj / dynamics.lammpstrj).
 TRAJ="${TRAJ:-../OH.lammpstrj}"
-export TRAJ
+DYNAMICS_TRAJ="${DYNAMICS_TRAJ:-../dynamics.lammpstrj}"
+export TRAJ DYNAMICS_TRAJ
 echo "Trajectory: $TRAJ"
+echo "Dynamics trajectory: $DYNAMICS_TRAJ"
 
 ############################
 # Run flags — set 1 to run, 0 to skip

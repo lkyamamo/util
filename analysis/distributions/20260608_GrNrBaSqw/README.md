@@ -1,8 +1,12 @@
 # Structural Analysis Pipeline
 
 Scripts for computing structural and dynamical properties from a LAMMPS MD trajectory.
-All scripts read from the same dump file and produce independent outputs — they can be
-run in any order or simultaneously.
+Each script produces independent output and can be run in any order or simultaneously.
+`rdf_freud.py`/`bad_freud.py` read a structural trajectory (`dump.lammpstrj`);
+`dsf.py`/`vdos.py` read a separate, higher-frequency trajectory
+(`dynamics.lammpstrj`) — resolving vibrational frequencies needs much finer
+time sampling than structural analysis does. See "All scripts — trajectory
+input" below.
 
 ---
 
@@ -58,14 +62,23 @@ python vdos.py
 
 ### All scripts — trajectory input
 
-Every script reads from the same dump file. Set `DUMP_FILE` consistently in each:
+There are two standardized trajectory files, each read by env var (`TRAJ` /
+`DYNAMICS_TRAJ`) into each script's own `DUMP_FILE` variable:
 
-| Script | Variable | Default |
-|---|---|---|
-| `rdf_freud.py` | `DUMP_FILE` | `"dump.lammpstrj"` |
-| `bad_freud.py` | `DUMP_FILE` | `"dump.lammpstrj"` |
-| `dsf.py` | `DUMP_FILE` | `"dump.lammpstrj"` |
-| `vdos.py` | `DUMP_FILE` | `"dump.lammpstrj"` |
+| Script | Trajectory | Env var | Default |
+|---|---|---|---|
+| `rdf_freud.py` | Structural | `TRAJ` | `"dump.lammpstrj"` |
+| `bad_freud.py` | Structural | `TRAJ` | `"dump.lammpstrj"` |
+| `dsf.py` | Dynamics (higher-frequency) | `DYNAMICS_TRAJ` | `"dynamics.lammpstrj"` |
+| `vdos.py` | Dynamics (higher-frequency) | `DYNAMICS_TRAJ` | `"dynamics.lammpstrj"` |
+
+`dsf.py`/`vdos.py` need `dynamics.lammpstrj` sampled much more often than
+`dump.lammpstrj` — resolving vibrational frequencies requires a time step
+between frames well below the period of the fastest mode you care about
+(Nyquist limit), whereas structural analysis (g(r), P(θ)) only needs
+occasional snapshots. `OH-therm.input`/`b-SiO-therm.input` write both dumps
+from the same production run, at independent frequencies
+(`dump_frequency` vs. `dynamics_dump_frequency`).
 
 ---
 
@@ -112,7 +125,7 @@ Optional:
 
 | Variable | What it controls | Notes |
 |---|---|---|
-| `DUMP_FILE` | Trajectory path | Requires `element` column in dump (not numeric type) |
+| `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element` column in dump (not numeric type) |
 | `DT` | Time between consecutive dumped frames in **femtoseconds** | e.g. if LAMMPS dumps every 100 steps at 0.5 fs/step → `DT = 50.0` |
 | `N_FRAMES` | Max frames to read | Controls how much of the trajectory is used |
 | `WINDOW_SIZE` | Number of time lags for F(q,t) | Sets frequency resolution: Δω ∝ 1/(WINDOW_SIZE × DT); set equal to `N_FRAMES` to use full trajectory |
@@ -135,7 +148,7 @@ Optional:
 
 | Variable | What it controls | Notes |
 |---|---|---|
-| `DUMP_FILE` | Trajectory path | Requires `element vx vy vz` columns (positions not read) |
+| `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element vx vy vz` columns (positions not read) |
 | `TIME_UNIT` | Time between consecutive dumped frames in **femtoseconds** | Falls back to `DT` if unset — same quantity dsf.py calls `DT` |
 
 Optional (see the module docstring for the full METHOD/WINDOW/NORMALIZATION
@@ -201,5 +214,5 @@ pip install scipy     # optional: multi-threaded FFT for vdos.py's fft_periodogr
 |---|---|---|---|
 | `rdf_freud.py` | `element` (symbol) or any string | `x y z` (real, Å) | Column indices set manually via `COL_*` |
 | `bad_freud.py` | `element` (symbol) or any string | `x y z` (real, Å) | Column indices set manually via `COL_*` |
-| `dsf.py` | `element` (symbol) — **required** | `x y z` or `xs ys zs` or `xu yu zu` | Column layout auto-detected from `ITEM: ATOMS` header |
-| `vdos.py` | `element` (symbol) — **required** | `vx vy vz` (velocities) — **required**; positions not read | Column layout auto-detected from `ITEM: ATOMS` header |
+| `dsf.py` | `element` (symbol) — **required** | `x y z` or `xs ys zs` or `xu yu zu` | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
+| `vdos.py` | `element` (symbol) — **required** | `vx vy vz` (velocities) — **required**; positions not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |

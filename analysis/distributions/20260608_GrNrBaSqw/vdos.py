@@ -10,7 +10,12 @@ alternative (this script's own FFT-periodogram approach) trades off.
 QUICK START
 -----------
 1. Set DUMP_FILE to your LAMMPS custom dump trajectory (element, vx, vy, vz
-   columns required — the existing pipeline's dump.lammpstrj already has them).
+   columns required). Defaults to dynamics.lammpstrj (env var DYNAMICS_TRAJ)
+   — a separate, higher-frequency trajectory from dump.lammpstrj (used by
+   rdf_freud.py/bad_freud.py), dumped specifically for dsf.py/vdos.py since
+   resolving vibrational frequencies needs much finer time sampling than
+   structural analysis does; see OH-therm.input/b-SiO-therm.input's second
+   dump block.
 2. Set TIME_UNIT to the time between consecutive dumped frames, in fs.
 3. Run:  python vdos.py
 
@@ -97,7 +102,7 @@ import matplotlib.pyplot as plt
 # =============================================================================
 
 # Input trajectory file
-DUMP_FILE = os.environ.get("TRAJ", "dump.lammpstrj")
+DUMP_FILE = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
 # Trajectory sampling (frame-reading only — msd.cpp has no equivalent, it
 # always reads every frame of its input file).
