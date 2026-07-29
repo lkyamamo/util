@@ -25,10 +25,12 @@ from --potential-file's own basename (e.g. a real potential file named
 20260723_OH.vashishta but pair_coeff expects OH.usc). Defaults to
 --potential-file's basename if omitted.
 
-Note: --input-script's in.input must write its trajectory dump, flat (no
-subdirectory), to dump.lammpstrj (the standardized output name) — this is
-what the copied dsf.py/rdf_freud.py/bad_freud.py/vdos.py read. See
-OH-therm.input/b-SiO-therm.input in this directory for examples.
+Note: --input-script's in.input must write two trajectory dumps, flat (no
+subdirectory): dump.lammpstrj (read by rdf_freud.py/bad_freud.py) and a
+separate, higher-frequency dynamics.lammpstrj (read by dsf.py/vdos.py —
+resolving vibrational frequencies needs much finer time sampling than
+structural analysis does). See OH-therm.input/b-SiO-therm.input in this
+directory for examples of both dump commands.
 
 Optional:
   --analysis-template-dir DIR   Distribution-analysis scripts to copy into stage 2
@@ -128,6 +130,7 @@ INTERACTIVE="0"
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_submit.slurm"
 DUMP_FILE="dump.lammpstrj"
+DYNAMICS_DUMP_FILE="dynamics.lammpstrj"
 FORCE="0"
 FORCE_REASON=""
 LOG_FILE="$REPO_ROOT/jobs/pipeline/lammps_to_analysis/overwrite.log"
@@ -341,10 +344,11 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/distribution_submit.slurm" \
    "$STAGE2_DIR/"
 ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
+ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 
 # None of these values may contain a comma — sbatch --export is
 # comma-delimited and silently truncates anything after an embedded one.
-export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS"
+export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS"
 [[ -n "$RDF_R_MAX" ]]           && export_vars+=",R_MAX=$RDF_R_MAX"
 [[ -n "$RDF_BINS_VAL" ]]        && export_vars+=",RDF_BINS=$RDF_BINS_VAL"
 [[ -n "$BAD_ELEMENTS" ]]        && export_vars+=",ELEMENTS=$BAD_ELEMENTS"
