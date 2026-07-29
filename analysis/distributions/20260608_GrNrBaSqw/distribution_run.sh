@@ -1,9 +1,10 @@
 #!/bin/bash
-# run_dsf.sh — local runner for the analysis pipeline
+# distribution_run.sh — local runner for the analysis pipeline (all cores,
+# no Slurm); mirrors distribution_submit.slurm's run flags/thread wiring.
 #
 # Usage:
-#   ./run_dsf.sh              — use all available cores
-#   ./run_dsf.sh 8            — use 8 threads
+#   ./distribution_run.sh              — use all available cores
+#   ./distribution_run.sh 8            — use 8 threads
 
 ############################
 # Run flags — set 1 to run, 0 to skip
@@ -12,6 +13,7 @@
 RUN_DSF=1
 RUN_RDF=1
 RUN_BAD=1
+RUN_VDOS=1
 
 ############################
 # Thread count
@@ -19,6 +21,10 @@ RUN_BAD=1
 
 N_THREADS=${1:-$(nproc)}
 export OMP_NUM_THREADS=$N_THREADS
+# vdos.py's fft_periodogram method reads VDOS_THREADS directly (scipy.fft
+# workers); its default vacf_cosine_transform method instead benefits from
+# OMP_NUM_THREADS above via numpy's underlying BLAS matmul.
+export VDOS_THREADS=$N_THREADS
 echo "Threads: $OMP_NUM_THREADS"
 
 ############################
@@ -44,4 +50,9 @@ fi
 if [ "$RUN_BAD" -eq 1 ]; then
     echo "--- bad_freud.py ---"
     python bad_freud.py
+fi
+
+if [ "$RUN_VDOS" -eq 1 ]; then
+    echo "--- vdos.py ---"
+    python vdos.py
 fi

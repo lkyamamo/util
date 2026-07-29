@@ -38,11 +38,13 @@ RUN_VDOS=1
 ### Locally (all cores)
 
 ```bash
-./run_dsf.sh          # all cores
-./run_dsf.sh 8        # 8 threads
+./distribution_run.sh          # all cores
+./distribution_run.sh 8        # 8 threads
 ```
 
-`run_dsf.sh` only runs `dsf.py`. To run the other scripts locally, call them directly:
+`distribution_run.sh` runs all four scripts, mirroring `distribution_submit.slurm`'s
+`RUN_DSF`/`RUN_RDF`/`RUN_BAD`/`RUN_VDOS` flags (edit them at the top of the script
+to skip any). To run a single script instead, call it directly:
 
 ```bash
 python rdf_freud.py
@@ -164,7 +166,7 @@ explanation):
 
 ---
 
-### `run_dsf.sh` — required changes
+### `distribution_run.sh` — required changes
 
 No changes required for HPC use — activates the same venv as `distribution_submit.slurm`:
 `/home1/lkyamamo/venv/struc_analysis/bin/activate`
