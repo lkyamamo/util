@@ -62,8 +62,12 @@ Optional:
     --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
 
-    vdos.py reuses --dsf-dt/--dsf-n-frames/--dsf-stride above for its own
-    TIME_UNIT/N_FRAMES/STRIDE (same dump, same meaning — no separate flags):
+    vdos.py reuses --dsf-n-frames/--dsf-stride above for its own N_FRAMES/
+    STRIDE (same dump, same meaning — no separate flags):
+    --vdos-dt FLOAT                 vdos.py TIME_UNIT (fs between dumped frames),
+                                    e.g. 1.0 — falls back to --dsf-dt/DT if omitted,
+                                    but set this explicitly if running vdos.py
+                                    without dsf.py or with a different DT
     --vdos-corr-length FLOAT        vdos.py CORR_LENGTH (fs; VACF max lag /
                                     Welch-segment length), e.g. 5000
     --vdos-corr-interval FLOAT      vdos.py CORR_INTERVAL (fs; spacing between
@@ -182,6 +186,7 @@ DSF_STRIDE=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
+VDOS_DT=""
 VDOS_CORR_LENGTH=""
 VDOS_CORR_INTERVAL=""
 VDOS_MAX_FREQUENCY_EV=""
@@ -230,6 +235,7 @@ while [[ $# -gt 0 ]]; do
     --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
+    --vdos-dt) VDOS_DT="$2"; shift 2 ;;
     --vdos-corr-length) VDOS_CORR_LENGTH="$2"; shift 2 ;;
     --vdos-corr-interval) VDOS_CORR_INTERVAL="$2"; shift 2 ;;
     --vdos-max-frequency-ev) VDOS_MAX_FREQUENCY_EV="$2"; shift 2 ;;
@@ -358,6 +364,7 @@ export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_
 [[ -n "$DSF_WINDOW_SIZE" ]]     && export_vars+=",WINDOW_SIZE=$DSF_WINDOW_SIZE"
 [[ -n "$DSF_Q_MAX" ]]           && export_vars+=",Q_MAX=$DSF_Q_MAX"
 [[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",N_Q_BINS=$DSF_N_Q_BINS"
+[[ -n "$VDOS_DT" ]]               && export_vars+=",TIME_UNIT=$VDOS_DT"
 [[ -n "$VDOS_CORR_LENGTH" ]]      && export_vars+=",CORR_LENGTH=$VDOS_CORR_LENGTH"
 [[ -n "$VDOS_CORR_INTERVAL" ]]    && export_vars+=",CORR_INTERVAL=$VDOS_CORR_INTERVAL"
 [[ -n "$VDOS_MAX_FREQUENCY_EV" ]] && export_vars+=",MAX_FREQUENCY_EV=$VDOS_MAX_FREQUENCY_EV"
