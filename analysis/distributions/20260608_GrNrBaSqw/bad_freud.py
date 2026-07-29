@@ -48,6 +48,7 @@ Column positions are read automatically from the ITEM: ATOMS header line.
 import itertools
 import os
 from datetime import date
+from typing import NamedTuple
 
 import numpy as np
 import freud
@@ -232,35 +233,64 @@ def _validate_triplet_cutoffs(entries):
         seen.add(key)
 
 
-def _query_neighbors(aq, query_pos, r_max, r_min):
+class _Q(NamedTuple):
     """
-    Query wing-atom positions against a pre-built AABBQuery over B atoms.
+    One frame's worth of bonds for a single unique neighbor query.
 
-    Parameters
-    ----------
-    aq        : freud.locality.AABBQuery built over pos_b
-    query_pos : positions of A or C atoms (shape N_wing x 3)
-    r_max     : upper cutoff for this pair (from R_CUTOFF)
-    r_min     : lower cutoff for this pair (from R_MINCUT)
+    Bonds are stored flat and grouped by central atom: bonds
+    ``start[i] : start[i] + cnt[i]`` all belong to central atom i.
 
-    Returns
-    -------
-    neighbors : list of length len(pos_b); neighbors[b_idx] is a list of
-                indices into query_pos that are within [r_min, r_max] of
-                that B atom.
+    u     : (n_bonds, 3) float32 — unit vectors pointing central → wing
+    w     : (n_bonds,)   intp    — wing atom index, in the wing element's own index space
+    start : (n_b,)       intp    — first bond offset for each central atom
+    cnt   : (n_b,)       intp    — number of bonds for each central atom
     """
-    n_b = len(aq.points)
-    if len(query_pos) == 0:
-        return [[] for _ in range(n_b)]
+    u:     np.ndarray
+    w:     np.ndarray
+    start: np.ndarray
+    cnt:   np.ndarray
 
-    result = aq.query(query_pos, {'r_max': r_max, 'r_min': r_min, 'exclude_ii': False})
-    neighbors = [[] for _ in range(n_b)]
-    for bond in result:
-        # bond = (query_point_index, point_index, distance)
-        # bond[0] → index into query_pos (A or C atoms)
-        # bond[1] → index into pos_b (B reference atoms)
-        neighbors[bond[1]].append(bond[0])
-    return neighbors
+
+def _run_query(box, pos_central, pos_wing, r_max, r_min):
+    """
+    Evaluate one neighbor query and return it as a central-atom-grouped _Q.
+
+    The AABBQuery is built over the *wing* atoms and probed with the *central*
+    atoms — the reverse of the intuitive direction. Distance is symmetric so the
+    resulting bond set is identical either way, but this orientation makes freud
+    return the bonds already segmented by central atom (segments/neighbor_counts),
+    which is exactly the grouping the angle kernel needs. Querying the other way
+    would require re-bucketing every bond in Python.
+
+    freud's vectors are already minimum-image corrected, so no box.wrap is needed.
+    """
+    n_b = len(pos_central)
+
+    # No wing atoms → no bonds, but still return per-central arrays of the right
+    # length so callers need no special case.
+    if len(pos_wing) == 0 or n_b == 0:
+        return _Q(u=np.empty((0, 3), dtype=np.float32),
+                  w=np.empty(0, dtype=np.intp),
+                  start=np.zeros(n_b, dtype=np.intp),
+                  cnt=np.zeros(n_b, dtype=np.intp))
+
+    nl = freud.locality.AABBQuery(box, pos_wing).query(
+        pos_central, {'r_max': r_max, 'r_min': r_min, 'exclude_ii': False}
+    ).toNeighborList()
+
+    d = nl.distances
+    # r_min > 0 excludes coincident atoms, so this should be unreachable; assert
+    # rather than let a zero distance produce nan angles that silently vanish
+    # from the histogram.
+    if len(d) and d.min() <= 0.0:
+        raise ValueError(f"zero-length bond in query r_max={r_max}, r_min={r_min}")
+
+    # freud hands back uint32; cast now because every downstream use feeds integer
+    # arithmetic that goes negative mid-expression and would wrap silently.
+    return _Q(u=nl.vectors / d[:, None],
+              w=nl.point_indices.astype(np.intp),
+              start=nl.segments.astype(np.intp),
+              cnt=nl.neighbor_counts.astype(np.intp))
 
 
 def read_lammps_dump(filename):
@@ -314,127 +344,225 @@ def read_lammps_dump(filename):
     return frames
 
 
-def compute_bad(frames, el_a, el_b, el_c, r_max_ab, r_min_ab, r_max_cb, r_min_cb):
+def _resolve_cutoffs(entry):
     """
-    Compute the bond angle distribution for A-B-C triplets (B is the central atom).
+    Resolve an entry's four radial cutoffs, falling back to the pairwise
+    R_CUTOFF/R_MINCUT defaults for any the entry leaves unspecified.
+    """
+    el_a, el_b, el_c = entry['triplet']
+    key_ab = _pair_key(el_a, el_b)
+    key_cb = _pair_key(el_c, el_b)
+    # NOTE: dict.get(key, default_expr) always evaluates default_expr eagerly,
+    # even when key is already present — so R_CUTOFF[key_ab] would raise
+    # KeyError even for entries that fully specify their own cutoffs. Use an
+    # explicit conditional instead so R_CUTOFF/R_MINCUT are only consulted
+    # when actually needed.
+    return (
+        entry['r_max_ab'] if 'r_max_ab' in entry else R_CUTOFF[key_ab],
+        entry['r_min_ab'] if 'r_min_ab' in entry else R_MINCUT[key_ab],
+        entry['r_max_cb'] if 'r_max_cb' in entry else R_CUTOFF[key_cb],
+        entry['r_min_cb'] if 'r_min_cb' in entry else R_MINCUT[key_cb],
+    )
 
-    Only A-B and C-B distances within their respective pairwise [r_min, r_max]
-    are included. Each frame's histogram is normalized to unit-area probability
-    density, then the mean is taken across frames.
 
-    Parameters
-    ----------
-    r_max_ab, r_min_ab : upper/lower cutoff for the A-B bond
-    r_max_cb, r_min_cb : upper/lower cutoff for the C-B bond
+def _plan_queries(entries):
+    """
+    Resolve every entry's cutoffs up front and reduce its two arms to neighbor
+    query keys, collecting the unique set of queries the whole run needs.
+
+    A query is identified by (central element, wing element, r_max, r_min), so
+    arms agreeing on all four are evaluated once and shared by every triplet
+    that asked for them: O-H-O and O-H-H both need the O neighbors of every H
+    under the same cutoffs, and the default sweep builds O(E^3) triplets out of
+    only O(E^2) distinct arms.
 
     Returns
     -------
-    bin_centers : ndarray, shape (BINS,) — angles in degrees
-    histogram   : ndarray, shape (BINS,) — mean P(θ), integrates to 1
+    plans   : list of dicts — 'triplet', 'label', 'key_ab', 'key_cb', 'same_wing'
+    queries : list of unique query keys, in first-use order
     """
-    # Use the symmetric same-wing branch only when both element and cutoffs match.
-    # If the cutoffs differ (e.g. O-H--O), fall through to the different-wing
-    # branch so each arm is queried independently.
-    same_wing = (
-        el_a == el_c
-        and r_max_ab == r_max_cb
-        and r_min_ab == r_min_cb
-    )
+    plans   = []
+    queries = {}
+    for entry in entries:
+        el_a, el_b, el_c = entry['triplet']
+        r_max_ab, r_min_ab, r_max_cb, r_min_cb = _resolve_cutoffs(entry)
 
-    bin_edges     = np.linspace(0.0, 180.0, BINS + 1)
-    bin_width     = bin_edges[1] - bin_edges[0]
-    hist_accum    = np.zeros(BINS)
-    n_frames_used = 0
+        key_ab = (el_b, el_a, r_max_ab, r_min_ab)
+        key_cb = (el_b, el_c, r_max_cb, r_min_cb)
+        queries[key_ab] = None
+        queries[key_cb] = None
+
+        plans.append({
+            'triplet': tuple(entry['triplet']),
+            'label':   entry['label'],
+            'key_ab':  key_ab,
+            'key_cb':  key_cb,
+            # The symmetric branch is valid exactly when both arms reduce to the
+            # same query — same wing element AND same cutoffs. If the cutoffs
+            # differ (e.g. O-H--O), the keys differ and each arm is queried
+            # independently.
+            'same_wing': key_ab == key_cb,
+        })
+    return plans, list(queries)
+
+
+# Max pair slots expanded at once, to bound peak memory. A dense structure with
+# generous cutoffs can otherwise produce tens of millions of pairs in one frame.
+PAIR_CHUNK = 2_000_000
+
+
+def _triplet_angles(qa, qc, same_wing, same_wing_element):
+    """
+    Every A-B-C angle in one frame, computed without looping over central atoms.
+
+    For each central atom the candidate pairs form an (n_a x n_c) grid: every
+    arm-A neighbor against every arm-C neighbor. Rather than build those grids
+    one atom at a time, reserve one slot for every pair in the whole frame and
+    recover, by arithmetic on a slot's position alone, which central atom it
+    belongs to and which cell of that atom's grid it is — division gives the row,
+    remainder gives the column. Grids stay ragged; nothing is iterated.
+
+    Parameters
+    ----------
+    qa, qc            : _Q records for the two arms (same central element, so
+                        their per-central arrays are the same length)
+    same_wing         : both arms are literally the same query
+    same_wing_element : el_a == el_c (wing indices are comparable between arms)
+
+    Returns
+    -------
+    list of angle arrays in degrees (possibly empty)
+    """
+    n_a, n_c = qa.cnt, qc.cnt
+    npair_all = n_a * n_c                       # pair slots per central atom
+    n_b = len(n_a)
+    if n_b == 0 or npair_all.sum() == 0:
+        return []
+
+    # Chunk boundaries over central atoms, sized so no chunk expands past
+    # PAIR_CHUNK slots. An atom whose own npair exceeds it still lands in one
+    # chunk, which is fine — per-atom counts are bounded by coordination number.
+    cum = np.cumsum(npair_all)
+    edges = np.searchsorted(cum, np.arange(PAIR_CHUNK, cum[-1] + PAIR_CHUNK, PAIR_CHUNK))
+    bounds = np.unique(np.concatenate(([0], np.clip(edges, 0, n_b), [n_b])))
+
+    out = []
+    for b0, b1 in zip(bounds[:-1], bounds[1:]):
+        npair = npair_all[b0:b1]
+        tot = int(npair.sum())
+        if tot == 0:
+            continue
+
+        b    = np.repeat(np.arange(b0, b1, dtype=np.intp), npair)
+        off  = np.cumsum(npair) - npair                                # exclusive prefix
+        ordn = np.arange(tot, dtype=np.intp) - np.repeat(off, npair)   # restarts per central
+
+        # Unravel the flat ordinal into that central atom's (n_a x n_c) grid.
+        # Dividing by arm C's count makes l_a the row and l_c the column.
+        # No division by zero: a central with n_c == 0 has npair == 0, so
+        # np.repeat drops it before it can appear in b.
+        n_c_b = n_c[b]
+        l_a   = ordn // n_c_b
+        l_c   = ordn - l_a * n_c_b
+
+        i_a = qa.start[b] + l_a
+        i_c = qc.start[b] + l_c
+
+        if same_wing:
+            # Both arms are the same neighbor list, so the grid holds each pair
+            # twice plus the diagonal; keeping the upper triangle is exactly
+            # np.triu_indices(n, k=1).
+            keep = l_a < l_c
+            i_a, i_c = i_a[keep], i_c[keep]
+        elif same_wing_element:
+            # Same element on both arms but different cutoffs: drop the cases
+            # where both arms picked the same physical atom (spurious 0° angle).
+            keep = qa.w[i_a] != qc.w[i_c]
+            i_a, i_c = i_a[keep], i_c[keep]
+        # Different elements: no atom can appear on both arms, so nothing to drop.
+
+        if len(i_a) == 0:
+            continue
+
+        # Unit vectors, so the dot product is the cosine directly — no norms.
+        dot = np.einsum('ij,ij->i', qa.u[i_a], qc.u[i_c])
+        out.append(np.degrees(np.arccos(np.clip(dot, -1.0, 1.0))))
+
+    return out
+
+
+def compute_bads(frames, plans, queries):
+    """
+    Compute every planned bond angle distribution in a single pass over `frames`.
+
+    Only A-B and C-B distances within their respective [r_min, r_max] are
+    included. Each frame's histogram is normalized to unit-area probability
+    density, then the mean is taken across the frames that contributed to it.
+
+    Frames are the outer loop so per-frame work is shared across triplets: each
+    element's positions are masked out once, and each unique query in `queries`
+    is evaluated once — including its unit bond vectors — then reused by every
+    arm pointing at it. Angles for a triplet are computed for all central atoms
+    at once (see _triplet_angles).
+
+    Returns
+    -------
+    dict {label: (bin_centers, histogram)} — histogram integrates to 1
+    """
+    bin_edges   = np.linspace(0.0, 180.0, BINS + 1)
+    bin_width   = bin_edges[1] - bin_edges[0]
+    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+
+    # Accumulate by plan index rather than label: two plans may share a label,
+    # and keying by label would silently sum them into one curve.
+    hist_accum    = [np.zeros(BINS) for _ in plans]
+    n_frames_used = [0] * len(plans)
+
+    elements = {key[0] for key in queries} | {key[1] for key in queries}
 
     for frame in frames:
         els = frame['elements']
         pos = frame['positions']
         box = frame['box']
 
-        pos_b = pos[els == el_b]
-        pos_a = pos[els == el_a]
-        pos_c = pos[els == el_c]
+        pos_by_el = {el: pos[els == el] for el in elements}
 
-        if len(pos_b) == 0 or len(pos_a) == 0 or len(pos_c) == 0:
-            continue
+        # Evaluate each unique query once for this frame. Bond vectors depend
+        # only on the query, not on which triplet consumes it, so unit vectors
+        # are built here too rather than once per triplet.
+        neighbors = {
+            key: _run_query(box, pos_by_el[key[0]], pos_by_el[key[1]], key[2], key[3])
+            for key in queries
+        }
 
-        aq = freud.locality.AABBQuery(box, pos_b)
+        for idx, plan in enumerate(plans):
+            el_a, _, el_c = plan['triplet']
 
-        # ---- same-wing (A == C, same cutoffs, e.g. O-Si-O) ------------------
-        if same_wing:
-            a_neighbors = _query_neighbors(aq, pos_a, r_max_ab, r_min_ab)
+            frame_angles = _triplet_angles(
+                neighbors[plan['key_ab']],
+                neighbors[plan['key_cb']],
+                same_wing=plan['same_wing'],
+                same_wing_element=(el_a == el_c),
+            )
 
-            frame_angles = []
-            for b_idx in range(len(pos_b)):
-                a_nbrs = a_neighbors[b_idx]
-                if len(a_nbrs) < 2:
-                    continue
+            if not frame_angles:
+                continue
 
-                v_a = box.wrap(pos_a[a_nbrs] - pos_b[b_idx])  # (n_a, 3) MIC vectors
+            h, _ = np.histogram(np.concatenate(frame_angles), bins=bin_edges)
+            total = h.sum()
+            if total > 0:
+                # normalize so that Σ P(θᵢ) · Δθ = 1
+                hist_accum[idx] += h / (total * bin_width)
+                n_frames_used[idx] += 1
 
-                i, j = np.triu_indices(len(a_nbrs), k=1)      # unique pairs, no self-pairs
-                v1, v2 = v_a[i], v_a[j]
-
-                cos_theta = (
-                    np.einsum('ij,ij->i', v1, v2)
-                    / (np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1))
-                )
-                frame_angles.append(
-                    np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
-                )
-
-        # ---- different-wing (A != C, or same element with different cutoffs) -
-        else:
-            a_neighbors = _query_neighbors(aq, pos_a, r_max_ab, r_min_ab)
-            c_neighbors = _query_neighbors(aq, pos_c, r_max_cb, r_min_cb)
-
-            frame_angles = []
-            for b_idx in range(len(pos_b)):
-                a_nbrs = np.array(a_neighbors[b_idx])
-                c_nbrs = np.array(c_neighbors[b_idx])
-                if len(a_nbrs) == 0 or len(c_nbrs) == 0:
-                    continue
-
-                v_a = box.wrap(pos_a[a_nbrs] - pos_b[b_idx])  # (n_a, 3) MIC vectors
-                v_c = box.wrap(pos_c[c_nbrs] - pos_b[b_idx])  # (n_c, 3) MIC vectors
-
-                ii = np.repeat(np.arange(len(a_nbrs)), len(c_nbrs))
-                jj = np.tile(np.arange(len(c_nbrs)), len(a_nbrs))
-
-                # When wings are the same element, exclude self-pairs (same atom
-                # appearing on both arms gives a spurious 0° angle).
-                if el_a == el_c:
-                    mask = a_nbrs[ii] != c_nbrs[jj]
-                    ii, jj = ii[mask], jj[mask]
-
-                if len(ii) == 0:
-                    continue
-
-                v1, v2 = v_a[ii], v_c[jj]                     # A x C Cartesian product
-
-                cos_theta = (
-                    np.einsum('ij,ij->i', v1, v2)
-                    / (np.linalg.norm(v1, axis=1) * np.linalg.norm(v2, axis=1))
-                )
-                frame_angles.append(
-                    np.degrees(np.arccos(np.clip(cos_theta, -1.0, 1.0)))
-                )
-
-        if not frame_angles:
-            continue
-
-        all_angles = np.concatenate(frame_angles)
-        h, _ = np.histogram(all_angles, bins=bin_edges)
-        total = h.sum()
-        if total > 0:
-            # normalize so that Σ P(θᵢ) · Δθ = 1
-            hist_accum += h / (total * bin_width)
-            n_frames_used += 1
-
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-    if n_frames_used == 0:
-        return bin_centers, np.zeros(BINS)
-    return bin_centers, hist_accum / n_frames_used
+    results = {}
+    for idx, plan in enumerate(plans):
+        n = n_frames_used[idx]
+        results[plan['label']] = (
+            bin_centers,
+            hist_accum[idx] / n if n else np.zeros(BINS),
+        )
+    return results
 
 
 def save_csv(results, filename):
@@ -492,25 +620,12 @@ if __name__ == '__main__':
     print(f"BADs to compute: {len(all_triplet_cutoffs)} "
           f"({n_default} default + {len(TRIPLET_CUTOFFS)} specific)")
 
-    results = {}
-    for entry in all_triplet_cutoffs:
-        el_a, el_b, el_c = entry['triplet']
-        label    = entry['label']
-        key_ab   = _pair_key(el_a, el_b)
-        key_cb   = _pair_key(el_c, el_b)
-        # NOTE: dict.get(key, default_expr) always evaluates default_expr eagerly,
-        # even when key is already present — so R_CUTOFF[key_ab] would raise
-        # KeyError even for entries that fully specify their own cutoffs. Use an
-        # explicit conditional instead so R_CUTOFF/R_MINCUT are only consulted
-        # when actually needed.
-        r_max_ab = entry['r_max_ab'] if 'r_max_ab' in entry else R_CUTOFF[key_ab]
-        r_min_ab = entry['r_min_ab'] if 'r_min_ab' in entry else R_MINCUT[key_ab]
-        r_max_cb = entry['r_max_cb'] if 'r_max_cb' in entry else R_CUTOFF[key_cb]
-        r_min_cb = entry['r_min_cb'] if 'r_min_cb' in entry else R_MINCUT[key_cb]
-        print(f"Computing BAD: {label}...")
-        angles, hist = compute_bad(frames, el_a, el_b, el_c,
-                                   r_max_ab, r_min_ab, r_max_cb, r_min_cb)
-        results[label] = (angles, hist)
+    plans, queries = _plan_queries(all_triplet_cutoffs)
+    print(f"Unique neighbor queries per frame: {len(queries)} "
+          f"(from {2 * len(plans)} triplet arms)")
+
+    print("Computing BADs...")
+    results = compute_bads(frames, plans, queries)
 
     if OUTPUT_CSV is not None:
         save_csv(results, OUTPUT_CSV)
