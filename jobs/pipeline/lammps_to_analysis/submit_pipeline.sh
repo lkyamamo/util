@@ -1,6 +1,6 @@
 #!/bin/bash
 # submit_pipeline.sh — run a LAMMPS setup+trajectory job, then distribution
-# analysis (rdf/bad/dsf) on its dump, via sbatch --dependency.
+# analysis (rdf/bad/dsf/vdos) on its dump, via sbatch --dependency.
 #
 # Run from inside the LAMMPS run directory; its basename is the run id.
 set -euo pipefail
@@ -27,8 +27,8 @@ from --potential-file's own basename (e.g. a real potential file named
 
 Note: --input-script's in.input must write its trajectory dump, flat (no
 subdirectory), to dump.lammpstrj (the standardized output name) — this is
-what the copied dsf.py/rdf_freud.py/bad_freud.py read. See OH-therm.input/
-b-SiO-therm.input in this directory for examples.
+what the copied dsf.py/rdf_freud.py/bad_freud.py/vdos.py read. See
+OH-therm.input/b-SiO-therm.input in this directory for examples.
 
 Optional:
   --analysis-template-dir DIR   Distribution-analysis scripts to copy into stage 2
@@ -36,6 +36,7 @@ Optional:
   --run-dsf {0|1}                Run dsf.py (static/dynamic structure factor) (default: 1)
   --run-rdf {0|1}                Run rdf_freud.py (radial distribution function) (default: 1)
   --run-bad {0|1}                Run bad_freud.py (bond angle distribution) (default: 1)
+  --run-vdos {0|1}                Run vdos.py (vibrational density of states) (default: 0)
 
   Physics config — each overrides that script's own hardcoded default
   (see the CONFIGURATION block at the top of each .py) when passed; omit
@@ -60,6 +61,20 @@ Optional:
     --dsf-window-size INT           dsf.py WINDOW_SIZE, e.g. 500
     --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
+
+    vdos.py reuses --dsf-dt/--dsf-n-frames/--dsf-stride above for its own
+    TIME_UNIT/N_FRAMES/STRIDE (same dump, same meaning — no separate flags):
+    --vdos-corr-length FLOAT        vdos.py CORR_LENGTH (fs; VACF max lag /
+                                    Welch-segment length), e.g. 5000
+    --vdos-corr-interval FLOAT      vdos.py CORR_INTERVAL (fs; spacing between
+                                    VACF reference frames / segment starts), e.g. 500
+    --vdos-max-frequency-ev FLOAT   vdos.py MAX_FREQUENCY_EV (eV), e.g. 0.5
+    --vdos-num-grids INT             vdos.py NUM_GRIDS (frequency grid points), e.g. 5000
+    --vdos-method STR                vdos.py METHOD: 'vacf_cosine_transform' (default,
+                                    matches analysis/dynamics/src/msd.cpp) or 'fft_periodogram'
+    --vdos-window STR                vdos.py WINDOW: 'cosine_lag'/'none' under
+                                    vacf_cosine_transform, 'hann'/'none' under fft_periodogram
+    --vdos-normalization STR         vdos.py NORMALIZATION: 'phonon' (default) or 'unit_area'
   None of these use commas (sbatch --export is comma-delimited and silently
   truncates any value containing one), so no quoting/encoding is needed
   beyond normal shell quoting of the whole flag value.
@@ -73,12 +88,13 @@ Optional:
                            --analysis-cpus-per-task N
       Overrides for the corresponding #SBATCH directives — the left column
       overrides jobs/slurm/lammps_submit.slurm (the LAMMPS run), the right
-      column overrides dsf_submit.slurm (the analysis job). Omit any of
-      these to leave the template's own value in effect. --nodelist pins the
-      job to specific compute node(s) (SLURM's --nodelist, e.g. "b19-05" or
-      "b19-[05-07]"). --analysis-cpus-per-task has no LAMMPS-side counterpart;
-      it also drives OMP_NUM_THREADS for dsf.py/rdf_freud.py/bad_freud.py
-      (dsf_submit.slurm sets OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK).
+      column overrides distribution_submit.slurm (the analysis job). Omit any
+      of these to leave the template's own value in effect. --nodelist pins
+      the job to specific compute node(s) (SLURM's --nodelist, e.g. "b19-05"
+      or "b19-[05-07]"). --analysis-cpus-per-task has no LAMMPS-side
+      counterpart; it also drives OMP_NUM_THREADS for dsf.py/rdf_freud.py/
+      bad_freud.py and VDOS_THREADS for vdos.py (distribution_submit.slurm
+      sets both from $SLURM_CPUS_PER_TASK).
 
   --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
                                   existing <run_id>_distribution_analysis/ (stage 2)
@@ -133,6 +149,7 @@ ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
 RUN_DSF="0"
 RUN_RDF="1"
 RUN_BAD="1"
+RUN_VDOS="0"
 
 # trajectory creation slurm parameters
 NODES="1"
@@ -165,6 +182,13 @@ DSF_STRIDE=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
+VDOS_CORR_LENGTH=""
+VDOS_CORR_INTERVAL=""
+VDOS_MAX_FREQUENCY_EV=""
+VDOS_NUM_GRIDS=""
+VDOS_METHOD=""
+VDOS_WINDOW=""
+VDOS_NORMALIZATION=""
 
 
 
@@ -179,6 +203,7 @@ while [[ $# -gt 0 ]]; do
     --run-dsf) RUN_DSF="$2"; shift 2 ;;
     --run-rdf) RUN_RDF="$2"; shift 2 ;;
     --run-bad) RUN_BAD="$2"; shift 2 ;;
+    --run-vdos) RUN_VDOS="$2"; shift 2 ;;
     --nodes) NODES="$2"; shift 2 ;;
     --ntasks) NTASKS="$2"; shift 2 ;;
     --time) TIME="$2"; shift 2 ;;
@@ -205,6 +230,13 @@ while [[ $# -gt 0 ]]; do
     --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
+    --vdos-corr-length) VDOS_CORR_LENGTH="$2"; shift 2 ;;
+    --vdos-corr-interval) VDOS_CORR_INTERVAL="$2"; shift 2 ;;
+    --vdos-max-frequency-ev) VDOS_MAX_FREQUENCY_EV="$2"; shift 2 ;;
+    --vdos-num-grids) VDOS_NUM_GRIDS="$2"; shift 2 ;;
+    --vdos-method) VDOS_METHOD="$2"; shift 2 ;;
+    --vdos-window) VDOS_WINDOW="$2"; shift 2 ;;
+    --vdos-normalization) VDOS_NORMALIZATION="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
     -h|--help) usage; exit 0 ;;
@@ -244,6 +276,7 @@ check_zero_or_one() {
 check_zero_or_one "$RUN_DSF" --run-dsf
 check_zero_or_one "$RUN_RDF" --run-rdf
 check_zero_or_one "$RUN_BAD" --run-bad
+check_zero_or_one "$RUN_VDOS" --run-vdos
 
 if [[ "$FORCE" == "1" && -z "$FORCE_REASON" ]]; then
   echo 'Error: --force requires a non-empty reason, e.g. --force "re-running after fixing potential file"' >&2
@@ -304,13 +337,14 @@ mkdir -p "$STAGE2_DIR"
 cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/rdf_freud.py" \
    "$ANALYSIS_TEMPLATE_DIR/bad_freud.py" \
-   "$ANALYSIS_TEMPLATE_DIR/dsf_submit.slurm" \
+   "$ANALYSIS_TEMPLATE_DIR/vdos.py" \
+   "$ANALYSIS_TEMPLATE_DIR/distribution_submit.slurm" \
    "$STAGE2_DIR/"
 ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
 
 # None of these values may contain a comma — sbatch --export is
 # comma-delimited and silently truncates anything after an embedded one.
-export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD"
+export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS"
 [[ -n "$RDF_R_MAX" ]]           && export_vars+=",R_MAX=$RDF_R_MAX"
 [[ -n "$RDF_BINS_VAL" ]]        && export_vars+=",RDF_BINS=$RDF_BINS_VAL"
 [[ -n "$BAD_ELEMENTS" ]]        && export_vars+=",ELEMENTS=$BAD_ELEMENTS"
@@ -324,11 +358,19 @@ export_vars="ALL,TRAJ=$DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_
 [[ -n "$DSF_WINDOW_SIZE" ]]     && export_vars+=",WINDOW_SIZE=$DSF_WINDOW_SIZE"
 [[ -n "$DSF_Q_MAX" ]]           && export_vars+=",Q_MAX=$DSF_Q_MAX"
 [[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",N_Q_BINS=$DSF_N_Q_BINS"
+[[ -n "$VDOS_CORR_LENGTH" ]]      && export_vars+=",CORR_LENGTH=$VDOS_CORR_LENGTH"
+[[ -n "$VDOS_CORR_INTERVAL" ]]    && export_vars+=",CORR_INTERVAL=$VDOS_CORR_INTERVAL"
+[[ -n "$VDOS_MAX_FREQUENCY_EV" ]] && export_vars+=",MAX_FREQUENCY_EV=$VDOS_MAX_FREQUENCY_EV"
+[[ -n "$VDOS_NUM_GRIDS" ]]        && export_vars+=",NUM_GRIDS=$VDOS_NUM_GRIDS"
+[[ -n "$VDOS_METHOD" ]]           && export_vars+=",VDOS_METHOD=$VDOS_METHOD"
+[[ -n "$VDOS_WINDOW" ]]           && export_vars+=",VDOS_WINDOW=$VDOS_WINDOW"
+[[ -n "$VDOS_NORMALIZATION" ]]    && export_vars+=",VDOS_NORMALIZATION=$VDOS_NORMALIZATION"
 
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
 [[ "$RUN_RDF" == "1" ]] && enabled_scripts+="rdf_freud.py "
 [[ "$RUN_BAD" == "1" ]] && enabled_scripts+="bad_freud.py "
+[[ "$RUN_VDOS" == "1" ]] && enabled_scripts+="vdos.py "
 enabled_scripts="${enabled_scripts% }"
 
 ############################
@@ -350,7 +392,7 @@ if [[ "$INTERACTIVE" == "1" ]]; then
     export SLURM_CPUS_PER_TASK="${ANALYSIS_CPUS_PER_TASK:-64}"
     IFS=',' read -ra _kv_pairs <<< "${export_vars#ALL,}"
     for pair in "${_kv_pairs[@]}"; do export "$pair"; done
-    cd "$STAGE2_DIR" && bash dsf_submit.slurm
+    cd "$STAGE2_DIR" && bash distribution_submit.slurm
   )
   echo "Distribution analysis finished."
 
@@ -362,8 +404,8 @@ Pipeline completed interactively:
   analysis scripts enabled        : ${enabled_scripts:-none}
 
 $(if [[ -n "$enabled_scripts" ]]; then
-  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-* flags is using each script's own default —"
+  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY
@@ -394,7 +436,7 @@ else
   JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable --dependency=afterok:"$JOBID1" \
     "${analysis_sbatch_args[@]+"${analysis_sbatch_args[@]}"}" \
     --export="$export_vars" \
-    dsf_submit.slurm)"
+    distribution_submit.slurm)"
   echo "  distribution-analysis job id: $JOBID2"
 
   cat <<SUMMARY
@@ -405,8 +447,8 @@ Pipeline submitted:
   analysis scripts enabled        : ${enabled_scripts:-none}
 
 $(if [[ -n "$enabled_scripts" ]]; then
-  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-* flags is using each script's own default —"
+  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY

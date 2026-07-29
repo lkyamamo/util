@@ -1,9 +1,9 @@
 #!/bin/bash
 # submit_pipeline_local.sh — run the full LAMMPS setup+trajectory job, then
-# distribution analysis (rdf/bad/dsf), entirely locally via mpirun/plain
+# distribution analysis (rdf/bad/dsf/vdos), entirely locally via mpirun/plain
 # python — no Slurm, no modules, no sbatch. Self-contained: does not shell
-# out to jobs/slurm/lammps_submit.slurm or dsf_submit.slurm at all; the
-# commands those templates run are inlined directly below (minus the
+# out to jobs/slurm/lammps_submit.slurm or distribution_submit.slurm at all;
+# the commands those templates run are inlined directly below (minus the
 # SBATCH/module/srun machinery, which don't apply outside a cluster).
 #
 # Run from inside the LAMMPS run directory; its basename is the run id.
@@ -37,8 +37,8 @@ from --potential-file's own basename (e.g. a real potential file named
 
 Note: --input-script's in.input must write its trajectory dump, flat (no
 subdirectory), to dump.lammpstrj (the standardized output name) — this is
-what the copied dsf.py/rdf_freud.py/bad_freud.py read. See OH-therm.input/
-b-SiO-therm.input in this directory for examples.
+what the copied dsf.py/rdf_freud.py/bad_freud.py/vdos.py read. See
+OH-therm.input/b-SiO-therm.input in this directory for examples.
 
 Optional:
   --analysis-template-dir DIR   Distribution-analysis scripts to copy into stage 2
@@ -46,6 +46,7 @@ Optional:
   --run-dsf {0|1}                Run dsf.py (static/dynamic structure factor) (default: 1)
   --run-rdf {0|1}                Run rdf_freud.py (radial distribution function) (default: 1)
   --run-bad {0|1}                Run bad_freud.py (bond angle distribution) (default: 1)
+  --run-vdos {0|1}                Run vdos.py (vibrational density of states) (default: 1)
 
   Physics config — same flags and formats as submit_pipeline.sh, so the same
   invocation recipe works against either script:
@@ -70,9 +71,23 @@ Optional:
     --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
 
+    vdos.py reuses --dsf-dt/--dsf-n-frames/--dsf-stride above for its own
+    TIME_UNIT/N_FRAMES/STRIDE (same dump, same meaning — no separate flags):
+    --vdos-corr-length FLOAT        vdos.py CORR_LENGTH (fs; VACF max lag /
+                                    Welch-segment length), e.g. 5000
+    --vdos-corr-interval FLOAT      vdos.py CORR_INTERVAL (fs; spacing between
+                                    VACF reference frames / segment starts), e.g. 500
+    --vdos-max-frequency-ev FLOAT   vdos.py MAX_FREQUENCY_EV (eV), e.g. 0.5
+    --vdos-num-grids INT             vdos.py NUM_GRIDS (frequency grid points), e.g. 5000
+    --vdos-method STR                vdos.py METHOD: 'vacf_cosine_transform' (default,
+                                    matches analysis/dynamics/src/msd.cpp) or 'fft_periodogram'
+    --vdos-window STR                vdos.py WINDOW: 'cosine_lag'/'none' under
+                                    vacf_cosine_transform, 'hann'/'none' under fft_periodogram
+    --vdos-normalization STR         vdos.py NORMALIZATION: 'phonon' (default) or 'unit_area'
+
   --ntasks N                    MPI ranks for `mpirun -np` (default: 4)
   --analysis-cpus-per-task N    Sets OMP_NUM_THREADS for dsf.py/rdf_freud.py/
-                                bad_freud.py (default: 4)
+                                bad_freud.py and VDOS_THREADS for vdos.py (default: 4)
 
   --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
                                   existing <run_id>_distribution_analysis/ (stage 2)
@@ -141,6 +156,7 @@ VENV=""
 RUN_DSF="1"
 RUN_RDF="1"
 RUN_BAD="1"
+RUN_VDOS="1"
 NTASKS=""
 ANALYSIS_CPUS_PER_TASK=""
 
@@ -157,6 +173,13 @@ DSF_STRIDE=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
+VDOS_CORR_LENGTH=""
+VDOS_CORR_INTERVAL=""
+VDOS_MAX_FREQUENCY_EV=""
+VDOS_NUM_GRIDS=""
+VDOS_METHOD=""
+VDOS_WINDOW=""
+VDOS_NORMALIZATION=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -171,6 +194,7 @@ while [[ $# -gt 0 ]]; do
     --run-dsf) RUN_DSF="$2"; shift 2 ;;
     --run-rdf) RUN_RDF="$2"; shift 2 ;;
     --run-bad) RUN_BAD="$2"; shift 2 ;;
+    --run-vdos) RUN_VDOS="$2"; shift 2 ;;
     --ntasks) NTASKS="$2"; shift 2 ;;
     --analysis-cpus-per-task) ANALYSIS_CPUS_PER_TASK="$2"; shift 2 ;;
     --rdf-r-max) RDF_R_MAX="$2"; shift 2 ;;
@@ -186,6 +210,13 @@ while [[ $# -gt 0 ]]; do
     --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
+    --vdos-corr-length) VDOS_CORR_LENGTH="$2"; shift 2 ;;
+    --vdos-corr-interval) VDOS_CORR_INTERVAL="$2"; shift 2 ;;
+    --vdos-max-frequency-ev) VDOS_MAX_FREQUENCY_EV="$2"; shift 2 ;;
+    --vdos-num-grids) VDOS_NUM_GRIDS="$2"; shift 2 ;;
+    --vdos-method) VDOS_METHOD="$2"; shift 2 ;;
+    --vdos-window) VDOS_WINDOW="$2"; shift 2 ;;
+    --vdos-normalization) VDOS_NORMALIZATION="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
@@ -226,6 +257,7 @@ check_zero_or_one() {
 check_zero_or_one "$RUN_DSF" --run-dsf
 check_zero_or_one "$RUN_RDF" --run-rdf
 check_zero_or_one "$RUN_BAD" --run-bad
+check_zero_or_one "$RUN_VDOS" --run-vdos
 
 if [[ "$FORCE" == "1" && -z "$FORCE_REASON" ]]; then
   echo 'Error: --force requires a non-empty reason, e.g. --force "re-running after fixing potential file"' >&2
@@ -273,6 +305,7 @@ mkdir -p "$STAGE2_DIR"
 cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/rdf_freud.py" \
    "$ANALYSIS_TEMPLATE_DIR/bad_freud.py" \
+   "$ANALYSIS_TEMPLATE_DIR/vdos.py" \
    "$STAGE2_DIR/"
 ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
 
@@ -280,6 +313,7 @@ enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
 [[ "$RUN_RDF" == "1" ]] && enabled_scripts+="rdf_freud.py "
 [[ "$RUN_BAD" == "1" ]] && enabled_scripts+="bad_freud.py "
+[[ "$RUN_VDOS" == "1" ]] && enabled_scripts+="vdos.py "
 enabled_scripts="${enabled_scripts% }"
 
 ############################
@@ -301,7 +335,7 @@ echo "Running LAMMPS locally in $STAGE1_DIR/run ..."
 echo "LAMMPS run finished."
 
 ############################
-# Stage 2 execution — inlined from dsf_submit.slurm
+# Stage 2 execution — inlined from distribution_submit.slurm
 # (module purge/load dropped; venv path is a flag, not a hardcoded HPC path)
 ############################
 
@@ -310,7 +344,8 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   cd "$STAGE2_DIR"
   activate_analysis_env "$VENV"
   export OMP_NUM_THREADS="${ANALYSIS_CPUS_PER_TASK:-4}"
-  export TRAJ="$DUMP_FILE" RUN_DSF RUN_RDF RUN_BAD
+  export VDOS_THREADS="${ANALYSIS_CPUS_PER_TASK:-4}"
+  export TRAJ="$DUMP_FILE" RUN_DSF RUN_RDF RUN_BAD RUN_VDOS
   [[ -n "$RDF_R_MAX" ]]           && export R_MAX="$RDF_R_MAX"
   [[ -n "$RDF_BINS_VAL" ]]        && export RDF_BINS="$RDF_BINS_VAL"
   [[ -n "$BAD_ELEMENTS" ]]        && export ELEMENTS="$BAD_ELEMENTS"
@@ -324,10 +359,18 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$DSF_WINDOW_SIZE" ]]     && export WINDOW_SIZE="$DSF_WINDOW_SIZE"
   [[ -n "$DSF_Q_MAX" ]]           && export Q_MAX="$DSF_Q_MAX"
   [[ -n "$DSF_N_Q_BINS" ]]        && export N_Q_BINS="$DSF_N_Q_BINS"
+  [[ -n "$VDOS_CORR_LENGTH" ]]      && export CORR_LENGTH="$VDOS_CORR_LENGTH"
+  [[ -n "$VDOS_CORR_INTERVAL" ]]    && export CORR_INTERVAL="$VDOS_CORR_INTERVAL"
+  [[ -n "$VDOS_MAX_FREQUENCY_EV" ]] && export MAX_FREQUENCY_EV="$VDOS_MAX_FREQUENCY_EV"
+  [[ -n "$VDOS_NUM_GRIDS" ]]        && export NUM_GRIDS="$VDOS_NUM_GRIDS"
+  [[ -n "$VDOS_METHOD" ]]           && export VDOS_METHOD="$VDOS_METHOD"
+  [[ -n "$VDOS_WINDOW" ]]           && export VDOS_WINDOW="$VDOS_WINDOW"
+  [[ -n "$VDOS_NORMALIZATION" ]]    && export VDOS_NORMALIZATION="$VDOS_NORMALIZATION"
 
   if [[ "$RUN_DSF" == "1" ]]; then echo "--- dsf.py ---"; python dsf.py; fi
   if [[ "$RUN_RDF" == "1" ]]; then echo "--- rdf_freud.py ---"; python rdf_freud.py; fi
   if [[ "$RUN_BAD" == "1" ]]; then echo "--- bad_freud.py ---"; python bad_freud.py; fi
+  if [[ "$RUN_VDOS" == "1" ]]; then echo "--- vdos.py ---"; python vdos.py; fi
 )
 echo "Distribution analysis finished."
 
@@ -339,8 +382,8 @@ Pipeline completed locally:
   analysis scripts enabled        : ${enabled_scripts:-none}
 
 $(if [[ -n "$enabled_scripts" ]]; then
-  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-* flags is using each script's own default —"
+  echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY

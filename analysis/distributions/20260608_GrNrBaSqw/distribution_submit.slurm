@@ -31,6 +31,7 @@ echo "Trajectory: $TRAJ"
 RUN_DSF="${RUN_DSF:-1}"
 RUN_RDF="${RUN_RDF:-1}"
 RUN_BAD="${RUN_BAD:-1}"
+RUN_VDOS="${RUN_VDOS:-1}"
 
 ############################
 # Paths
@@ -57,6 +58,11 @@ source /home1/lkyamamo/venv/struc_analysis/bin/activate        # env with dynaso
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 echo "Threads: $OMP_NUM_THREADS"
 
+# vdos.py's fft_periodogram method reads VDOS_THREADS directly (scipy.fft
+# workers); its default vacf_cosine_transform method instead benefits from
+# OMP_NUM_THREADS above via numpy's underlying BLAS matmul.
+export VDOS_THREADS=$SLURM_CPUS_PER_TASK
+
 ############################
 # Run scripts
 ############################
@@ -74,6 +80,11 @@ fi
 if [ "$RUN_BAD" -eq 1 ]; then
     echo "--- bad_freud.py ---"
     python bad_freud.py
+fi
+
+if [ "$RUN_VDOS" -eq 1 ]; then
+    echo "--- vdos.py ---"
+    python vdos.py
 fi
 
 date
