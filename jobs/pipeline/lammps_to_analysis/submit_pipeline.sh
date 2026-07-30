@@ -12,6 +12,13 @@ Usage: submit_pipeline.sh [options]
 Run from inside the LAMMPS run directory, whose name is the run id
 (e.g. cd .../runs/water/N5184/0149 && /path/to/submit_pipeline.sh ...).
 
+Requires submit_pipeline.conf next to this script (same directory), which
+sets defaults for every parameter below — the script refuses to run without
+it. Copy submit_pipeline.conf.example to submit_pipeline.conf and edit it
+for your setup; submit_pipeline.conf itself is gitignored since it holds
+your own local paths. Any flag below overrides its config value for that
+one invocation.
+
 Required:
   --input-script FILE          LAMMPS .input script (setup + trajectory generation)
   --starting-structure FILE    Starting structure .data file, symlinked as start.data
@@ -110,6 +117,19 @@ Optional:
       bad_freud.py and VDOS_THREADS for vdos.py (distribution_submit.slurm
       sets both from $SLURM_CPUS_PER_TASK).
 
+  --skip-trajectory                Skip stage 1 (LAMMPS run) entirely and assume the
+                                  trajectory already exists at run/dump.lammpstrj and
+                                  run/dynamics.lammpstrj under this run directory
+                                  (i.e. you already ran this pipeline, or LAMMPS
+                                  directly, from here). Verified before stage 2 runs;
+                                  the pipeline aborts with an error if either file is
+                                  missing. --input-script/--starting-structure/
+                                  --potential-file and the trajectory-creation slurm
+                                  overrides (--nodes/--ntasks/--time/--job-name/
+                                  --constraint/--nodelist) are ignored in this mode,
+                                  and stage 2 is submitted without a --dependency
+                                  (nothing to wait on).
+
   --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
                                   existing <run_id>_distribution_analysis/ (stage 2)
                                   instead of refusing to run. REASON is required (a
@@ -139,6 +159,7 @@ EOF
 }
 
 INTERACTIVE="0"
+SKIP_TRAJECTORY="0"
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_submit.slurm"
 DUMP_FILE="dump.lammpstrj"
@@ -154,61 +175,19 @@ log_overwrite() {
   echo "$msg" >> "$LOG_FILE"
 }
 
-# general input parameters
-INPUT_SCRIPT="/scratch1/lkyamamo/test-runs/potential-verify/runs/0168/OH-therm.input"
-STARTING_STRUCTURE="/home1/lkyamamo/util/starting-structures/ICE_CUBIC.data"
-POTENTIAL_FILE="/scratch1/lkyamamo/test-runs/potential-verify/potentials/20260723_OH.vashishta"
-POTENTIAL_LINK_NAME="OH.usc"
-ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/test-runs/potential-verify/analysis"
-ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
-RUN_DSF="0"
-RUN_RDF="1"
-RUN_BAD="1"
-RUN_VDOS="0"
-RUN_MSD="0"
-
-# trajectory creation slurm parameters
-NODES="1"
-NTASKS="128"
-TIME="1:00:00"
-JOB_NAME="water-setup"
-CONSTRAINT="epyc-9554"
-NODELIST=""
-
-# analysis slurm parameters
-ANALYSIS_NODES="1"
-ANALYSIS_NTASKS="1"
-ANALYSIS_TIME="1:00:00"
-ANALYSIS_JOB_NAME="water-distributions"
-ANALYSIS_CONSTRAINT="epyc-9554"
-ANALYSIS_CPUS_PER_TASK=""
-ANALYSIS_NODELIST=""
-
-# distribution code parameters
-RDF_R_MAX="8"
-RDF_BINS_VAL="800"
-BAD_ELEMENTS="O;H"
-BAD_R_CUTOFF=""
-BAD_R_MINCUT=""
-BAD_TRIPLET_CUTOFFS="H-O-H:H-O-H:1.2:0.5:1.2:0.5|H--O--H:H-O-H:2.4:1.49:2.4:1.49|O-H--O:O-H-O:1.2:0.5:2.4:1.49"
-BAD_BINS_VAL="360"
-DSF_DT=""
-DSF_N_FRAMES=""
-DSF_STRIDE=""
-DSF_WINDOW_SIZE=""
-DSF_Q_MAX=""
-DSF_N_Q_BINS=""
-VDOS_DT=""
-VDOS_CORR_LENGTH=""
-VDOS_CORR_INTERVAL=""
-VDOS_MAX_FREQUENCY_EV=""
-VDOS_NUM_GRIDS=""
-VDOS_METHOD=""
-VDOS_WINDOW=""
-VDOS_NORMALIZATION=""
-MSD_FIT_FRACTION=""
-
-
+# All parameter defaults (general input, trajectory-creation slurm, analysis
+# slurm, distribution code) live in submit_pipeline.conf next to this script,
+# not in the script itself, so personal paths never need to be edited into
+# (or committed from) tracked code. See submit_pipeline.conf.example.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/submit_pipeline.conf"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "Error: required config file not found: $CONFIG_FILE" >&2
+  echo "Copy $SCRIPT_DIR/submit_pipeline.conf.example to $CONFIG_FILE and edit it for your setup." >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -260,6 +239,7 @@ while [[ $# -gt 0 ]]; do
     --msd-fit-fraction) MSD_FIT_FRACTION="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
+    --skip-trajectory) SKIP_TRAJECTORY="1"; shift 1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -279,9 +259,11 @@ require() {
     missing=1
   fi
 }
-require "$INPUT_SCRIPT" --input-script
-require "$STARTING_STRUCTURE" --starting-structure
-require "$POTENTIAL_FILE" --potential-file
+if [[ "$SKIP_TRAJECTORY" != "1" ]]; then
+  require "$INPUT_SCRIPT" --input-script
+  require "$STARTING_STRUCTURE" --starting-structure
+  require "$POTENTIAL_FILE" --potential-file
+fi
 require "$ANALYSIS_PARENT_DIR" --analysis-parent-dir
 if [[ "$missing" -ne 0 ]]; then
   usage
@@ -313,28 +295,43 @@ if [[ "$INTERACTIVE" == "1" && -z "${SLURM_JOB_ID:-}" ]]; then
   exit 1
 fi
 
-if [[ -e "$STAGE1_DIR/input_files" || -e "$STAGE1_DIR/run" ]]; then
-  if [[ "$FORCE" == "1" ]]; then
-    log_overwrite "--force ($FORCE_REASON): removing existing $STAGE1_DIR/input_files and/or $STAGE1_DIR/run (run id: $RUN_ID)"
-    rm -rf "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
-  else
-    echo "Error: $STAGE1_DIR already has input_files/ or run/ — refusing to overwrite (use --force to override)." >&2
+if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
+  missing_traj=0
+  for f in "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE"; do
+    if [[ ! -e "$f" ]]; then
+      echo "Error: --skip-trajectory was given but $f does not exist." >&2
+      missing_traj=1
+    fi
+  done
+  if [[ "$missing_traj" -ne 0 ]]; then
+    echo "Re-run without --skip-trajectory to generate the trajectory, or fix the path above." >&2
     exit 1
   fi
+  echo "--skip-trajectory: found existing trajectory in $STAGE1_DIR/run — skipping stage 1."
+else
+  if [[ -e "$STAGE1_DIR/input_files" || -e "$STAGE1_DIR/run" ]]; then
+    if [[ "$FORCE" == "1" ]]; then
+      log_overwrite "--force ($FORCE_REASON): removing existing $STAGE1_DIR/input_files and/or $STAGE1_DIR/run (run id: $RUN_ID)"
+      rm -rf "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
+    else
+      echo "Error: $STAGE1_DIR already has input_files/ or run/ — refusing to overwrite (use --force to override)." >&2
+      exit 1
+    fi
+  fi
+
+  ############################
+  # Stage 1: LAMMPS run (setup + trajectory generation)
+  ############################
+
+  mkdir -p "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
+
+  cp "$INPUT_SCRIPT" "$STAGE1_DIR/input_files/in.input"
+  ln -s "$(realpath "$STARTING_STRUCTURE")" "$STAGE1_DIR/input_files/start.data"
+  ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE1_DIR/input_files/${POTENTIAL_LINK_NAME:-$(basename "$POTENTIAL_FILE")}"
+
+  cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/lammps_submit.slurm"
+  cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/run/lammps_submit.slurm"
 fi
-
-############################
-# Stage 1: LAMMPS run (setup + trajectory generation)
-############################
-
-mkdir -p "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
-
-cp "$INPUT_SCRIPT" "$STAGE1_DIR/input_files/in.input"
-ln -s "$(realpath "$STARTING_STRUCTURE")" "$STAGE1_DIR/input_files/start.data"
-ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE1_DIR/input_files/${POTENTIAL_LINK_NAME:-$(basename "$POTENTIAL_FILE")}"
-
-cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/lammps_submit.slurm"
-cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/run/lammps_submit.slurm"
 
 ############################
 # Stage 2: distribution analysis (reads the trajectory as input; never modifies it)
@@ -405,13 +402,17 @@ enabled_scripts="${enabled_scripts% }"
 ############################
 
 if [[ "$INTERACTIVE" == "1" ]]; then
-  echo "Running LAMMPS interactively in $STAGE1_DIR/run ..."
-  (
-    export SLURM_SUBMIT_DIR="$STAGE1_DIR/run"
-    export SLURM_NTASKS="${NTASKS:-64}"
-    cd "$STAGE1_DIR/run" && bash lammps_submit.slurm
-  )
-  echo "LAMMPS run finished."
+  if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
+    echo "--skip-trajectory: not running LAMMPS, using existing trajectory in $STAGE1_DIR/run."
+  else
+    echo "Running LAMMPS interactively in $STAGE1_DIR/run ..."
+    (
+      export SLURM_SUBMIT_DIR="$STAGE1_DIR/run"
+      export SLURM_NTASKS="${NTASKS:-64}"
+      cd "$STAGE1_DIR/run" && bash lammps_submit.slurm
+    )
+    echo "LAMMPS run finished."
+  fi
 
   echo "Running distribution analysis interactively in $STAGE2_DIR ..."
   (
@@ -426,7 +427,7 @@ if [[ "$INTERACTIVE" == "1" ]]; then
   cat <<SUMMARY
 
 Pipeline completed interactively:
-  LAMMPS run (setup + trajectory) : $STAGE1_DIR
+  LAMMPS run (setup + trajectory) : $STAGE1_DIR$([[ "$SKIP_TRAJECTORY" == "1" ]] && echo "  (skipped — existing trajectory)")
   distribution analysis           : $STAGE2_DIR
   analysis scripts enabled        : ${enabled_scripts:-none}
 
@@ -437,18 +438,23 @@ $(if [[ -n "$enabled_scripts" ]]; then
 fi)
 SUMMARY
 else
-  sbatch_args=()
-  [[ -n "$NODES" ]]      && sbatch_args+=(--nodes="$NODES")
-  [[ -n "$NTASKS" ]]     && sbatch_args+=(--ntasks="$NTASKS")
-  [[ -n "$TIME" ]]       && sbatch_args+=(--time="$TIME")
-  [[ -n "$JOB_NAME" ]]   && sbatch_args+=(--job-name="$JOB_NAME")
-  [[ -n "$CONSTRAINT" ]] && sbatch_args+=(--constraint="$CONSTRAINT")
-  [[ -n "$NODELIST" ]]   && sbatch_args+=(--nodelist="$NODELIST")
+  JOBID1=""
+  if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
+    echo "--skip-trajectory: not submitting a LAMMPS job, using existing trajectory in $STAGE1_DIR/run."
+  else
+    sbatch_args=()
+    [[ -n "$NODES" ]]      && sbatch_args+=(--nodes="$NODES")
+    [[ -n "$NTASKS" ]]     && sbatch_args+=(--ntasks="$NTASKS")
+    [[ -n "$TIME" ]]       && sbatch_args+=(--time="$TIME")
+    [[ -n "$JOB_NAME" ]]   && sbatch_args+=(--job-name="$JOB_NAME")
+    [[ -n "$CONSTRAINT" ]] && sbatch_args+=(--constraint="$CONSTRAINT")
+    [[ -n "$NODELIST" ]]   && sbatch_args+=(--nodelist="$NODELIST")
 
-  echo "Submitting LAMMPS run from $STAGE1_DIR/run ..."
-  JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
-    "${sbatch_args[@]+"${sbatch_args[@]}"}" lammps_submit.slurm)"
-  echo "  LAMMPS job id: $JOBID1"
+    echo "Submitting LAMMPS run from $STAGE1_DIR/run ..."
+    JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
+      "${sbatch_args[@]+"${sbatch_args[@]}"}" lammps_submit.slurm)"
+    echo "  LAMMPS job id: $JOBID1"
+  fi
 
   analysis_sbatch_args=()
   [[ -n "$ANALYSIS_NODES" ]]      && analysis_sbatch_args+=(--nodes="$ANALYSIS_NODES")
@@ -459,8 +465,12 @@ else
   [[ -n "$ANALYSIS_NODELIST" ]]   && analysis_sbatch_args+=(--nodelist="$ANALYSIS_NODELIST")
   [[ -n "$ANALYSIS_CPUS_PER_TASK" ]] && analysis_sbatch_args+=(--cpus-per-task="$ANALYSIS_CPUS_PER_TASK")
 
-  echo "Submitting distribution analysis from $STAGE2_DIR, dependent on job $JOBID1 ..."
-  JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable --dependency=afterok:"$JOBID1" \
+  dependency_args=()
+  [[ -n "$JOBID1" ]] && dependency_args+=(--dependency=afterok:"$JOBID1")
+
+  echo "Submitting distribution analysis from $STAGE2_DIR${JOBID1:+, dependent on job $JOBID1} ..."
+  JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable \
+    "${dependency_args[@]+"${dependency_args[@]}"}" \
     "${analysis_sbatch_args[@]+"${analysis_sbatch_args[@]}"}" \
     --export="$export_vars" \
     distribution_submit.slurm)"
@@ -469,7 +479,7 @@ else
   cat <<SUMMARY
 
 Pipeline submitted:
-  LAMMPS run (setup + trajectory) : $STAGE1_DIR  (job $JOBID1)
+  LAMMPS run (setup + trajectory) : $STAGE1_DIR  ${JOBID1:+(job $JOBID1)}${JOBID1:-(skipped — existing trajectory)}
   distribution analysis           : $STAGE2_DIR  (job $JOBID2)
   analysis scripts enabled        : ${enabled_scripts:-none}
 

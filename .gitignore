@@ -3,3 +3,4 @@ calculations/lammps/dumps/*
 *__pycache__*
 *.venv
 *.claude
+jobs/pipeline/lammps_to_analysis/submit_pipeline.conf

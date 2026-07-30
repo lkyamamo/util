@@ -1,0 +1,72 @@
+# submit_pipeline.conf.example — template for submit_pipeline.conf.
+#
+# submit_pipeline.sh refuses to run unless submit_pipeline.conf exists next
+# to it (same directory). Copy this file to submit_pipeline.conf and edit
+# the values below for your setup:
+#
+#   cp submit_pipeline.conf.example submit_pipeline.conf
+#
+# submit_pipeline.conf is gitignored — it holds your own local paths and
+# should not be committed. This file (the .example) is the tracked template.
+#
+# Every value here is just a default: any of submit_pipeline.sh's flags
+# (--input-script, --rdf-r-max, --nodes, ...) overrides the corresponding
+# variable below for that one invocation. Run submit_pipeline.sh --help for
+# what each variable/flag controls.
+#
+# This file is sourced as bash, so $REPO_ROOT (set by submit_pipeline.sh
+# before sourcing this file) and normal bash quoting rules are available.
+
+# general input parameters
+INPUT_SCRIPT="/scratch1/lkyamamo/test-runs/potential-verify/runs/0168/OH-therm.input"
+STARTING_STRUCTURE="/home1/lkyamamo/util/starting-structures/ICE_CUBIC.data"
+POTENTIAL_FILE="/scratch1/lkyamamo/test-runs/potential-verify/potentials/20260723_OH.vashishta"
+POTENTIAL_LINK_NAME="OH.usc"
+ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/test-runs/potential-verify/analysis"
+ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
+RUN_DSF="0"
+RUN_RDF="1"
+RUN_BAD="1"
+RUN_VDOS="0"
+RUN_MSD="0"
+
+# trajectory creation slurm parameters
+NODES="1"
+NTASKS="128"
+TIME="1:00:00"
+JOB_NAME="water-setup"
+CONSTRAINT="epyc-9554"
+NODELIST=""
+
+# analysis slurm parameters
+ANALYSIS_NODES="1"
+ANALYSIS_NTASKS="1"
+ANALYSIS_TIME="1:00:00"
+ANALYSIS_JOB_NAME="water-distributions"
+ANALYSIS_CONSTRAINT="epyc-9554"
+ANALYSIS_CPUS_PER_TASK=""
+ANALYSIS_NODELIST=""
+
+# distribution code parameters
+RDF_R_MAX="8"
+RDF_BINS_VAL="800"
+BAD_ELEMENTS="O;H"
+BAD_R_CUTOFF=""
+BAD_R_MINCUT=""
+BAD_TRIPLET_CUTOFFS="H-O-H:H-O-H:1.2:0.5:1.2:0.5|H--O--H:H-O-H:2.4:1.49:2.4:1.49|O-H--O:O-H-O:1.2:0.5:2.4:1.49"
+BAD_BINS_VAL="360"
+DSF_DT=""
+DSF_N_FRAMES=""
+DSF_STRIDE=""
+DSF_WINDOW_SIZE=""
+DSF_Q_MAX=""
+DSF_N_Q_BINS=""
+VDOS_DT=""
+VDOS_CORR_LENGTH=""
+VDOS_CORR_INTERVAL=""
+VDOS_MAX_FREQUENCY_EV=""
+VDOS_NUM_GRIDS=""
+VDOS_METHOD=""
+VDOS_WINDOW=""
+VDOS_NORMALIZATION=""
+MSD_FIT_FRACTION=""
