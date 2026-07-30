@@ -65,6 +65,23 @@ Optional:
     --dielectric-type-h INT          LAMMPS atom type for hydrogen (default: 2)
     --dielectric-averaging-method STR  windowed|cumulative|hybrid|binned
                                         (default: cumulative)
+    --dielectric-ntasks INT          Ranks for the stage-2 MPI calc (default:
+                                    empty — one rank per dielectric.N.custom
+                                    file, the historical behavior). Set lower
+                                    than the chunk-file count to fit a
+                                    smaller allocation (e.g. --interactive
+                                    under a salloc without enough tasks for
+                                    every file); each rank then processes
+                                    several files in sequence, so stage 2
+                                    takes proportionally longer. Must not
+                                    exceed the chunk-file count. Restarting a
+                                    partially-completed run under a different
+                                    --dielectric-ntasks than it started with
+                                    is refused (rank->file assignment depends
+                                    on rank count, so checkpoints wouldn't
+                                    line up) — rerun with the original value,
+                                    or clear that temperature's dipole_output/
+                                    to start over.
 
   --nodes N               --analysis-nodes N
   --ntasks N                --analysis-time HH:MM:SS
@@ -76,9 +93,10 @@ Optional:
       overrides jobs/slurm/lammps_dielectric_submit.slurm (stage 1, per
       temperature), the right column overrides dielectric_submit.slurm
       (stage 2, per temperature). Omit any of these to leave the template's
-      own value in effect. Stage 2's rank count is always auto-derived from
-      the number of dielectric.N.custom files found (must equal
-      --dielectric-n-chunks), so it has no --analysis-ntasks override.
+      own value in effect. Stage 2's rank count defaults to one rank per
+      dielectric.N.custom file found; --dielectric-ntasks above overrides it
+      (and, when set, is also passed as stage 2's --ntasks so the sbatch
+      request matches).
 
   --skip-trajectory                Skip stage 1 (LAMMPS dielectric production) for
                                   every requested temperature and assume each
@@ -176,6 +194,7 @@ while [[ $# -gt 0 ]]; do
     --dielectric-type-o) DIELECTRIC_TYPE_O="$2"; shift 2 ;;
     --dielectric-type-h) DIELECTRIC_TYPE_H="$2"; shift 2 ;;
     --dielectric-averaging-method) DIELECTRIC_AVERAGING_METHOD="$2"; shift 2 ;;
+    --dielectric-ntasks) DIELECTRIC_NTASKS="$2"; shift 2 ;;
     --nodes) NODES="$2"; shift 2 ;;
     --ntasks) NTASKS="$2"; shift 2 ;;
     --time) TIME="$2"; shift 2 ;;
@@ -319,7 +338,7 @@ for T in "${TEMP_LIST[@]}"; do
   ln -s "$STAGE1_DIR/run/dumps" "$STAGE2_DIR/dumps"
 
   stage1_export="TARGET_TEMP=$T,N_TIMES=$DIELECTRIC_N_CHUNKS,NVT_LENGTH=$DIELECTRIC_CHUNK_LENGTH,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY"
-  stage2_export="ALL,DUMP_DIR=$STAGE2_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,TEMPERATURE=$T,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD"
+  stage2_export="ALL,DUMP_DIR=$STAGE2_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,TEMPERATURE=$T,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD,NRANKS=$DIELECTRIC_NTASKS"
 
   if [[ "$INTERACTIVE" == "1" ]]; then
     if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
@@ -371,6 +390,7 @@ for T in "${TEMP_LIST[@]}"; do
     [[ -n "$ANALYSIS_JOB_NAME" ]]   && analysis_sbatch_args+=(--job-name="${ANALYSIS_JOB_NAME}-T${T}")
     [[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
     [[ -n "$ANALYSIS_NODELIST" ]]   && analysis_sbatch_args+=(--nodelist="$ANALYSIS_NODELIST")
+    [[ -n "$DIELECTRIC_NTASKS" ]]   && analysis_sbatch_args+=(--ntasks="$DIELECTRIC_NTASKS")
 
     dependency_args=()
     [[ -n "$JOBID1" ]] && dependency_args+=(--dependency=afterok:"$JOBID1")
