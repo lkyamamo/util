@@ -1,0 +1,60 @@
+# submit_dielectric_pipeline.conf.example — template for
+# submit_dielectric_pipeline.conf.
+#
+# submit_dielectric_pipeline.sh refuses to run unless
+# submit_dielectric_pipeline.conf exists next to it (same directory). Copy
+# this file to submit_dielectric_pipeline.conf and edit the values below for
+# your setup:
+#
+#   cp submit_dielectric_pipeline.conf.example submit_dielectric_pipeline.conf
+#
+# submit_dielectric_pipeline.conf is gitignored — it holds your own local
+# paths and should not be committed. This file (the .example) is the tracked
+# template.
+#
+# Every value here is just a default: any of submit_dielectric_pipeline.sh's
+# flags (--input-script, --temperatures, --nodes, ...) overrides the
+# corresponding variable below for that one invocation. Run
+# submit_dielectric_pipeline.sh --help for what each variable/flag controls.
+#
+# This file is sourced as bash, so $REPO_ROOT (set by
+# submit_dielectric_pipeline.sh before sourcing this file) and normal bash
+# quoting rules are available.
+
+# general input parameters
+INPUT_SCRIPT="/scratch1/lkyamamo/finalized-modifications/runs/0179/dielectric-therm.input"
+STARTING_STRUCTURE="/scratch1/lkyamamo/finalized-modifications/runs/0177/run/final.data"
+POTENTIAL_FILE="/scratch1/lkyamamo/finalized-modifications/potentials/20260729_OH_B_theta_mod_v3.usc"
+POTENTIAL_LINK_NAME="OH.usc"
+ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/finalized-modifications/analysis"
+ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/simulation/lammps/20260617_dielectric_multi_traj"
+TEMPERATURES="303"
+LA="37.2514"
+LB="37.2514"
+LC="37.2514"
+
+# dielectric production (stage 1) config
+DIELECTRIC_N_CHUNKS="128"
+DIELECTRIC_CHUNK_LENGTH="468750"
+DIELECTRIC_DUMP_EVERY="10"
+
+# dielectric calc (stage 2) config
+DIELECTRIC_CUTOFF="1.2"
+DIELECTRIC_TYPE_O="1"
+DIELECTRIC_TYPE_H="2"
+DIELECTRIC_AVERAGING_METHOD="cumulative"
+
+# trajectory creation slurm parameters
+NODES="1"
+NTASKS="64"
+TIME="8:00:00"
+JOB_NAME="dielectric-production"
+CONSTRAINT="epyc-7513"
+NODELIST=""
+
+# analysis slurm parameters
+ANALYSIS_NODES=""
+ANALYSIS_TIME="8:00:00"
+ANALYSIS_JOB_NAME="dielectric-calc"
+ANALYSIS_CONSTRAINT=""
+ANALYSIS_NODELIST=""
