@@ -1,0 +1,61 @@
+## Ar  FCC lattice
+#################### setup ##################
+echo            both
+units           metal
+dimension       3
+boundary        p p p
+processors      * * *
+atom_style      atomic
+
+read_data       start.data
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+mass 1 15.9994  # O
+mass 2 1.00784  # H
+
+pair_style      usc
+pair_coeff  * * OH.usc O H
+
+#pair_modify    coord 2 1 2.0 0.3
+#pair_modify    coord 2 3 1.4 0.3
+
+thermo_style    custom step temp pe ke etotal press vol
+thermo          50
+
+# TARGET_TEMP/N_TIMES/NVT_LENGTH/DUMP_EVERY are passed in via LAMMPS -var
+# flags (see jobs/slurm/lammps_dielectric_submit.slurm), set by
+# submit_dielectric_pipeline.sh from --dielectric-n-chunks/--dielectric-chunk-length/
+# --dielectric-dump-every and the current --temperatures entry.
+variable        nvt_length equal ${NVT_LENGTH}
+variable        n_times equal ${N_TIMES}
+variable        dielectric_dump_every equal ${DUMP_EVERY}
+########################################################
+
+###################### run setup ###########################
+# start.data is assumed already equilibrated at ${TARGET_TEMP} — no
+# deform/anneal ramp here (unlike OH-therm.input/b-SiO-therm.input).
+reset_timestep  0
+
+timestep        0.00025
+
+label           start_loop
+variable        i loop ${n_times}
+
+        dump            1 all custom ${dielectric_dump_every} dumps/dielectric.${i}.custom id type x y z
+        dump_modify     1 sort id
+
+        ############### target-T therm ################
+        fix             1 all nvt temp ${TARGET_TEMP} ${TARGET_TEMP} $(100*dt)
+        run             ${nvt_length}
+        unfix           1
+        ##############################################
+
+        undump          1
+
+next            i
+jump            SELF start_loop
+
+
+write_data      final.data
