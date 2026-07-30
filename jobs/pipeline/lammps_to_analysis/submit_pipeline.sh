@@ -1,6 +1,6 @@
 #!/bin/bash
 # submit_pipeline.sh — run a LAMMPS setup+trajectory job, then distribution
-# analysis (rdf/bad/dsf/vdos) on its dump, via sbatch --dependency.
+# analysis (rdf/bad/dsf/vdos/msd) on its dump, via sbatch --dependency.
 #
 # Run from inside the LAMMPS run directory; its basename is the run id.
 set -euo pipefail
@@ -27,10 +27,10 @@ from --potential-file's own basename (e.g. a real potential file named
 
 Note: --input-script's in.input must write two trajectory dumps, flat (no
 subdirectory): dump.lammpstrj (read by rdf_freud.py/bad_freud.py) and a
-separate, higher-frequency dynamics.lammpstrj (read by dsf.py/vdos.py —
-resolving vibrational frequencies needs much finer time sampling than
-structural analysis does). See OH-therm.input/b-SiO-therm.input in this
-directory for examples of both dump commands.
+separate, higher-frequency dynamics.lammpstrj (read by dsf.py/vdos.py/msd.py —
+resolving vibrational frequencies and diffusion needs much finer time
+sampling than structural analysis does). See OH-therm.input/b-SiO-therm.input
+in this directory for examples of both dump commands.
 
 Optional:
   --analysis-template-dir DIR   Distribution-analysis scripts to copy into stage 2
@@ -39,6 +39,7 @@ Optional:
   --run-rdf {0|1}                Run rdf_freud.py (radial distribution function) (default: 1)
   --run-bad {0|1}                Run bad_freud.py (bond angle distribution) (default: 1)
   --run-vdos {0|1}                Run vdos.py (vibrational density of states) (default: 0)
+  --run-msd {0|1}                 Run msd.py (mean square displacement / diffusion) (default: 0)
 
   Physics config — each overrides that script's own hardcoded default
   (see the CONFIGURATION block at the top of each .py) when passed; omit
@@ -81,6 +82,13 @@ Optional:
     --vdos-window STR                vdos.py WINDOW: 'cosine_lag'/'none' under
                                     vacf_cosine_transform, 'hann'/'none' under fft_periodogram
     --vdos-normalization STR         vdos.py NORMALIZATION: 'phonon' (default) or 'unit_area'
+
+    msd.py reuses --vdos-dt/--vdos-corr-length/--vdos-corr-interval above for
+    its own TIME_UNIT/CORR_LENGTH/CORR_INTERVAL (same trajectory, same
+    meaning, same env vars — no separate flags):
+    --msd-fit-fraction FLOAT         msd.py FIT_FRACTION: fraction of the tail of the
+                                    correlation window used for the diffusion-coefficient
+                                    linear fit, e.g. 0.5
   None of these use commas (sbatch --export is comma-delimited and silently
   truncates any value containing one), so no quoting/encoding is needed
   beyond normal shell quoting of the whole flag value.
@@ -157,6 +165,7 @@ RUN_DSF="0"
 RUN_RDF="1"
 RUN_BAD="1"
 RUN_VDOS="0"
+RUN_MSD="0"
 
 # trajectory creation slurm parameters
 NODES="1"
@@ -197,6 +206,7 @@ VDOS_NUM_GRIDS=""
 VDOS_METHOD=""
 VDOS_WINDOW=""
 VDOS_NORMALIZATION=""
+MSD_FIT_FRACTION=""
 
 
 
@@ -212,6 +222,7 @@ while [[ $# -gt 0 ]]; do
     --run-rdf) RUN_RDF="$2"; shift 2 ;;
     --run-bad) RUN_BAD="$2"; shift 2 ;;
     --run-vdos) RUN_VDOS="$2"; shift 2 ;;
+    --run-msd) RUN_MSD="$2"; shift 2 ;;
     --nodes) NODES="$2"; shift 2 ;;
     --ntasks) NTASKS="$2"; shift 2 ;;
     --time) TIME="$2"; shift 2 ;;
@@ -246,6 +257,7 @@ while [[ $# -gt 0 ]]; do
     --vdos-method) VDOS_METHOD="$2"; shift 2 ;;
     --vdos-window) VDOS_WINDOW="$2"; shift 2 ;;
     --vdos-normalization) VDOS_NORMALIZATION="$2"; shift 2 ;;
+    --msd-fit-fraction) MSD_FIT_FRACTION="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
     -h|--help) usage; exit 0 ;;
@@ -286,6 +298,7 @@ check_zero_or_one "$RUN_DSF" --run-dsf
 check_zero_or_one "$RUN_RDF" --run-rdf
 check_zero_or_one "$RUN_BAD" --run-bad
 check_zero_or_one "$RUN_VDOS" --run-vdos
+check_zero_or_one "$RUN_MSD" --run-msd
 
 if [[ "$FORCE" == "1" && -z "$FORCE_REASON" ]]; then
   echo 'Error: --force requires a non-empty reason, e.g. --force "re-running after fixing potential file"' >&2
@@ -347,6 +360,7 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/rdf_freud.py" \
    "$ANALYSIS_TEMPLATE_DIR/bad_freud.py" \
    "$ANALYSIS_TEMPLATE_DIR/vdos.py" \
+   "$ANALYSIS_TEMPLATE_DIR/msd.py" \
    "$ANALYSIS_TEMPLATE_DIR/distribution_submit.slurm" \
    "$STAGE2_DIR/"
 ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
@@ -354,7 +368,7 @@ ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 
 # None of these values may contain a comma — sbatch --export is
 # comma-delimited and silently truncates anything after an embedded one.
-export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS"
+export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS,RUN_MSD=$RUN_MSD"
 [[ -n "$RDF_R_MAX" ]]           && export_vars+=",R_MAX=$RDF_R_MAX"
 [[ -n "$RDF_BINS_VAL" ]]        && export_vars+=",RDF_BINS=$RDF_BINS_VAL"
 [[ -n "$BAD_ELEMENTS" ]]        && export_vars+=",ELEMENTS=$BAD_ELEMENTS"
@@ -376,12 +390,14 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$VDOS_METHOD" ]]           && export_vars+=",VDOS_METHOD=$VDOS_METHOD"
 [[ -n "$VDOS_WINDOW" ]]           && export_vars+=",VDOS_WINDOW=$VDOS_WINDOW"
 [[ -n "$VDOS_NORMALIZATION" ]]    && export_vars+=",VDOS_NORMALIZATION=$VDOS_NORMALIZATION"
+[[ -n "$MSD_FIT_FRACTION" ]]       && export_vars+=",MSD_FIT_FRACTION=$MSD_FIT_FRACTION"
 
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
 [[ "$RUN_RDF" == "1" ]] && enabled_scripts+="rdf_freud.py "
 [[ "$RUN_BAD" == "1" ]] && enabled_scripts+="bad_freud.py "
 [[ "$RUN_VDOS" == "1" ]] && enabled_scripts+="vdos.py "
+[[ "$RUN_MSD" == "1" ]] && enabled_scripts+="msd.py "
 enabled_scripts="${enabled_scripts% }"
 
 ############################
@@ -416,7 +432,7 @@ Pipeline completed interactively:
 
 $(if [[ -n "$enabled_scripts" ]]; then
   echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-* flags is using each script's own default —"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY
@@ -459,7 +475,7 @@ Pipeline submitted:
 
 $(if [[ -n "$enabled_scripts" ]]; then
   echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-* flags is using each script's own default —"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY

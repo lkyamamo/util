@@ -14,6 +14,7 @@ RUN_DSF=1
 RUN_RDF=1
 RUN_BAD=1
 RUN_VDOS=1
+RUN_MSD=1
 
 ############################
 # Thread count
@@ -55,4 +56,9 @@ fi
 if [ "$RUN_VDOS" -eq 1 ]; then
     echo "--- vdos.py ---"
     python vdos.py
+fi
+
+if [ "$RUN_MSD" -eq 1 ]; then
+    echo "--- msd.py ---"
+    python msd.py
 fi

@@ -39,6 +39,7 @@ RUN_DSF="${RUN_DSF:-1}"
 RUN_RDF="${RUN_RDF:-1}"
 RUN_BAD="${RUN_BAD:-1}"
 RUN_VDOS="${RUN_VDOS:-1}"
+RUN_MSD="${RUN_MSD:-1}"
 
 ############################
 # Paths
@@ -92,6 +93,11 @@ fi
 if [ "$RUN_VDOS" -eq 1 ]; then
     echo "--- vdos.py ---"
     python vdos.py
+fi
+
+if [ "$RUN_MSD" -eq 1 ]; then
+    echo "--- msd.py ---"
+    python msd.py
 fi
 
 date

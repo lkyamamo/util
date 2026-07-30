@@ -3,10 +3,10 @@
 Scripts for computing structural and dynamical properties from a LAMMPS MD trajectory.
 Each script produces independent output and can be run in any order or simultaneously.
 `rdf_freud.py`/`bad_freud.py` read a structural trajectory (`dump.lammpstrj`);
-`dsf.py`/`vdos.py` read a separate, higher-frequency trajectory
-(`dynamics.lammpstrj`) — resolving vibrational frequencies needs much finer
-time sampling than structural analysis does. See "All scripts — trajectory
-input" below.
+`dsf.py`/`vdos.py`/`msd.py` read a separate, higher-frequency trajectory
+(`dynamics.lammpstrj`) — resolving vibrational frequencies and diffusion
+needs much finer time sampling than structural analysis does. See "All
+scripts — trajectory input" below.
 
 ---
 
@@ -18,6 +18,7 @@ input" below.
 | `bad_freud.py` | Bond angle distribution P(θ) for all A-B-C triplets | `bads.csv`, `bads.png` |
 | `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `sq.png`, `dsf.csv`, `dsf.png` |
 | `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `vdos.png` |
+| `msd.py` | Mean square displacement and self-diffusion coefficient (10⁻⁵ cm²/s) per element | `msd.csv`, `msd.png` |
 
 ---
 
@@ -29,7 +30,7 @@ input" below.
 sbatch distribution_submit.slurm
 ```
 
-The slurm script runs all four Python scripts in sequence under the same job.
+The slurm script runs all five Python scripts in sequence under the same job.
 Toggle which scripts run at the top of `distribution_submit.slurm`:
 
 ```bash
@@ -37,6 +38,7 @@ RUN_DSF=1   # 1 = run, 0 = skip
 RUN_RDF=1
 RUN_BAD=1
 RUN_VDOS=1
+RUN_MSD=1
 ```
 
 ### Locally (all cores)
@@ -46,14 +48,15 @@ RUN_VDOS=1
 ./distribution_run.sh 8        # 8 threads
 ```
 
-`distribution_run.sh` runs all four scripts, mirroring `distribution_submit.slurm`'s
-`RUN_DSF`/`RUN_RDF`/`RUN_BAD`/`RUN_VDOS` flags (edit them at the top of the script
-to skip any). To run a single script instead, call it directly:
+`distribution_run.sh` runs all five scripts, mirroring `distribution_submit.slurm`'s
+`RUN_DSF`/`RUN_RDF`/`RUN_BAD`/`RUN_VDOS`/`RUN_MSD` flags (edit them at the top of
+the script to skip any). To run a single script instead, call it directly:
 
 ```bash
 python rdf_freud.py
 python bad_freud.py
 python vdos.py
+python msd.py
 ```
 
 ---
@@ -71,13 +74,14 @@ There are two standardized trajectory files, each read by env var (`TRAJ` /
 | `bad_freud.py` | Structural | `TRAJ` | `"dump.lammpstrj"` |
 | `dsf.py` | Dynamics (higher-frequency) | `DYNAMICS_TRAJ` | `"dynamics.lammpstrj"` |
 | `vdos.py` | Dynamics (higher-frequency) | `DYNAMICS_TRAJ` | `"dynamics.lammpstrj"` |
+| `msd.py` | Dynamics (higher-frequency) | `DYNAMICS_TRAJ` | `"dynamics.lammpstrj"` |
 
-`dsf.py`/`vdos.py` need `dynamics.lammpstrj` sampled much more often than
-`dump.lammpstrj` — resolving vibrational frequencies requires a time step
-between frames well below the period of the fastest mode you care about
-(Nyquist limit), whereas structural analysis (g(r), P(θ)) only needs
-occasional snapshots. `OH-therm.input`/`b-SiO-therm.input` write both dumps
-from the same production run, at independent frequencies
+`dsf.py`/`vdos.py`/`msd.py` need `dynamics.lammpstrj` sampled much more often
+than `dump.lammpstrj` — resolving vibrational frequencies and diffusion
+requires a time step between frames well below the period of the fastest
+mode you care about (Nyquist limit), whereas structural analysis (g(r), P(θ))
+only needs occasional snapshots. `OH-therm.input`/`b-SiO-therm.input` write
+both dumps from the same production run, at independent frequencies
 (`dump_frequency` vs. `dynamics_dump_frequency`).
 
 ---
@@ -168,11 +172,35 @@ explanation):
 
 ---
 
+### `msd.py` — required changes
+
+| Variable | What it controls | Notes |
+|---|---|---|
+| `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element x y z` columns (wrapped, not `xu yu zu`; velocities not read) |
+| `TIME_UNIT` | Time between consecutive dumped frames in **femtoseconds** | Falls back to `DT` if unset — same quantity dsf.py/vdos.py use |
+
+Optional (see the module docstring for the full METHOD explanation — no
+unwrapped coordinates needed, minimum-image correction on each
+reference-to-current displacement instead):
+
+| Variable | What it controls | Default |
+|---|---|---|
+| `CORR_LENGTH` | Max time lag / reference-frame spacing window, in fs — same meaning as vdos.py's `CORR_LENGTH` | 75% of total trajectory duration |
+| `CORR_INTERVAL` | Spacing between reference frames, in fs — same meaning as vdos.py's `CORR_INTERVAL` | 10% of `CORR_LENGTH` |
+| `MSD_FIT_FRACTION` | Fraction of the tail of the correlation window used for the diffusion-coefficient linear fit (excludes the early ballistic regime) | `0.5` |
+| `N_FRAMES`, `STRIDE` | Max frames to read / read every Nth frame | `0` (all), `1` |
+
+Prints a self-diffusion coefficient per element (and total) to the console,
+in units of 10⁻⁵ cm²/s (the standard unit for reporting liquid/solid
+self-diffusion coefficients), via the 3D Einstein relation MSD(t) = 6Dt.
+
+---
+
 ### `distribution_submit.slurm` — required changes
 
 | Item | Location | Notes |
 |---|---|---|
-| `RUN_DSF` / `RUN_RDF` / `RUN_BAD` / `RUN_VDOS` | Lines 23–26 (run flags) | Set `1` to run, `0` to skip |
+| `RUN_DSF` / `RUN_RDF` / `RUN_BAD` / `RUN_VDOS` / `RUN_MSD` | Lines 38–42 (run flags) | Set `1` to run, `0` to skip |
 | `--time` | SBATCH header | Increase for large trajectories |
 | `--cpus-per-task` | SBATCH header | Sets thread count; passed to `OMP_NUM_THREADS` and `VDOS_THREADS` |
 | venv path | `source /home1/lkyamamo/venv/struc_analysis/bin/activate` | Update if environment moves |
@@ -216,3 +244,4 @@ pip install scipy     # optional: multi-threaded FFT for vdos.py's fft_periodogr
 | `bad_freud.py` | `element` (symbol) or any string | `x y z` (real, Å) | Column indices set manually via `COL_*` |
 | `dsf.py` | `element` (symbol) — **required** | `x y z` or `xs ys zs` or `xu yu zu` | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
 | `vdos.py` | `element` (symbol) — **required** | `vx vy vz` (velocities) — **required**; positions not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
+| `msd.py` | `element` (symbol) — **required** | `x y z` (wrapped, real, Å) — **required**; velocities not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
