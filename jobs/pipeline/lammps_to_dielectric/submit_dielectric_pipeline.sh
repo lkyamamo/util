@@ -101,12 +101,12 @@ each time it's invoked.
 EOF
 }
 
-INTERACTIVE="0"
+INTERACTIVE="1"
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_dielectric_submit.slurm"
-FORCE="0"
-FORCE_REASON=""
-LOG_FILE="$REPO_ROOT/jobs/pipeline/lammps_to_dielectric/overwrite.log"
+FORCE="1"
+FORCE_REASON="messed up potential link name the first time"
+LOG_FILE="/scratch1/lkyamamo/finalized-modifications/runs/0179/overwrite.log"
 AGGREGATE_SCRIPT="$REPO_ROOT/jobs/pipeline/lammps_to_dielectric/aggregate_dielectric_vs_temperature.py"
 AGGREGATE_TEMPLATE="$REPO_ROOT/jobs/pipeline/lammps_to_dielectric/aggregate_submit.slurm"
 
@@ -118,16 +118,16 @@ log_overwrite() {
 }
 
 # general input parameters
-INPUT_SCRIPT=""
-STARTING_STRUCTURE=""
-POTENTIAL_FILE=""
-POTENTIAL_LINK_NAME=""
-ANALYSIS_PARENT_DIR=""
+INPUT_SCRIPT="/scratch1/lkyamamo/finalized-modifications/runs/0179/dielectric-therm.input"
+STARTING_STRUCTURE="/scratch1/lkyamamo/finalized-modifications/runs/0177/run/final.data"
+POTENTIAL_FILE="/scratch1/lkyamamo/finalized-modifications/potentials/20260729_OH_B_theta_mod_v3.usc"
+POTENTIAL_LINK_NAME="OH.usc"
+ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/finalized-modifications/analysis"
 ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/simulation/lammps/20260617_dielectric_multi_traj"
-TEMPERATURES=""
-LA=""
-LB=""
-LC=""
+TEMPERATURES="303"
+LA="37.2514"
+LB="37.2514"
+LC="37.2514"
 
 # dielectric production (stage 1) config
 DIELECTRIC_N_CHUNKS="128"

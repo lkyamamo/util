@@ -1,0 +1,105 @@
+## Ar  FCC lattice
+#################### setup ##################
+echo            both
+units           metal
+dimension       3
+boundary        p p p
+processors      * * *
+atom_style      atomic
+
+read_data       start.data
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+mass 1 15.9994  # O
+mass 2 1.00784  # H
+
+pair_style      usc
+pair_coeff  * * OH.usc O H
+
+#pair_modify    coord 2 1 2.0 0.3
+#pair_modify    coord 2 3 1.4 0.3
+
+############### dipole moment, computed by hand (sum of q*r) ###############
+# Per-type point charges — must match DEFAULT_TYPE_TO_CHARGE in
+# simulation/lammps/20260617_dielectric_multi_traj/1.calc_mpi.py.
+variable        q_O equal -0.813976
+variable        q_H equal  0.406988
+variable        q atom (type==1)*v_q_O+(type==2)*v_q_H
+
+# Unwrapped coordinates, not wrapped x/y/z, so the sum is a well-defined
+# dipole across periodic images rather than an artifact of where each atom
+# happens to be wrapped back into the box. xu/yu/zu are not valid bare
+# keywords in an atom-style variable formula (only x/y/z are) — they have
+# to come from compute property/atom instead.
+compute         unwrap all property/atom xu yu zu
+
+variable        dipx atom v_q*c_unwrap[1]
+variable        dipy atom v_q*c_unwrap[2]
+variable        dipz atom v_q*c_unwrap[3]
+
+compute         dipx_sum all reduce sum v_dipx
+compute         dipy_sum all reduce sum v_dipy
+compute         dipz_sum all reduce sum v_dipz
+
+# Units: e*Angstrom (metal units charge x distance) — same raw units as
+# 1.calc_mpi.py's per-frame dipole output, before 2.dipole_std.py's Debye
+# conversion.
+variable        Mx equal c_dipx_sum
+variable        My equal c_dipy_sum
+variable        Mz equal c_dipz_sum
+variable        Mmag equal sqrt(v_Mx*v_Mx+v_My*v_My+v_Mz*v_Mz)
+##############################################################################
+
+thermo_style    custom step temp pe ke etotal press vol v_Mmag
+thermo          50
+
+# TARGET_TEMP/N_TIMES/NVT_LENGTH/DUMP_EVERY are passed in via LAMMPS -var
+# flags (see jobs/slurm/lammps_dielectric_submit.slurm), set by
+# submit_dielectric_pipeline.sh from --dielectric-n-chunks/--dielectric-chunk-length/
+# --dielectric-dump-every and the current --temperatures entry.
+variable        nvt_length equal ${NVT_LENGTH}
+variable        n_times equal ${N_TIMES}
+variable        dielectric_dump_every equal ${DUMP_EVERY}
+########################################################
+
+# Dipole vector + magnitude (see the by-hand dipole block above), written to
+# an external file every dielectric_dump_every steps — same cadence as the
+# dielectric.*.custom dumps, for direct comparison against 1.calc_mpi.py's
+# post-processed output.
+#
+# curstep must be its own equal-style variable, not an immediate $(step) —
+# fix print re-substitutes ${name} references on every invocation, but
+# $(...) immediate variables are evaluated once at parse time and would
+# otherwise freeze at whatever step the fix was defined on.
+variable        curstep equal step
+fix             dipole_print all print ${dielectric_dump_every} "${curstep} ${Mx} ${My} ${Mz} ${Mmag}" &
+                file dipole_by_hand.txt screen no title "# step Mx My Mz |M| (e*Angstrom)"
+
+###################### run setup ###########################
+# start.data is assumed already equilibrated at ${TARGET_TEMP} — no
+# deform/anneal ramp here (unlike OH-therm.input/b-SiO-therm.input).
+reset_timestep  0
+
+timestep        0.00025
+
+label           start_loop
+variable        i loop ${n_times}
+
+        dump            1 all custom ${dielectric_dump_every} dumps/dielectric.${i}.custom id type x y z
+        dump_modify     1 sort id
+
+        ############### target-T therm ################
+        fix             1 all nvt temp ${TARGET_TEMP} ${TARGET_TEMP} $(100*dt)
+        run             ${nvt_length}
+        unfix           1
+        ##############################################
+
+        undump          1
+
+next            i
+jump            SELF start_loop
+
+
+write_data      final.data
