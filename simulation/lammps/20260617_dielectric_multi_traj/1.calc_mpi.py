@@ -130,7 +130,7 @@ def discover_structure(filepath):
 # Frame reader — streaming, one line at a time
 # ---------------------------------------------------------------------------
 
-def read_frame(f, num_atoms, col_type, col_x, col_y, col_z):
+def read_frame(f, num_atoms, col_type, col_x, col_y, col_z, type_o, type_h):
     """
     Read one frame from an already-open file handle positioned at the start
     of a frame. Returns (timestep, box_dims, o_pos, h_pos) where o_pos and
@@ -160,9 +160,9 @@ def read_frame(f, num_atoms, col_type, col_x, col_y, col_z):
         x = float(parts[col_x])
         y = float(parts[col_y])
         z = float(parts[col_z])
-        if atype == 1:
+        if atype == type_o:
             o_pos.append((x, y, z))
-        elif atype == 2:
+        elif atype == type_h:
             h_pos.append((x, y, z))
 
     return timestep, box_dims, np.array(o_pos), np.array(h_pos)
@@ -172,7 +172,7 @@ def read_frame(f, num_atoms, col_type, col_x, col_y, col_z):
 # Bond detection + dipole calculation
 # ---------------------------------------------------------------------------
 
-def calc_frame_dipole(o_pos, h_pos, cutoff, box_dims):
+def calc_frame_dipole(o_pos, h_pos, cutoff, box_dims, type_h):
     box = box_dims
 
     o_pos_arr = o_pos % box
@@ -202,7 +202,7 @@ def calc_frame_dipole(o_pos, h_pos, cutoff, box_dims):
     dr_oh1 = o_v - h1_v;  dr_oh1 -= box * np.round(dr_oh1 / box)
     dr_h2o = h2_v - o_v;  dr_h2o -= box * np.round(dr_h2o / box)
 
-    q_H = DEFAULT_TYPE_TO_CHARGE[2]
+    q_H = DEFAULT_TYPE_TO_CHARGE[type_h]
     dipole = q_H * np.sum(dr_oh1 - dr_h2o, axis=0)
 
     return dipole.tolist(), unassigned_h_indices, bond_stats
@@ -287,7 +287,10 @@ def main():
             f_in.readline()
 
         while True:
-            result = read_frame(f_in, num_atoms, col_type, col_x, col_y, col_z)
+            result = read_frame(
+                f_in, num_atoms, col_type, col_x, col_y, col_z,
+                args.type_o, args.type_h,
+            )
             if result is None:
                 break
 
@@ -302,7 +305,7 @@ def main():
                 continue
 
             dipole, unassigned_h, bond_stats = calc_frame_dipole(
-                o_pos, h_pos, args.cutoff, box_dims
+                o_pos, h_pos, args.cutoff, box_dims, args.type_h
             )
 
             out.write(
