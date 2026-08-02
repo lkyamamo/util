@@ -82,6 +82,15 @@ Optional:
                                     line up) — rerun with the original value,
                                     or clear that temperature's dipole_output/
                                     to start over.
+    --dielectric-mem STR              Stage 2's sbatch --mem (default: 0, meaning
+                                    "all memory on the allocated node(s)" — see
+                                    sbatch(1)). The prior hardcoded
+                                    --mem-per-cpu=3800M could force a job onto
+                                    more nodes than its core count alone would
+                                    need (e.g. 128 tasks fit on one 128-core
+                                    node, but 128*3800M did not), so this is
+                                    now an explicit, always-applied override
+                                    rather than a template default.
 
   --nodes N               --analysis-nodes N
   --ntasks N                --analysis-time HH:MM:SS
@@ -96,7 +105,9 @@ Optional:
       own value in effect. Stage 2's rank count defaults to one rank per
       dielectric.N.custom file found; --dielectric-ntasks above overrides it
       (and, when set, is also passed as stage 2's --ntasks so the sbatch
-      request matches).
+      request matches). --dielectric-mem above is always applied to stage 2
+      (default 0), unlike the rest of this block — dielectric_submit.slurm
+      no longer has its own --mem/--mem-per-cpu directive to fall back on.
 
   --skip-trajectory                Skip stage 1 (LAMMPS dielectric production) for
                                   every requested temperature and assume each
@@ -195,6 +206,7 @@ while [[ $# -gt 0 ]]; do
     --dielectric-type-h) DIELECTRIC_TYPE_H="$2"; shift 2 ;;
     --dielectric-averaging-method) DIELECTRIC_AVERAGING_METHOD="$2"; shift 2 ;;
     --dielectric-ntasks) DIELECTRIC_NTASKS="$2"; shift 2 ;;
+    --dielectric-mem) DIELECTRIC_MEM="$2"; shift 2 ;;
     --nodes) NODES="$2"; shift 2 ;;
     --ntasks) NTASKS="$2"; shift 2 ;;
     --time) TIME="$2"; shift 2 ;;
@@ -391,6 +403,7 @@ for T in "${TEMP_LIST[@]}"; do
     [[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
     [[ -n "$ANALYSIS_NODELIST" ]]   && analysis_sbatch_args+=(--nodelist="$ANALYSIS_NODELIST")
     [[ -n "$DIELECTRIC_NTASKS" ]]   && analysis_sbatch_args+=(--ntasks="$DIELECTRIC_NTASKS")
+    analysis_sbatch_args+=(--mem="$DIELECTRIC_MEM")
 
     dependency_args=()
     [[ -n "$JOBID1" ]] && dependency_args+=(--dependency=afterok:"$JOBID1")

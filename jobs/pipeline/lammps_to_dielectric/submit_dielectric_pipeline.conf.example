@@ -44,6 +44,7 @@ DIELECTRIC_TYPE_O="1"
 DIELECTRIC_TYPE_H="2"
 DIELECTRIC_AVERAGING_METHOD="cumulative"
 DIELECTRIC_NTASKS=""
+DIELECTRIC_MEM="0"
 
 # trajectory creation slurm parameters
 NODES="1"
