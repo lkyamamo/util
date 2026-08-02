@@ -9,9 +9,11 @@
 # Dielectric constant pipeline — multi-trajectory MPI, pipeline-driven variant.
 #
 # Same one-rank-per-trajectory-file design as 0.submit.slurm in this
-# directory, but configuration comes from environment variables (set via
-# sbatch --export by submit_dielectric_pipeline.sh) instead of a hardcoded
-# block at the top — mirrors analysis/distributions/20260608_GrNrBaSqw/distribution_submit.slurm.
+# directory (unless NRANKS is set lower, in which case each rank processes
+# several files in sequence — see 1.calc_mpi.py), but configuration comes
+# from environment variables (set via sbatch --export by
+# submit_dielectric_pipeline.sh) instead of a hardcoded block at the top —
+# mirrors analysis/distributions/20260608_GrNrBaSqw/distribution_submit.slurm.
 #
 # 0.submit.slurm itself is left untouched for manual/standalone runs.
 
@@ -45,6 +47,16 @@ if [ "$NUM_FILES" -eq 0 ]; then
     exit 1
 fi
 
+# Ranks may be fewer than trajectory files (each rank then processes several
+# files in sequence — see 1.calc_mpi.py's assign_files); NRANKS overrides
+# the default of one rank per file. Set via submit_dielectric_pipeline.sh's
+# --dielectric-ntasks, or export NRANKS directly for standalone runs.
+NUM_RANKS="${NRANKS:-$NUM_FILES}"
+if [ "$NUM_RANKS" -gt "$NUM_FILES" ]; then
+    echo "ERROR: NRANKS ($NUM_RANKS) exceeds the number of trajectory files ($NUM_FILES)."
+    exit 1
+fi
+
 mkdir -p "$SCRIPT_DIR/logs" "$OUTPUT_DIR/ranks"
 
 module purge
@@ -55,9 +67,9 @@ if [ -n "$VENV_PATH" ]; then
 fi
 
 echo "Job ${SLURM_JOB_ID} starting at $(date)"
-echo "Trajectory files: ${NUM_FILES}  Ranks: ${NUM_FILES}"
+echo "Trajectory files: ${NUM_FILES}  Ranks: ${NUM_RANKS}"
 
-srun --ntasks="$NUM_FILES" python "$SCRIPT_DIR/1.calc_mpi.py" \
+srun --ntasks="$NUM_RANKS" python "$SCRIPT_DIR/1.calc_mpi.py" \
     --dump-dir        "$DUMP_DIR" \
     --dump-glob       "$DUMP_GLOB" \
     --dump-every      "$DUMP_EVERY" \
@@ -73,7 +85,7 @@ if [ -f "$DIPOLE_FILE" ]; then
 else
     echo "Verifying all ranks completed..."
     missing=0
-    for ((r=0; r<NUM_FILES; r++)); do
+    for ((r=0; r<NUM_RANKS; r++)); do
         if [ ! -f "$OUTPUT_DIR/ranks/dipole_rank_${r}.done" ]; then
             echo "  ERROR: rank ${r} did not complete (missing .done flag)" >&2
             missing=$((missing + 1))
@@ -84,9 +96,9 @@ else
         exit 1
     fi
 
-    echo "Concatenating ${NUM_FILES} rank files..."
+    echo "Concatenating ${NUM_RANKS} rank files..."
     > "$DIPOLE_FILE"
-    for ((r=0; r<NUM_FILES; r++)); do
+    for ((r=0; r<NUM_RANKS; r++)); do
         cat "$OUTPUT_DIR/ranks/dipole_rank_${r}.txt" >> "$DIPOLE_FILE"
     done
     echo "  Wrote: $DIPOLE_FILE ($(wc -l < "$DIPOLE_FILE") lines)"

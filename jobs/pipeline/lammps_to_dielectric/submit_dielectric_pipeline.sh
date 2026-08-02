@@ -15,6 +15,14 @@ Run from inside a sweep directory, whose name is the sweep id (e.g. cd
 .../dielectric-sweeps/water-OH-0001 && /path/to/submit_dielectric_pipeline.sh ...).
 Creates one T<value>/ subdirectory per requested temperature.
 
+Requires submit_dielectric_pipeline.conf next to this script (same
+directory), which sets defaults for every parameter below — the script
+refuses to run without it. Copy submit_dielectric_pipeline.conf.example to
+submit_dielectric_pipeline.conf and edit it for your setup;
+submit_dielectric_pipeline.conf itself is gitignored since it holds your own
+local paths. Any flag below overrides its config value for that one
+invocation.
+
 Required:
   --input-script FILE          LAMMPS .input template referencing ${TARGET_TEMP}
                                 (and ${N_TIMES}/${NVT_LENGTH}/${DUMP_EVERY}), e.g.
@@ -57,6 +65,23 @@ Optional:
     --dielectric-type-h INT          LAMMPS atom type for hydrogen (default: 2)
     --dielectric-averaging-method STR  windowed|cumulative|hybrid|binned
                                         (default: cumulative)
+    --dielectric-ntasks INT          Ranks for the stage-2 MPI calc (default:
+                                    empty — one rank per dielectric.N.custom
+                                    file, the historical behavior). Set lower
+                                    than the chunk-file count to fit a
+                                    smaller allocation (e.g. --interactive
+                                    under a salloc without enough tasks for
+                                    every file); each rank then processes
+                                    several files in sequence, so stage 2
+                                    takes proportionally longer. Must not
+                                    exceed the chunk-file count. Restarting a
+                                    partially-completed run under a different
+                                    --dielectric-ntasks than it started with
+                                    is refused (rank->file assignment depends
+                                    on rank count, so checkpoints wouldn't
+                                    line up) — rerun with the original value,
+                                    or clear that temperature's dipole_output/
+                                    to start over.
 
   --nodes N               --analysis-nodes N
   --ntasks N                --analysis-time HH:MM:SS
@@ -68,9 +93,26 @@ Optional:
       overrides jobs/slurm/lammps_dielectric_submit.slurm (stage 1, per
       temperature), the right column overrides dielectric_submit.slurm
       (stage 2, per temperature). Omit any of these to leave the template's
-      own value in effect. Stage 2's rank count is always auto-derived from
-      the number of dielectric.N.custom files found (must equal
-      --dielectric-n-chunks), so it has no --analysis-ntasks override.
+      own value in effect. Stage 2's rank count defaults to one rank per
+      dielectric.N.custom file found; --dielectric-ntasks above overrides it
+      (and, when set, is also passed as stage 2's --ntasks so the sbatch
+      request matches).
+
+  --skip-trajectory                Skip stage 1 (LAMMPS dielectric production) for
+                                  every requested temperature and assume each
+                                  T<value>/run/dumps/ already exists and is
+                                  populated (i.e. you already ran this pipeline, or
+                                  LAMMPS directly, from here). Verified per
+                                  temperature before stage 2 runs; the pipeline
+                                  aborts with an error if a T<value>/run/dumps/ is
+                                  missing or empty. --input-script/
+                                  --starting-structure/--potential-file, the
+                                  dielectric-production (stage 1) config, and the
+                                  trajectory-creation slurm overrides (--nodes/
+                                  --ntasks/--time/--job-name/--constraint/
+                                  --nodelist) are ignored in this mode, and stage 2
+                                  is submitted without a --dependency on stage 1
+                                  (nothing to wait on).
 
   --force REASON                  Overwrite an existing T<value>/ (stage 1) or
                                   an existing <sweep_id>_T<value>_dielectric_calc/
@@ -102,6 +144,7 @@ EOF
 }
 
 INTERACTIVE="0"
+SKIP_TRAJECTORY="0"
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_dielectric_submit.slurm"
 FORCE="0"
@@ -117,43 +160,20 @@ log_overwrite() {
   echo "$msg" >> "$LOG_FILE"
 }
 
-# general input parameters
-INPUT_SCRIPT=""
-STARTING_STRUCTURE=""
-POTENTIAL_FILE=""
-POTENTIAL_LINK_NAME=""
-ANALYSIS_PARENT_DIR=""
-ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/simulation/lammps/20260617_dielectric_multi_traj"
-TEMPERATURES=""
-LA=""
-LB=""
-LC=""
-
-# dielectric production (stage 1) config
-DIELECTRIC_N_CHUNKS="128"
-DIELECTRIC_CHUNK_LENGTH="468750"
-DIELECTRIC_DUMP_EVERY="10"
-
-# dielectric calc (stage 2) config
-DIELECTRIC_CUTOFF="1.2"
-DIELECTRIC_TYPE_O="1"
-DIELECTRIC_TYPE_H="2"
-DIELECTRIC_AVERAGING_METHOD="cumulative"
-
-# trajectory creation slurm parameters
-NODES="1"
-NTASKS="64"
-TIME="8:00:00"
-JOB_NAME="dielectric-production"
-CONSTRAINT="epyc-7513"
-NODELIST=""
-
-# analysis slurm parameters
-ANALYSIS_NODES=""
-ANALYSIS_TIME="8:00:00"
-ANALYSIS_JOB_NAME="dielectric-calc"
-ANALYSIS_CONSTRAINT=""
-ANALYSIS_NODELIST=""
+# All parameter defaults (general input, dielectric-production config,
+# dielectric-calc config, trajectory-creation slurm, analysis slurm) live in
+# submit_dielectric_pipeline.conf next to this script, not in the script
+# itself, so personal paths never need to be edited into (or committed from)
+# tracked code. See submit_dielectric_pipeline.conf.example.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="$SCRIPT_DIR/submit_dielectric_pipeline.conf"
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  echo "Error: required config file not found: $CONFIG_FILE" >&2
+  echo "Copy $SCRIPT_DIR/submit_dielectric_pipeline.conf.example to $CONFIG_FILE and edit it for your setup." >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -174,6 +194,7 @@ while [[ $# -gt 0 ]]; do
     --dielectric-type-o) DIELECTRIC_TYPE_O="$2"; shift 2 ;;
     --dielectric-type-h) DIELECTRIC_TYPE_H="$2"; shift 2 ;;
     --dielectric-averaging-method) DIELECTRIC_AVERAGING_METHOD="$2"; shift 2 ;;
+    --dielectric-ntasks) DIELECTRIC_NTASKS="$2"; shift 2 ;;
     --nodes) NODES="$2"; shift 2 ;;
     --ntasks) NTASKS="$2"; shift 2 ;;
     --time) TIME="$2"; shift 2 ;;
@@ -187,6 +208,7 @@ while [[ $# -gt 0 ]]; do
     --analysis-nodelist) ANALYSIS_NODELIST="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
+    --skip-trajectory) SKIP_TRAJECTORY="1"; shift 1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -206,9 +228,11 @@ require() {
     missing=1
   fi
 }
-require "$INPUT_SCRIPT" --input-script
-require "$STARTING_STRUCTURE" --starting-structure
-require "$POTENTIAL_FILE" --potential-file
+if [[ "$SKIP_TRAJECTORY" != "1" ]]; then
+  require "$INPUT_SCRIPT" --input-script
+  require "$STARTING_STRUCTURE" --starting-structure
+  require "$POTENTIAL_FILE" --potential-file
+fi
 require "$ANALYSIS_PARENT_DIR" --analysis-parent-dir
 require "$TEMPERATURES" --temperatures
 require "$LA" --la
@@ -258,13 +282,22 @@ for T in "${TEMP_LIST[@]}"; do
   STAGE1_DIR="$SWEEP_DIR/T${T}"
   STAGE2_DIR="$ANALYSIS_PARENT_DIR/${SWEEP_ID}_T${T}_dielectric_calc"
 
-  if [[ -e "$STAGE1_DIR/input_files" || -e "$STAGE1_DIR/run" ]]; then
-    if [[ "$FORCE" == "1" ]]; then
-      log_overwrite "--force ($FORCE_REASON): removing existing $STAGE1_DIR/input_files and/or $STAGE1_DIR/run (sweep id: $SWEEP_ID, T=$T)"
-      rm -rf "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
-    else
-      echo "Error: $STAGE1_DIR already has input_files/ or run/ — refusing to overwrite (use --force to override)." >&2
+  if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
+    if [[ ! -d "$STAGE1_DIR/run/dumps" ]] || [[ -z "$(ls -A "$STAGE1_DIR/run/dumps" 2>/dev/null)" ]]; then
+      echo "Error: --skip-trajectory was given but $STAGE1_DIR/run/dumps does not exist or is empty (T=$T)." >&2
+      echo "Re-run without --skip-trajectory to generate the trajectory, or fix the path above." >&2
       exit 1
+    fi
+    echo "--skip-trajectory: found existing dumps in $STAGE1_DIR/run/dumps — skipping stage 1 for T=$T."
+  else
+    if [[ -e "$STAGE1_DIR/input_files" || -e "$STAGE1_DIR/run" ]]; then
+      if [[ "$FORCE" == "1" ]]; then
+        log_overwrite "--force ($FORCE_REASON): removing existing $STAGE1_DIR/input_files and/or $STAGE1_DIR/run (sweep id: $SWEEP_ID, T=$T)"
+        rm -rf "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
+      else
+        echo "Error: $STAGE1_DIR already has input_files/ or run/ — refusing to overwrite (use --force to override)." >&2
+        exit 1
+      fi
     fi
   fi
 
@@ -278,18 +311,20 @@ for T in "${TEMP_LIST[@]}"; do
     fi
   fi
 
-  ##########
-  # Stage 1: LAMMPS dielectric production
-  ##########
+  if [[ "$SKIP_TRAJECTORY" != "1" ]]; then
+    ##########
+    # Stage 1: LAMMPS dielectric production
+    ##########
 
-  mkdir -p "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
+    mkdir -p "$STAGE1_DIR/input_files" "$STAGE1_DIR/run"
 
-  cp "$INPUT_SCRIPT" "$STAGE1_DIR/input_files/in.input"
-  ln -s "$(realpath "$STARTING_STRUCTURE")" "$STAGE1_DIR/input_files/start.data"
-  ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE1_DIR/input_files/${POTENTIAL_LINK_NAME:-$(basename "$POTENTIAL_FILE")}"
+    cp "$INPUT_SCRIPT" "$STAGE1_DIR/input_files/in.input"
+    ln -s "$(realpath "$STARTING_STRUCTURE")" "$STAGE1_DIR/input_files/start.data"
+    ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE1_DIR/input_files/${POTENTIAL_LINK_NAME:-$(basename "$POTENTIAL_FILE")}"
 
-  cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/lammps_submit.slurm"
-  cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/run/lammps_submit.slurm"
+    cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/lammps_submit.slurm"
+    cp "$LAMMPS_TEMPLATE" "$STAGE1_DIR/run/lammps_submit.slurm"
+  fi
 
   ##########
   # Stage 2: dielectric MPI calc (reads stage 1's dumps; never modifies them)
@@ -303,17 +338,21 @@ for T in "${TEMP_LIST[@]}"; do
   ln -s "$STAGE1_DIR/run/dumps" "$STAGE2_DIR/dumps"
 
   stage1_export="TARGET_TEMP=$T,N_TIMES=$DIELECTRIC_N_CHUNKS,NVT_LENGTH=$DIELECTRIC_CHUNK_LENGTH,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY"
-  stage2_export="ALL,DUMP_DIR=$STAGE2_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,TEMPERATURE=$T,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD"
+  stage2_export="ALL,DUMP_DIR=$STAGE2_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,TEMPERATURE=$T,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD,NRANKS=$DIELECTRIC_NTASKS"
 
   if [[ "$INTERACTIVE" == "1" ]]; then
-    echo "Running LAMMPS dielectric production interactively in $STAGE1_DIR/run ..."
-    (
-      export SLURM_SUBMIT_DIR="$STAGE1_DIR/run"
-      export SLURM_NTASKS="${NTASKS:-64}"
-      export TARGET_TEMP="$T" N_TIMES="$DIELECTRIC_N_CHUNKS" NVT_LENGTH="$DIELECTRIC_CHUNK_LENGTH" DUMP_EVERY="$DIELECTRIC_DUMP_EVERY"
-      cd "$STAGE1_DIR/run" && bash lammps_submit.slurm
-    )
-    echo "LAMMPS dielectric production finished for T=$T."
+    if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
+      echo "--skip-trajectory: not running LAMMPS for T=$T, using existing dumps in $STAGE1_DIR/run/dumps."
+    else
+      echo "Running LAMMPS dielectric production interactively in $STAGE1_DIR/run ..."
+      (
+        export SLURM_SUBMIT_DIR="$STAGE1_DIR/run"
+        export SLURM_NTASKS="${NTASKS:-64}"
+        export TARGET_TEMP="$T" N_TIMES="$DIELECTRIC_N_CHUNKS" NVT_LENGTH="$DIELECTRIC_CHUNK_LENGTH" DUMP_EVERY="$DIELECTRIC_DUMP_EVERY"
+        cd "$STAGE1_DIR/run" && bash lammps_submit.slurm
+      )
+      echo "LAMMPS dielectric production finished for T=$T."
+    fi
 
     echo "Running dielectric calc interactively in $STAGE2_DIR ..."
     (
@@ -324,21 +363,26 @@ for T in "${TEMP_LIST[@]}"; do
     )
     echo "Dielectric calc finished for T=$T."
   else
-    sbatch_args=()
-    [[ -n "$NODES" ]]      && sbatch_args+=(--nodes="$NODES")
-    [[ -n "$NTASKS" ]]     && sbatch_args+=(--ntasks="$NTASKS")
-    [[ -n "$TIME" ]]       && sbatch_args+=(--time="$TIME")
-    [[ -n "$JOB_NAME" ]]   && sbatch_args+=(--job-name="${JOB_NAME}-T${T}")
-    [[ -n "$CONSTRAINT" ]] && sbatch_args+=(--constraint="$CONSTRAINT")
-    [[ -n "$NODELIST" ]]   && sbatch_args+=(--nodelist="$NODELIST")
+    JOBID1=""
+    if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
+      echo "--skip-trajectory: not submitting a LAMMPS job for T=$T, using existing dumps in $STAGE1_DIR/run/dumps."
+    else
+      sbatch_args=()
+      [[ -n "$NODES" ]]      && sbatch_args+=(--nodes="$NODES")
+      [[ -n "$NTASKS" ]]     && sbatch_args+=(--ntasks="$NTASKS")
+      [[ -n "$TIME" ]]       && sbatch_args+=(--time="$TIME")
+      [[ -n "$JOB_NAME" ]]   && sbatch_args+=(--job-name="${JOB_NAME}-T${T}")
+      [[ -n "$CONSTRAINT" ]] && sbatch_args+=(--constraint="$CONSTRAINT")
+      [[ -n "$NODELIST" ]]   && sbatch_args+=(--nodelist="$NODELIST")
 
-    echo "Submitting LAMMPS dielectric production from $STAGE1_DIR/run ..."
-    JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
-      "${sbatch_args[@]+"${sbatch_args[@]}"}" \
-      --export="ALL,$stage1_export" \
-      lammps_submit.slurm)"
-    echo "  LAMMPS job id: $JOBID1"
-    STAGE1_JOBIDS+=("$JOBID1")
+      echo "Submitting LAMMPS dielectric production from $STAGE1_DIR/run ..."
+      JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
+        "${sbatch_args[@]+"${sbatch_args[@]}"}" \
+        --export="ALL,$stage1_export" \
+        lammps_submit.slurm)"
+      echo "  LAMMPS job id: $JOBID1"
+      STAGE1_JOBIDS+=("$JOBID1")
+    fi
 
     analysis_sbatch_args=()
     [[ -n "$ANALYSIS_NODES" ]]      && analysis_sbatch_args+=(--nodes="$ANALYSIS_NODES")
@@ -346,9 +390,14 @@ for T in "${TEMP_LIST[@]}"; do
     [[ -n "$ANALYSIS_JOB_NAME" ]]   && analysis_sbatch_args+=(--job-name="${ANALYSIS_JOB_NAME}-T${T}")
     [[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
     [[ -n "$ANALYSIS_NODELIST" ]]   && analysis_sbatch_args+=(--nodelist="$ANALYSIS_NODELIST")
+    [[ -n "$DIELECTRIC_NTASKS" ]]   && analysis_sbatch_args+=(--ntasks="$DIELECTRIC_NTASKS")
 
-    echo "Submitting dielectric calc from $STAGE2_DIR, dependent on job $JOBID1 ..."
-    JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable --dependency=afterok:"$JOBID1" \
+    dependency_args=()
+    [[ -n "$JOBID1" ]] && dependency_args+=(--dependency=afterok:"$JOBID1")
+
+    echo "Submitting dielectric calc from $STAGE2_DIR${JOBID1:+, dependent on job $JOBID1} ..."
+    JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable \
+      "${dependency_args[@]+"${dependency_args[@]}"}" \
       "${analysis_sbatch_args[@]+"${analysis_sbatch_args[@]}"}" \
       --export="$stage2_export" \
       dielectric_submit.slurm)"

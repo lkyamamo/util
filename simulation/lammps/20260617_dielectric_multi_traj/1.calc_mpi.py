@@ -2,10 +2,13 @@
 """
 MPI dielectric constant calculator for multi-trajectory LAMMPS custom dump files.
 
-One MPI rank per trajectory file. Each rank reads its assigned file sequentially
-from line 0 (or a checkpointed offset) with no byte-seeking. Dipole results are
-appended directly to ranks/dipole_rank_N.txt; checkpointing is by line count so
-restarts resume from where the rank left off.
+Ranks may be fewer than trajectory files: each rank gets a contiguous block
+of files (remainder files go one-each to the lowest-numbered ranks) and
+processes them in order. Each file is read sequentially from line 0 (or a
+checkpointed offset) with no byte-seeking. Dipole results from all of a
+rank's files are appended, in order, to a single ranks/dipole_rank_N.txt;
+checkpointing is by line count in that file so restarts resume from wherever
+the rank left off, in whichever of its assigned files that falls in.
 
 Usage: launched via srun from 0.submit.slurm — not called directly.
 """
@@ -64,6 +67,24 @@ def discover_files(dump_dir, dump_glob):
         return int(m.group(1))
 
     return sorted(paths, key=extract_index)
+
+
+def assign_files(files, rank, size):
+    """
+    Return this rank's contiguous block of files. N files over `size` ranks
+    distributes evenly with any remainder (N % size) given one extra file
+    each to the lowest-numbered ranks. When size == N (the historical
+    default), every rank gets exactly one file.
+    """
+    n = len(files)
+    base, rem = divmod(n, size)
+    if rank < rem:
+        start = rank * (base + 1)
+        count = base + 1
+    else:
+        start = rem * (base + 1) + (rank - rem) * base
+        count = base
+    return files[start:start + count]
 
 
 # ---------------------------------------------------------------------------
@@ -223,14 +244,41 @@ def main():
     files = discover_files(args.dump_dir, args.dump_glob)
     N = len(files)
 
-    if size != N:
+    if size > N:
         if rank == 0:
             print(
-                f"ERROR: ntasks ({size}) must equal number of trajectory files ({N}).\n"
-                f"Set --ntasks={N} in your SLURM script.",
+                f"ERROR: ntasks ({size}) must not exceed number of trajectory files ({N}).\n"
+                f"Set --ntasks to at most {N} in your SLURM script.",
                 file=sys.stderr,
             )
         comm.Abort(1)
+
+    # --- Restart safety ---
+    # Rank->file assignment is a function of rank count (size). If a partial
+    # run resumes with a different size, ranks get reassigned different
+    # files than whatever their checkpointed frame counts actually cover,
+    # silently corrupting output. Record the rank count a run started with
+    # and refuse to resume under a different one.
+    ranks_dir = os.path.join(args.output_dir, "ranks")
+    nranks_marker = os.path.join(ranks_dir, "nranks_used.txt")
+    if rank == 0:
+        os.makedirs(ranks_dir, exist_ok=True)
+        if os.path.isfile(nranks_marker):
+            with open(nranks_marker) as f:
+                prev_size = int(f.read().strip())
+            if prev_size != size:
+                print(
+                    f"ERROR: this run is using {size} ranks, but a previous run in "
+                    f"{args.output_dir} used {prev_size} ranks. Rank->file assignment "
+                    f"depends on rank count, so resuming with a different count would "
+                    f"corrupt checkpoints. Re-run with {prev_size} ranks (matching "
+                    f"--dielectric-ntasks), or remove {ranks_dir} to start over.",
+                    file=sys.stderr,
+                )
+                comm.Abort(1)
+        else:
+            with open(nranks_marker, "w") as f:
+                f.write(f"{size}\n")
 
     # --- Structure discovery (rank 0, then broadcast) ---
     if rank == 0:
@@ -256,74 +304,89 @@ def main():
     warn_log    = os.path.join(args.output_dir, "ranks", f"dipole_rank_{rank}_warn.log")
     os.makedirs(os.path.dirname(rank_output), exist_ok=True)
 
+    # --- This rank's assigned files (contiguous block; see assign_files) ---
+    assigned_files = assign_files(files, rank, size)
+
     # --- Checkpointing ---
     frames_done = 0
     if os.path.isfile(rank_output):
         with open(rank_output) as f:
             frames_done = sum(1 for _ in f)
 
-    # Frame 0 is always skipped because consecutive trajectory files share a
-    # boundary frame (the last frame of file N equals the first frame of file N+1).
-    # Skipping the first frame of each file removes the duplicate.
-    processable = frames_per_file - 1
+    # Frame 0 of each file is always skipped because consecutive trajectory
+    # files share a boundary frame (the last frame of file N equals the
+    # first frame of file N+1). Skipping the first frame of each file
+    # removes the duplicate.
+    processable_per_file = frames_per_file - 1
+    total_processable = processable_per_file * len(assigned_files)
 
     done_flag = os.path.join(args.output_dir, "ranks", f"dipole_rank_{rank}.done")
 
-    if frames_done >= processable:
+    if frames_done >= total_processable:
         if rank == 0:
             print(f"Rank {rank}: already complete, skipping.")
         open(done_flag, "w").close()
         comm.Barrier()
         return
 
-    assigned_file = files[rank]
+    # frames_done is a flat count across this rank's whole file list — map it
+    # onto (which assigned file to resume in, how many of that file's frames
+    # are already written). Files before resume_file_idx are fully done, so
+    # only the first file processed below needs the extra partial-frame skip.
+    resume_file_idx = frames_done // processable_per_file
+    resume_frame_offset = frames_done % processable_per_file
+    files_to_process = assigned_files[resume_file_idx:]
 
     # --- Process frames ---
     errors = 0
-    with open(assigned_file) as f_in, open(rank_output, "a") as out:
-        # Skip frame 0 unconditionally, then skip any checkpointed frames.
-        lines_to_skip = (1 + frames_done) * lines_per_frame
-        for _ in range(lines_to_skip):
-            f_in.readline()
+    with open(rank_output, "a") as out:
+        for i, assigned_file in enumerate(files_to_process):
+            frame_offset = resume_frame_offset if i == 0 else 0
 
-        while True:
-            result = read_frame(
-                f_in, num_atoms, col_type, col_x, col_y, col_z,
-                args.type_o, args.type_h,
-            )
-            if result is None:
-                break
+            with open(assigned_file) as f_in:
+                # Skip frame 0 unconditionally, then skip any checkpointed frames.
+                lines_to_skip = (1 + frame_offset) * lines_per_frame
+                for _ in range(lines_to_skip):
+                    f_in.readline()
 
-            timestep, box_dims, o_pos, h_pos = result
-
-            if len(o_pos) == 0 or len(h_pos) == 0:
-                print(
-                    f"ERROR: rank {rank} timestep {timestep} has no O or H atoms.",
-                    file=sys.stderr,
-                )
-                errors += 1
-                continue
-
-            dipole, unassigned_h, bond_stats = calc_frame_dipole(
-                o_pos, h_pos, args.cutoff, box_dims, args.type_h
-            )
-
-            out.write(
-                f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n"
-            )
-            out.flush()
-
-            if unassigned_h:
-                with open(warn_log, "a") as wf:
-                    wf.write(
-                        f"WARN [timestep={timestep}] "
-                        f"{len(unassigned_h)} unassigned H (indices): "
-                        f"[{' '.join(str(i) for i in unassigned_h)}]  "
-                        f"| bonds_created={bond_stats['bonds_created']} "
-                        f"bonds_missing={bond_stats['bonds_missing']} "
-                        f"n_O={bond_stats['type_o_count']} "
-                        f"n_H={bond_stats['type_h_count']}\n"
+                while True:
+                    result = read_frame(
+                        f_in, num_atoms, col_type, col_x, col_y, col_z,
+                        args.type_o, args.type_h,
                     )
+                    if result is None:
+                        break
+
+                    timestep, box_dims, o_pos, h_pos = result
+
+                    if len(o_pos) == 0 or len(h_pos) == 0:
+                        print(
+                            f"ERROR: rank {rank} timestep {timestep} has no O or H atoms.",
+                            file=sys.stderr,
+                        )
+                        errors += 1
+                        continue
+
+                    dipole, unassigned_h, bond_stats = calc_frame_dipole(
+                        o_pos, h_pos, args.cutoff, box_dims, args.type_h
+                    )
+
+                    out.write(
+                        f"{timestep}  {dipole[0]:14.6f}  {dipole[1]:14.6f}  {dipole[2]:14.6f}\n"
+                    )
+                    out.flush()
+
+                    if unassigned_h:
+                        with open(warn_log, "a") as wf:
+                            wf.write(
+                                f"WARN [timestep={timestep}] "
+                                f"{len(unassigned_h)} unassigned H (indices): "
+                                f"[{' '.join(str(i) for i in unassigned_h)}]  "
+                                f"| bonds_created={bond_stats['bonds_created']} "
+                                f"bonds_missing={bond_stats['bonds_missing']} "
+                                f"n_O={bond_stats['type_o_count']} "
+                                f"n_H={bond_stats['type_h_count']}\n"
+                            )
 
     if errors:
         print(f"Rank {rank}: {errors} frame(s) failed", file=sys.stderr)

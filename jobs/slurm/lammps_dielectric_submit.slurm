@@ -11,6 +11,7 @@
 #SBATCH --constraint=epyc-7513
 #SBATCH --mail-type=all
 #SBATCH --mail-user=lkyamamo@usc.edu
+set -euo pipefail
 ulimit -s unlimited
 echo “starting simulation **************************************”
 date
