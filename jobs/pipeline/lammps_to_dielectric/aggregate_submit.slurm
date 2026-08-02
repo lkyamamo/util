@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --account=priyav_216
+#SBATCH --partition=priya
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --time=00:05:00
