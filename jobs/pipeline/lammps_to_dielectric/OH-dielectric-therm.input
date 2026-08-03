@@ -22,10 +22,15 @@ pair_coeff  * * OH.usc O H
 #pair_modify    coord 2 3 1.4 0.3
 
 ############### dipole moment, computed by hand (sum of q*r) ###############
-# Per-type point charges — must match DEFAULT_TYPE_TO_CHARGE in
-# simulation/lammps/20260617_dielectric_multi_traj/1.calc_mpi.py.
-variable        q_O equal -0.813976
-variable        q_H equal  0.406988
+# q_H comes from ${CHARGE_H} (see jobs/slurm/lammps_dielectric_submit.slurm),
+# the same value submit_dielectric_pipeline.sh's --dielectric-charge-h passes
+# to 1.calc_mpi.py's --charge-h in stage 2 — one source of truth instead of
+# hardcoding it here separately and hoping the two stay in sync. q_O is
+# derived from charge neutrality (O = -2x H for 2:1 H:O stoichiometry),
+# matching 1.calc_mpi.py's dipole formula, which never looks up an oxygen
+# charge and assumes exactly this.
+variable        q_H equal ${CHARGE_H}
+variable        q_O equal -2*${CHARGE_H}
 variable        q atom (type==1)*v_q_O+(type==2)*v_q_H
 
 # Unwrapped coordinates, not wrapped x/y/z, so the sum is a well-defined
@@ -43,12 +48,17 @@ compute         dipx_sum all reduce sum v_dipx
 compute         dipy_sum all reduce sum v_dipy
 compute         dipz_sum all reduce sum v_dipz
 
-# Units: e*Angstrom (metal units charge x distance) — same raw units as
-# 1.calc_mpi.py's per-frame dipole output, before 2.dipole_std.py's Debye
-# conversion.
-variable        Mx equal c_dipx_sum
-variable        My equal c_dipy_sum
-variable        Mz equal c_dipz_sum
+# c_dip*_sum is in e*Angstrom (metal units: charge in e, distance in
+# Angstrom). Converted to Debye here (x4.8032, the same e*Angstrom->Debye
+# factor as 2.dipole_std.py's DEBYE_CONVERSION_FACTOR = 4.8032**2 — squared
+# there because it's applied to already-squared variance/mavgsq terms, linear
+# here since Mx/My/Mz/Mmag are raw per-frame vector components) so this
+# by-hand output is directly in the same units as 2.dipole_std.py's Debye
+# columns, no manual conversion needed when comparing them.
+variable        e_angstrom_to_debye equal 4.8032
+variable        Mx equal c_dipx_sum*v_e_angstrom_to_debye
+variable        My equal c_dipy_sum*v_e_angstrom_to_debye
+variable        Mz equal c_dipz_sum*v_e_angstrom_to_debye
 variable        Mmag equal sqrt(v_Mx*v_Mx+v_My*v_My+v_Mz*v_Mz)
 ##############################################################################
 
@@ -64,10 +74,14 @@ variable        n_times equal ${N_TIMES}
 variable        dielectric_dump_every equal ${DUMP_EVERY}
 ########################################################
 
-# Dipole vector + magnitude (see the by-hand dipole block above), written to
-# an external file every dielectric_dump_every steps — same cadence as the
-# dielectric.*.custom dumps, for direct comparison against 1.calc_mpi.py's
-# post-processed output.
+# Dipole vector + magnitude (see the by-hand dipole block above, already
+# converted to Debye), written to an external file every
+# dielectric_dump_every steps — same cadence as the dielectric.*.custom
+# dumps, as an independent sanity check against 1.calc_mpi.py/2.dipole_std.py's
+# post-processed values. Note 1.calc_mpi.py's own raw per-frame dipole output
+# stays in e*Angstrom (only 2.dipole_std.py's aggregated var/mavgsq columns
+# get Debye-converted) — multiply this file's Mx/My/Mz/Mmag by 1/4.8032 if
+# comparing directly against that raw per-frame file instead.
 #
 # curstep must be its own equal-style variable, not an immediate $(step) —
 # fix print re-substitutes ${name} references on every invocation, but
@@ -75,7 +89,7 @@ variable        dielectric_dump_every equal ${DUMP_EVERY}
 # otherwise freeze at whatever step the fix was defined on.
 variable        curstep equal step
 fix             dipole_print all print ${dielectric_dump_every} "${curstep} ${Mx} ${My} ${Mz} ${Mmag}" &
-                file dipole_by_hand.txt screen no title "# step Mx My Mz |M| (e*Angstrom)"
+                file dipole_by_hand.txt screen no title "# step Mx My Mz |M| (Debye)"
 
 ###################### run setup ###########################
 # start.data is assumed already equilibrated at ${TARGET_TEMP} — no

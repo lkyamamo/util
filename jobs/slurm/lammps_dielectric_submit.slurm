@@ -53,13 +53,18 @@ module load fftw
 ############################
 # Run LAMMPS
 #
-# TARGET_TEMP/N_TIMES/NVT_LENGTH/DUMP_EVERY are set via sbatch --export by
-# submit_dielectric_pipeline.sh and consumed by the input script as LAMMPS
-# command-line variables (${TARGET_TEMP} etc.).
+# TARGET_TEMP/N_TIMES/NVT_LENGTH/DUMP_EVERY/CHARGE_H are set via sbatch
+# --export by submit_dielectric_pipeline.sh and consumed by the input script
+# as LAMMPS command-line variables (${TARGET_TEMP} etc.). CHARGE_H is the
+# same value passed to 1.calc_mpi.py's --charge-h in stage 2 — input scripts
+# that do a by-hand dipole calc (e.g. OH-dielectric-therm.input) read it from
+# here rather than hardcoding it, so the two independently-computed dipoles
+# stay comparable. Plain input scripts that don't reference ${CHARGE_H}
+# simply ignore it.
 ############################
 
 echo "Running in $(pwd)"
-echo "TARGET_TEMP=$TARGET_TEMP  N_TIMES=$N_TIMES  NVT_LENGTH=$NVT_LENGTH  DUMP_EVERY=$DUMP_EVERY"
+echo "TARGET_TEMP=$TARGET_TEMP  N_TIMES=$N_TIMES  NVT_LENGTH=$NVT_LENGTH  DUMP_EVERY=$DUMP_EVERY  CHARGE_H=$CHARGE_H"
 
 srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp \
   -log log.lammps \
@@ -67,6 +72,7 @@ srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp \
   -var N_TIMES "$N_TIMES" \
   -var NVT_LENGTH "$NVT_LENGTH" \
   -var DUMP_EVERY "$DUMP_EVERY" \
+  -var CHARGE_H "$CHARGE_H" \
   -in in.input
 date
 echo “simulation finished **************************************”
