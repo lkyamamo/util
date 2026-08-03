@@ -125,6 +125,18 @@ Optional:
                                   is submitted without a --dependency on stage 1
                                   (nothing to wait on).
 
+  --stagger-seconds N              Sleep N seconds before submitting each
+                                  temperature after the first (default: 5).
+                                  Spreads out submission (and, indirectly,
+                                  job-start) times across temperatures so
+                                  they're less likely to all launch on compute
+                                  nodes at once — that clustering is a common
+                                  trigger for SLURM's "user env retrieval
+                                  failed" transient job-launch failure under
+                                  home-directory/NFS load. Set to 0 to disable.
+                                  No-op with a single temperature or under
+                                  --interactive (already fully sequential).
+
   --force REASON                  Overwrite an existing T<value>/ (stage 1) or
                                   an existing <sweep_id>_T<value>_dielectric_calc/
                                   (stage 2) instead of refusing to run. REASON is
@@ -156,6 +168,7 @@ EOF
 
 INTERACTIVE="0"
 SKIP_TRAJECTORY="0"
+STAGGER_SECONDS="5"
 REPO_ROOT="$HOME/util"
 LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_dielectric_submit.slurm"
 FORCE="0"
@@ -221,6 +234,7 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
     --skip-trajectory) SKIP_TRAJECTORY="1"; shift 1 ;;
+    --stagger-seconds) STAGGER_SECONDS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -286,8 +300,24 @@ STAGE2_JOBIDS=()
 ENTRIES_FILE="$(mktemp)"
 trap 'rm -f "$ENTRIES_FILE"' EXIT
 
+TEMP_INDEX=0
 for T in "${TEMP_LIST[@]}"; do
   [[ -z "$T" ]] && continue
+  TEMP_INDEX=$((TEMP_INDEX + 1))
+
+  # Stagger submissions after the first temperature so different
+  # temperatures' jobs (stage 1, and stage 2 via its afterok dependency)
+  # don't tend to start on compute nodes at the exact same moment — that
+  # clustering is a common trigger for SLURM's "user env retrieval failed"
+  # transient job-launch failure under home-directory/NFS load. No-op in
+  # --interactive mode, which already runs temperatures fully sequentially
+  # in the foreground.
+  if [[ "$TEMP_INDEX" -gt 1 && "$INTERACTIVE" != "1" && "$STAGGER_SECONDS" -gt 0 ]]; then
+    echo ""
+    echo "Staggering submission by ${STAGGER_SECONDS}s before temperature $T ..."
+    sleep "$STAGGER_SECONDS"
+  fi
+
   echo ""
   echo "--- Temperature $T ---"
 
@@ -466,7 +496,7 @@ else
 Pipeline submitted:
   Sweep directory      : $SWEEP_DIR
   Temperatures         : ${TEMP_LIST[*]}
-  LAMMPS jobs           : ${STAGE1_JOBIDS[*]}
+  LAMMPS jobs           : ${STAGE1_JOBIDS[*]+"${STAGE1_JOBIDS[*]}"}
   Dielectric-calc jobs   : ${STAGE2_JOBIDS[*]}
   Aggregation job        : $JOBID3
   Aggregated summary (once $JOBID3 finishes) : $SUMMARY_CSV
