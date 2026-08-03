@@ -49,16 +49,11 @@ compute         dipy_sum all reduce sum v_dipy
 compute         dipz_sum all reduce sum v_dipz
 
 # c_dip*_sum is in e*Angstrom (metal units: charge in e, distance in
-# Angstrom). Converted to Debye here (x4.8032, the same e*Angstrom->Debye
-# factor as 2.dipole_std.py's DEBYE_CONVERSION_FACTOR = 4.8032**2 — squared
-# there because it's applied to already-squared variance/mavgsq terms, linear
-# here since Mx/My/Mz/Mmag are raw per-frame vector components) so this
-# by-hand output is directly in the same units as 2.dipole_std.py's Debye
-# columns, no manual conversion needed when comparing them.
-variable        e_angstrom_to_debye equal 4.8032
-variable        Mx equal c_dipx_sum*v_e_angstrom_to_debye
-variable        My equal c_dipy_sum*v_e_angstrom_to_debye
-variable        Mz equal c_dipz_sum*v_e_angstrom_to_debye
+# Angstrom) — left unconverted so this is the same raw units as
+# 1.calc_mpi.py's per-frame dipole_output.txt, for direct comparison.
+variable        Mx equal c_dipx_sum
+variable        My equal c_dipy_sum
+variable        Mz equal c_dipz_sum
 variable        Mmag equal sqrt(v_Mx*v_Mx+v_My*v_My+v_Mz*v_Mz)
 ##############################################################################
 
@@ -74,14 +69,10 @@ variable        n_times equal ${N_TIMES}
 variable        dielectric_dump_every equal ${DUMP_EVERY}
 ########################################################
 
-# Dipole vector + magnitude (see the by-hand dipole block above, already
-# converted to Debye), written to an external file every
-# dielectric_dump_every steps — same cadence as the dielectric.*.custom
-# dumps, as an independent sanity check against 1.calc_mpi.py/2.dipole_std.py's
-# post-processed values. Note 1.calc_mpi.py's own raw per-frame dipole output
-# stays in e*Angstrom (only 2.dipole_std.py's aggregated var/mavgsq columns
-# get Debye-converted) — multiply this file's Mx/My/Mz/Mmag by 1/4.8032 if
-# comparing directly against that raw per-frame file instead.
+# Dipole vector + magnitude (see the by-hand dipole block above), written to
+# an external file every dielectric_dump_every steps — same cadence as the
+# dielectric.*.custom dumps, for direct comparison against 1.calc_mpi.py's
+# raw per-frame dipole_output.txt (both in e*Angstrom).
 #
 # curstep must be its own equal-style variable, not an immediate $(step) —
 # fix print re-substitutes ${name} references on every invocation, but
@@ -89,7 +80,7 @@ variable        dielectric_dump_every equal ${DUMP_EVERY}
 # otherwise freeze at whatever step the fix was defined on.
 variable        curstep equal step
 fix             dipole_print all print ${dielectric_dump_every} "${curstep} ${Mx} ${My} ${Mz} ${Mmag}" &
-                file dipole_by_hand.txt screen no title "# step Mx My Mz |M| (Debye)"
+                file dipole_by_hand.txt screen no title "# step Mx My Mz |M| (e*Angstrom)"
 
 ###################### run setup ###########################
 # start.data is assumed already equilibrated at ${TARGET_TEMP} — no
