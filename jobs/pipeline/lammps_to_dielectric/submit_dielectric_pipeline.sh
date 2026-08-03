@@ -63,6 +63,18 @@ Optional:
     --dielectric-cutoff FLOAT        O-H bond cutoff (Angstrom) (default: 1.2)
     --dielectric-type-o INT          LAMMPS atom type for oxygen (default: 1)
     --dielectric-type-h INT          LAMMPS atom type for hydrogen (default: 2)
+    --dielectric-charge-h FLOAT      Hydrogen partial charge (e), used in
+                                    stage 2's bond-vector dipole formula
+                                    (default: 0.406988). Oxygen's charge
+                                    isn't a separate parameter — the formula
+                                    assumes charge neutrality (O = -2x this
+                                    value) and only ever uses the hydrogen
+                                    charge. Also passed into stage 1 as the
+                                    LAMMPS -var CHARGE_H, so input scripts
+                                    with a by-hand dipole cross-check (e.g.
+                                    OH-dielectric-therm.input) use the same
+                                    value instead of a separately hardcoded
+                                    one that could drift out of sync.
     --dielectric-averaging-method STR  windowed|cumulative|hybrid|binned
                                         (default: cumulative)
     --dielectric-ntasks INT          Ranks for the stage-2 MPI calc (default:
@@ -217,6 +229,7 @@ while [[ $# -gt 0 ]]; do
     --dielectric-cutoff) DIELECTRIC_CUTOFF="$2"; shift 2 ;;
     --dielectric-type-o) DIELECTRIC_TYPE_O="$2"; shift 2 ;;
     --dielectric-type-h) DIELECTRIC_TYPE_H="$2"; shift 2 ;;
+    --dielectric-charge-h) DIELECTRIC_CHARGE_H="$2"; shift 2 ;;
     --dielectric-averaging-method) DIELECTRIC_AVERAGING_METHOD="$2"; shift 2 ;;
     --dielectric-ntasks) DIELECTRIC_NTASKS="$2"; shift 2 ;;
     --dielectric-mem) DIELECTRIC_MEM="$2"; shift 2 ;;
@@ -379,8 +392,8 @@ for T in "${TEMP_LIST[@]}"; do
      "$STAGE2_DIR/"
   ln -s "$STAGE1_DIR/run/dumps" "$STAGE2_DIR/dumps"
 
-  stage1_export="TARGET_TEMP=$T,N_TIMES=$DIELECTRIC_N_CHUNKS,NVT_LENGTH=$DIELECTRIC_CHUNK_LENGTH,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY"
-  stage2_export="ALL,DUMP_DIR=$STAGE2_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,TEMPERATURE=$T,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD,NRANKS=$DIELECTRIC_NTASKS"
+  stage1_export="TARGET_TEMP=$T,N_TIMES=$DIELECTRIC_N_CHUNKS,NVT_LENGTH=$DIELECTRIC_CHUNK_LENGTH,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CHARGE_H=$DIELECTRIC_CHARGE_H"
+  stage2_export="ALL,DUMP_DIR=$STAGE2_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,CHARGE_H=$DIELECTRIC_CHARGE_H,TEMPERATURE=$T,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD,NRANKS=$DIELECTRIC_NTASKS"
 
   if [[ "$INTERACTIVE" == "1" ]]; then
     if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
@@ -390,7 +403,7 @@ for T in "${TEMP_LIST[@]}"; do
       (
         export SLURM_SUBMIT_DIR="$STAGE1_DIR/run"
         export SLURM_NTASKS="${NTASKS:-64}"
-        export TARGET_TEMP="$T" N_TIMES="$DIELECTRIC_N_CHUNKS" NVT_LENGTH="$DIELECTRIC_CHUNK_LENGTH" DUMP_EVERY="$DIELECTRIC_DUMP_EVERY"
+        export TARGET_TEMP="$T" N_TIMES="$DIELECTRIC_N_CHUNKS" NVT_LENGTH="$DIELECTRIC_CHUNK_LENGTH" DUMP_EVERY="$DIELECTRIC_DUMP_EVERY" CHARGE_H="$DIELECTRIC_CHARGE_H"
         cd "$STAGE1_DIR/run" && bash lammps_submit.slurm
       )
       echo "LAMMPS dielectric production finished for T=$T."

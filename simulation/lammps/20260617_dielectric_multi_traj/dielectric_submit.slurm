@@ -30,6 +30,7 @@ DUMP_EVERY="${DUMP_EVERY:-10}"
 CUTOFF="${CUTOFF:-1.2}"
 TYPE_O="${TYPE_O:-1}"
 TYPE_H="${TYPE_H:-2}"
+CHARGE_H="${CHARGE_H:-0.406988}"
 
 TEMPERATURE="${TEMPERATURE:?TEMPERATURE must be set}"
 LA="${LA:?LA must be set}"
@@ -75,6 +76,7 @@ srun --ntasks="$NUM_RANKS" python "$SCRIPT_DIR/1.calc_mpi.py" \
     --cutoff          "$CUTOFF" \
     --type-o          "$TYPE_O" \
     --type-h          "$TYPE_H" \
+    --charge-h        "$CHARGE_H" \
     --output-dir      "$OUTPUT_DIR"
 
 DIPOLE_FILE="$OUTPUT_DIR/dipole_output.txt"

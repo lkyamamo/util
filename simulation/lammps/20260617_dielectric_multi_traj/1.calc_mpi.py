@@ -24,12 +24,6 @@ from mpi4py import MPI
 from scipy.spatial import cKDTree
 
 
-DEFAULT_TYPE_TO_CHARGE = {
-    1: -0.813976,  # oxygen
-    2:  0.406988,  # hydrogen
-}
-
-
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -42,6 +36,7 @@ def parse_args():
     p.add_argument("--cutoff",     type=float, required=True)
     p.add_argument("--type-o",     type=int, required=True)
     p.add_argument("--type-h",     type=int, required=True)
+    p.add_argument("--charge-h",   type=float, required=True)
     p.add_argument("--output-dir", required=True)
     return p.parse_args()
 
@@ -193,7 +188,7 @@ def read_frame(f, num_atoms, col_type, col_x, col_y, col_z, type_o, type_h):
 # Bond detection + dipole calculation
 # ---------------------------------------------------------------------------
 
-def calc_frame_dipole(o_pos, h_pos, cutoff, box_dims, type_h):
+def calc_frame_dipole(o_pos, h_pos, cutoff, box_dims, q_h):
     box = box_dims
 
     o_pos_arr = o_pos % box
@@ -223,8 +218,7 @@ def calc_frame_dipole(o_pos, h_pos, cutoff, box_dims, type_h):
     dr_oh1 = o_v - h1_v;  dr_oh1 -= box * np.round(dr_oh1 / box)
     dr_h2o = h2_v - o_v;  dr_h2o -= box * np.round(dr_h2o / box)
 
-    q_H = DEFAULT_TYPE_TO_CHARGE[type_h]
-    dipole = q_H * np.sum(dr_oh1 - dr_h2o, axis=0)
+    dipole = q_h * np.sum(dr_oh1 - dr_h2o, axis=0)
 
     return dipole.tolist(), unassigned_h_indices, bond_stats
 
@@ -368,7 +362,7 @@ def main():
                         continue
 
                     dipole, unassigned_h, bond_stats = calc_frame_dipole(
-                        o_pos, h_pos, args.cutoff, box_dims, args.type_h
+                        o_pos, h_pos, args.cutoff, box_dims, args.charge_h
                     )
 
                     out.write(
