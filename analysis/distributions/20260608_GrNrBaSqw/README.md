@@ -153,21 +153,21 @@ Optional:
 | Variable | What it controls | Notes |
 |---|---|---|
 | `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element vx vy vz` columns (positions not read) |
-| `TIME_UNIT` | Time between consecutive dumped frames in **femtoseconds** | Falls back to `DT` if unset — same quantity dsf.py calls `DT` |
+| `TIME_UNIT` | Time between consecutive dumped frames in **femtoseconds** | Falls back to `DT` if unset — same quantity dsf.py calls `DT`. **The only env var vdos.py and msd.py share**; every other vdos.py setting is read from a `VDOS_`-prefixed name |
 
 Optional (see the module docstring for the full METHOD/WINDOW/NORMALIZATION
 explanation):
 
-| Variable | What it controls | Default |
+| Variable (env var) | What it controls | Default |
 |---|---|---|
-| `METHOD` | `'vacf_cosine_transform'` (matches `analysis/dynamics/src/msd.cpp`) or `'fft_periodogram'` (faster, this script's own approach) | `'vacf_cosine_transform'` |
-| `CORR_LENGTH` | VACF max lag / Welch-segment length, in fs | 75% of total trajectory duration |
-| `CORR_INTERVAL` | Spacing between VACF reference frames / segment starts, in fs | 10% of `CORR_LENGTH` |
-| `MAX_FREQUENCY_EV` | Upper frequency limit of the output grid, in eV (`vacf_cosine_transform` only) | `0.1` |
-| `NUM_GRIDS` | Frequency grid points (`vacf_cosine_transform` only) | `5000` |
-| `WINDOW` | `'cosine_lag'`/`'none'` under `vacf_cosine_transform`; `'hann'`/`'none'` under `fft_periodogram` | Matches `METHOD` |
-| `NORMALIZATION` | `'phonon'` (mole-fraction-weighted, matches msd.cpp) or `'unit_area'` | `'phonon'` |
-| `N_FRAMES`, `STRIDE` | Max frames to read / read every Nth frame | `0` (all), `1` |
+| `METHOD` (`VDOS_METHOD`) | `'vacf_cosine_transform'` (matches `analysis/dynamics/src/msd.cpp`) or `'fft_periodogram'` (faster, this script's own approach) | `'vacf_cosine_transform'` |
+| `CORR_LENGTH` (`VDOS_CORR_LENGTH`) | VACF max lag / Welch-segment length, in fs | 75% of total trajectory duration |
+| `CORR_INTERVAL` (`VDOS_CORR_INTERVAL`) | Spacing between VACF reference frames / segment starts, in fs | 10% of `CORR_LENGTH` |
+| `MAX_FREQUENCY_EV` (`VDOS_MAX_FREQUENCY_EV`) | Upper frequency limit of the output grid, in eV (`vacf_cosine_transform` only) | `0.1` |
+| `NUM_GRIDS` (`VDOS_NUM_GRIDS`) | Frequency grid points (`vacf_cosine_transform` only) | `5000` |
+| `WINDOW` (`VDOS_WINDOW`) | `'cosine_lag'`/`'none'` under `vacf_cosine_transform`; `'hann'`/`'none'` under `fft_periodogram` | Matches `METHOD` |
+| `NORMALIZATION` (`VDOS_NORMALIZATION`) | `'phonon'` (mole-fraction-weighted, matches msd.cpp) or `'unit_area'` | `'phonon'` |
+| `N_FRAMES`, `STRIDE` (`VDOS_N_FRAMES`, `VDOS_STRIDE`) | Max frames to read / read every Nth frame | `0` (all), `1` |
 | `VDOS_THREADS` | scipy FFT thread count (`fft_periodogram` only); `0` = all cores | `0` |
 
 ---
@@ -177,18 +177,18 @@ explanation):
 | Variable | What it controls | Notes |
 |---|---|---|
 | `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element x y z` columns (wrapped, not `xu yu zu`; velocities not read) |
-| `TIME_UNIT` | Time between consecutive dumped frames in **femtoseconds** | Falls back to `DT` if unset — same quantity dsf.py/vdos.py use |
+| `TIME_UNIT` | Time between consecutive dumped frames in **femtoseconds** | Falls back to `DT` if unset — same quantity dsf.py/vdos.py use. **The only env var msd.py and vdos.py share**; every other msd.py setting is read from an `MSD_`-prefixed name |
 
 Optional (see the module docstring for the full METHOD explanation — no
 unwrapped coordinates needed, minimum-image correction on each
 reference-to-current displacement instead):
 
-| Variable | What it controls | Default |
+| Variable (env var) | What it controls | Default |
 |---|---|---|
-| `CORR_LENGTH` | Max time lag / reference-frame spacing window, in fs — same meaning as vdos.py's `CORR_LENGTH` | 75% of total trajectory duration |
-| `CORR_INTERVAL` | Spacing between reference frames, in fs — same meaning as vdos.py's `CORR_INTERVAL` | 10% of `CORR_LENGTH` |
+| `CORR_LENGTH` (`MSD_CORR_LENGTH`) | Max time lag / reference-frame spacing window, in fs — same meaning as, but set independently of, vdos.py's `CORR_LENGTH` | 75% of total trajectory duration |
+| `CORR_INTERVAL` (`MSD_CORR_INTERVAL`) | Spacing between reference frames, in fs — same meaning as, but set independently of, vdos.py's `CORR_INTERVAL` | 10% of `CORR_LENGTH` |
 | `MSD_FIT_FRACTION` | Fraction of the tail of the correlation window used for the diffusion-coefficient linear fit (excludes the early ballistic regime) | `0.5` |
-| `N_FRAMES`, `STRIDE` | Max frames to read / read every Nth frame | `0` (all), `1` |
+| `N_FRAMES`, `STRIDE` (`MSD_N_FRAMES`, `MSD_STRIDE`) | Max frames to read / read every Nth frame | `0` (all), `1` |
 
 Prints a self-diffusion coefficient per element (and total) to the console,
 in units of 10⁻⁵ cm²/s (the standard unit for reporting liquid/solid

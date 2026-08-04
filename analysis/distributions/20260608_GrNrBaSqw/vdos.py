@@ -105,14 +105,18 @@ import matplotlib.pyplot as plt
 DUMP_FILE = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
 # Trajectory sampling (frame-reading only — msd.cpp has no equivalent, it
-# always reads every frame of its input file).
-N_FRAMES = int(os.environ.get("N_FRAMES", "0"))    # max frames to read; 0 = all
-STRIDE   = int(os.environ.get("STRIDE", "1"))      # read every Nth frame
+# always reads every frame of its input file). VDOS_-prefixed so they are
+# independent of msd.py's MSD_N_FRAMES/MSD_STRIDE and dsf.py's N_FRAMES/STRIDE,
+# even though all three read the same dump.
+N_FRAMES = int(os.environ.get("VDOS_N_FRAMES", "0"))    # max frames to read; 0 = all
+STRIDE   = int(os.environ.get("VDOS_STRIDE", "1"))      # read every Nth frame
 
 # Time between consecutive dumped frames, in fs — same name/units as
-# msd.cpp's time_unit_fs argument. Falls back to DT (dsf.py's name for the
-# same quantity) so the rest of this pipeline's --dsf-dt-style config still
-# reaches this script unchanged.
+# msd.cpp's time_unit_fs argument. This is the ONE parameter vdos.py and
+# msd.py share (it's a property of the trajectory, not of either analysis);
+# every other setting is prefixed per script. Falls back to DT (dsf.py's name
+# for the same quantity, same dump) so the rest of this pipeline's
+# --dsf-dt-style config still reaches this script unchanged.
 TIME_UNIT = float(os.environ.get("TIME_UNIT", os.environ.get("DT", "1.0")))
 
 # Which algorithm to run — see METHOD in the module docstring.
@@ -120,26 +124,28 @@ METHOD = os.environ.get("VDOS_METHOD", "vacf_cosine_transform")
 if METHOD not in ("vacf_cosine_transform", "fft_periodogram"):
     raise ValueError(f"Unknown VDOS_METHOD={METHOD!r}; use 'vacf_cosine_transform' or 'fft_periodogram'.")
 
-# Maximum VACF time lag / Welch-segment length, in fs — same name/units as
-# msd.cpp's corr_length_fs argument (its "correlation length"). If unset,
-# defaults (after the trajectory is read) to 75% of the total trajectory
-# duration, matching msd.cpp's own no-args default.
-_CORR_LENGTH_ENV = os.environ.get("CORR_LENGTH")
+# Maximum VACF time lag / Welch-segment length, in fs — same units as
+# msd.cpp's corr_length_fs argument (its "correlation length"), read from
+# VDOS_CORR_LENGTH so it is independent of msd.py's own MSD_CORR_LENGTH. If
+# unset, defaults (after the trajectory is read) to 75% of the total
+# trajectory duration, matching msd.cpp's own no-args default.
+_CORR_LENGTH_ENV = os.environ.get("VDOS_CORR_LENGTH")
 
 # Spacing between VACF reference frames / Welch-segment starts, in fs — same
-# name/units as msd.cpp's corr_interval_fs argument. If unset, defaults to
-# 10% of CORR_LENGTH, matching msd.cpp's own no-args default.
-_CORR_INTERVAL_ENV = os.environ.get("CORR_INTERVAL")
+# units as msd.cpp's corr_interval_fs argument, read from VDOS_CORR_INTERVAL
+# (independent of msd.py's MSD_CORR_INTERVAL). If unset, defaults to 10% of
+# CORR_LENGTH, matching msd.cpp's own no-args default.
+_CORR_INTERVAL_ENV = os.environ.get("VDOS_CORR_INTERVAL")
 
-# Upper frequency limit of the output DOS grid, in eV — same name/units as
+# Upper frequency limit of the output DOS grid, in eV — same units as
 # msd.cpp's max_frequency_ev argument. Only used by METHOD='vacf_cosine_transform';
 # fft_periodogram's frequency range is fixed by CORR_LENGTH/TIME_UNIT instead.
-MAX_FREQUENCY_EV = float(os.environ.get("MAX_FREQUENCY_EV", "0.1"))
+MAX_FREQUENCY_EV = float(os.environ.get("VDOS_MAX_FREQUENCY_EV", "0.1"))
 
 # Number of frequency grid points. Same value as msd.cpp's hardcoded
 # num_grids=5000 (not a msd.cpp CLI argument, but its only value in practice).
 # Only used by METHOD='vacf_cosine_transform'.
-NUM_GRIDS = int(os.environ.get("NUM_GRIDS", "5000"))
+NUM_GRIDS = int(os.environ.get("VDOS_NUM_GRIDS", "5000"))
 
 # Window applied before the frequency transform. Valid choices depend on
 # METHOD (the two methods window physically different things — a VACF vs. a
