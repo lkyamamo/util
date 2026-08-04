@@ -72,12 +72,19 @@ Optional:
     --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
 
-    vdos.py reuses --dsf-n-frames/--dsf-stride above for its own N_FRAMES/
-    STRIDE (same dump, same meaning — no separate flags):
-    --vdos-dt FLOAT                 vdos.py TIME_UNIT (fs between dumped frames),
-                                    e.g. 1.0 — falls back to --dsf-dt/DT if omitted,
-                                    but set this explicitly if running vdos.py
-                                    without dsf.py or with a different DT
+    vdos.py and msd.py share exactly one parameter — the time between dumped
+    frames of dynamics.lammpstrj, a property of the trajectory rather than of
+    either analysis. Every other setting below is per script, so the two can
+    be sampled and windowed completely independently:
+    --dynamics-dt FLOAT             vdos.py/msd.py TIME_UNIT (fs between dumped
+                                    frames of dynamics.lammpstrj), e.g. 1.0 — falls
+                                    back to --dsf-dt/DT if omitted, but set this
+                                    explicitly if running vdos.py/msd.py without
+                                    dsf.py or with a different DT
+
+    --vdos-n-frames INT             vdos.py N_FRAMES (max frames to read; 0 = all),
+                                    e.g. 5000
+    --vdos-stride INT                vdos.py STRIDE (read every Nth frame), e.g. 1
     --vdos-corr-length FLOAT        vdos.py CORR_LENGTH (fs; VACF max lag /
                                     Welch-segment length), e.g. 5000
     --vdos-corr-interval FLOAT      vdos.py CORR_INTERVAL (fs; spacing between
@@ -90,9 +97,12 @@ Optional:
                                     vacf_cosine_transform, 'hann'/'none' under fft_periodogram
     --vdos-normalization STR         vdos.py NORMALIZATION: 'phonon' (default) or 'unit_area'
 
-    msd.py reuses --vdos-dt/--vdos-corr-length/--vdos-corr-interval above for
-    its own TIME_UNIT/CORR_LENGTH/CORR_INTERVAL (same trajectory, same
-    meaning, same env vars — no separate flags):
+    --msd-n-frames INT               msd.py N_FRAMES (max frames to read; 0 = all),
+                                    e.g. 5000
+    --msd-stride INT                 msd.py STRIDE (read every Nth frame), e.g. 1
+    --msd-corr-length FLOAT          msd.py CORR_LENGTH (fs; max MSD time lag), e.g. 5000
+    --msd-corr-interval FLOAT        msd.py CORR_INTERVAL (fs; spacing between
+                                    reference frames), e.g. 500
     --msd-fit-fraction FLOAT         msd.py FIT_FRACTION: fraction of the tail of the
                                     correlation window used for the diffusion-coefficient
                                     linear fit, e.g. 0.5
@@ -189,6 +199,20 @@ fi
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
 
+# vdos.py/msd.py config vars introduced when the two scripts were split apart
+# (they now share only the trajectory's dt). submit_pipeline.conf is gitignored,
+# so an existing one won't have them yet — default them to empty rather than
+# tripping `set -u` further down. VDOS_DT, which used to feed both scripts, is
+# gone; flag it loudly instead of silently ignoring a value someone set.
+: "${DYNAMICS_DT:=}" "${VDOS_N_FRAMES:=}" "${VDOS_STRIDE:=}" \
+  "${MSD_N_FRAMES:=}" "${MSD_STRIDE:=}" "${MSD_CORR_LENGTH:=}" "${MSD_CORR_INTERVAL:=}"
+if [[ -n "${VDOS_DT:-}" ]]; then
+  echo "Error: VDOS_DT in $CONFIG_FILE is no longer used — it has been renamed to" >&2
+  echo "DYNAMICS_DT (flag --dynamics-dt), the one parameter vdos.py and msd.py still" >&2
+  echo "share. Rename it there; see submit_pipeline.conf.example." >&2
+  exit 1
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --input-script) INPUT_SCRIPT="$2"; shift 2 ;;
@@ -228,7 +252,9 @@ while [[ $# -gt 0 ]]; do
     --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
-    --vdos-dt) VDOS_DT="$2"; shift 2 ;;
+    --dynamics-dt) DYNAMICS_DT="$2"; shift 2 ;;
+    --vdos-n-frames) VDOS_N_FRAMES="$2"; shift 2 ;;
+    --vdos-stride) VDOS_STRIDE="$2"; shift 2 ;;
     --vdos-corr-length) VDOS_CORR_LENGTH="$2"; shift 2 ;;
     --vdos-corr-interval) VDOS_CORR_INTERVAL="$2"; shift 2 ;;
     --vdos-max-frequency-ev) VDOS_MAX_FREQUENCY_EV="$2"; shift 2 ;;
@@ -236,6 +262,10 @@ while [[ $# -gt 0 ]]; do
     --vdos-method) VDOS_METHOD="$2"; shift 2 ;;
     --vdos-window) VDOS_WINDOW="$2"; shift 2 ;;
     --vdos-normalization) VDOS_NORMALIZATION="$2"; shift 2 ;;
+    --msd-n-frames) MSD_N_FRAMES="$2"; shift 2 ;;
+    --msd-stride) MSD_STRIDE="$2"; shift 2 ;;
+    --msd-corr-length) MSD_CORR_LENGTH="$2"; shift 2 ;;
+    --msd-corr-interval) MSD_CORR_INTERVAL="$2"; shift 2 ;;
     --msd-fit-fraction) MSD_FIT_FRACTION="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
@@ -379,14 +409,22 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$DSF_WINDOW_SIZE" ]]     && export_vars+=",WINDOW_SIZE=$DSF_WINDOW_SIZE"
 [[ -n "$DSF_Q_MAX" ]]           && export_vars+=",Q_MAX=$DSF_Q_MAX"
 [[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",N_Q_BINS=$DSF_N_Q_BINS"
-[[ -n "$VDOS_DT" ]]               && export_vars+=",TIME_UNIT=$VDOS_DT"
-[[ -n "$VDOS_CORR_LENGTH" ]]      && export_vars+=",CORR_LENGTH=$VDOS_CORR_LENGTH"
-[[ -n "$VDOS_CORR_INTERVAL" ]]    && export_vars+=",CORR_INTERVAL=$VDOS_CORR_INTERVAL"
-[[ -n "$VDOS_MAX_FREQUENCY_EV" ]] && export_vars+=",MAX_FREQUENCY_EV=$VDOS_MAX_FREQUENCY_EV"
-[[ -n "$VDOS_NUM_GRIDS" ]]        && export_vars+=",NUM_GRIDS=$VDOS_NUM_GRIDS"
+# TIME_UNIT is the only value vdos.py and msd.py both read; everything below
+# it is namespaced VDOS_*/MSD_* so the two scripts stay fully independent.
+[[ -n "$DYNAMICS_DT" ]]           && export_vars+=",TIME_UNIT=$DYNAMICS_DT"
+[[ -n "$VDOS_N_FRAMES" ]]         && export_vars+=",VDOS_N_FRAMES=$VDOS_N_FRAMES"
+[[ -n "$VDOS_STRIDE" ]]           && export_vars+=",VDOS_STRIDE=$VDOS_STRIDE"
+[[ -n "$VDOS_CORR_LENGTH" ]]      && export_vars+=",VDOS_CORR_LENGTH=$VDOS_CORR_LENGTH"
+[[ -n "$VDOS_CORR_INTERVAL" ]]    && export_vars+=",VDOS_CORR_INTERVAL=$VDOS_CORR_INTERVAL"
+[[ -n "$VDOS_MAX_FREQUENCY_EV" ]] && export_vars+=",VDOS_MAX_FREQUENCY_EV=$VDOS_MAX_FREQUENCY_EV"
+[[ -n "$VDOS_NUM_GRIDS" ]]        && export_vars+=",VDOS_NUM_GRIDS=$VDOS_NUM_GRIDS"
 [[ -n "$VDOS_METHOD" ]]           && export_vars+=",VDOS_METHOD=$VDOS_METHOD"
 [[ -n "$VDOS_WINDOW" ]]           && export_vars+=",VDOS_WINDOW=$VDOS_WINDOW"
 [[ -n "$VDOS_NORMALIZATION" ]]    && export_vars+=",VDOS_NORMALIZATION=$VDOS_NORMALIZATION"
+[[ -n "$MSD_N_FRAMES" ]]           && export_vars+=",MSD_N_FRAMES=$MSD_N_FRAMES"
+[[ -n "$MSD_STRIDE" ]]             && export_vars+=",MSD_STRIDE=$MSD_STRIDE"
+[[ -n "$MSD_CORR_LENGTH" ]]        && export_vars+=",MSD_CORR_LENGTH=$MSD_CORR_LENGTH"
+[[ -n "$MSD_CORR_INTERVAL" ]]      && export_vars+=",MSD_CORR_INTERVAL=$MSD_CORR_INTERVAL"
 [[ -n "$MSD_FIT_FRACTION" ]]       && export_vars+=",MSD_FIT_FRACTION=$MSD_FIT_FRACTION"
 
 enabled_scripts=""

@@ -78,18 +78,24 @@ import matplotlib.pyplot as plt
 # Input trajectory file — same one vdos.py reads (already has wrapped x y z).
 DUMP_FILE = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
-# Trajectory sampling
-N_FRAMES = int(os.environ.get("N_FRAMES", "0"))    # max frames to read; 0 = all
-STRIDE   = int(os.environ.get("STRIDE", "1"))      # read every Nth frame
+# Trajectory sampling. MSD_-prefixed so they are independent of vdos.py's
+# VDOS_N_FRAMES/VDOS_STRIDE and dsf.py's N_FRAMES/STRIDE, even though all
+# three read the same dump.
+N_FRAMES = int(os.environ.get("MSD_N_FRAMES", "0"))    # max frames to read; 0 = all
+STRIDE   = int(os.environ.get("MSD_STRIDE", "1"))      # read every Nth frame
 
-# Time between consecutive dumped frames, in fs — same name/units/fallback as
-# vdos.py's TIME_UNIT (falls back to DT, dsf.py's name for the same quantity).
+# Time between consecutive dumped frames, in fs — the ONE parameter msd.py
+# and vdos.py share (it's a property of the trajectory, not of either
+# analysis), so it keeps the unprefixed TIME_UNIT name both read, with the
+# same fallback to DT (dsf.py's name for the same quantity, same dump).
 TIME_UNIT = float(os.environ.get("TIME_UNIT", os.environ.get("DT", "1.0")))
 
-# Max time lag / reference spacing, in fs — same names/units/defaulting as
-# vdos.py's CORR_LENGTH/CORR_INTERVAL (75%/10% of trajectory duration if unset).
-_CORR_LENGTH_ENV = os.environ.get("CORR_LENGTH")
-_CORR_INTERVAL_ENV = os.environ.get("CORR_INTERVAL")
+# Max time lag / reference spacing, in fs — same units and defaulting as
+# vdos.py's CORR_LENGTH/CORR_INTERVAL (75%/10% of trajectory duration if
+# unset), but read from MSD_-prefixed env vars so MSD's correlation window is
+# set independently of VDOS's.
+_CORR_LENGTH_ENV = os.environ.get("MSD_CORR_LENGTH")
+_CORR_INTERVAL_ENV = os.environ.get("MSD_CORR_INTERVAL")
 
 # Fraction of the tail of the correlation window used for the diffusion-
 # coefficient linear fit (excludes the early ballistic/non-diffusive regime).
