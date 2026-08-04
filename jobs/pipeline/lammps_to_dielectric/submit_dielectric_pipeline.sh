@@ -137,17 +137,37 @@ Optional:
                                   is submitted without a --dependency on stage 1
                                   (nothing to wait on).
 
-  --stagger-seconds N              Sleep N seconds before submitting each
-                                  temperature after the first (default: 5).
-                                  Spreads out submission (and, indirectly,
-                                  job-start) times across temperatures so
-                                  they're less likely to all launch on compute
-                                  nodes at once — that clustering is a common
-                                  trigger for SLURM's "user env retrieval
-                                  failed" transient job-launch failure under
-                                  home-directory/NFS load. Set to 0 to disable.
-                                  No-op with a single temperature or under
-                                  --interactive (already fully sequential).
+  --stagger-seconds N              Two related mitigations against SLURM's
+                                  "user env retrieval failed" transient
+                                  job-launch failure (default: 5, common
+                                  trigger is multiple jobs becoming eligible
+                                  to start on compute nodes at the same
+                                  instant, e.g. under home-directory/NFS
+                                  load), both no-ops if N=0:
+                                    1) Sleeps N seconds before submitting
+                                       each temperature after the first, in
+                                       non-interactive mode. Spreads out this
+                                       invocation's own per-temperature
+                                       submission (and, indirectly, job-start)
+                                       times. No-op with a single temperature
+                                       or under --interactive (already fully
+                                       sequential).
+                                    2) Adds sbatch --begin=now+<jitter>seconds
+                                       (jitter uniformly random in [0, N]) to
+                                       every stage 1/stage 2/aggregation job
+                                       submission (non-interactive mode only —
+                                       nothing is submitted via sbatch under
+                                       --interactive). Unlike (1), this also
+                                       reduces collisions with jobs from
+                                       *other, concurrently-running*
+                                       submit_dielectric_pipeline.sh
+                                       invocations (different sweeps), which
+                                       have no way to coordinate submission
+                                       timing with each other except through
+                                       randomness — including the
+                                       aggregation job, which only ever
+                                       submits once per invocation and so
+                                       can't be helped by (1) at all.
 
   --force REASON                  Overwrite an existing T<value>/ (stage 1) or
                                   an existing <sweep_id>_T<value>_dielectric_calc/
@@ -194,6 +214,26 @@ log_overwrite() {
   msg="[$(date "+%Y-%m-%dT%H:%M:%S%z")] $1"
   echo "WARNING: $msg" >&2
   echo "$msg" >> "$LOG_FILE"
+}
+
+# Sets the global BEGIN_ARGS array to a --begin=now+<jitter>seconds sbatch
+# arg, jitter uniformly random in [0, STAGGER_SECONDS]. Unlike the
+# sequential --stagger-seconds sleep between temperatures (which only
+# spaces out submissions from *this* invocation), random jitter also
+# reduces the odds of jobs from *other, concurrently-running*
+# submit_dielectric_pipeline.sh invocations (different sweeps) becoming
+# eligible to start at the same instant — a common trigger for SLURM's
+# "user env retrieval failed" transient job-launch failure under
+# home-directory/NFS load. Separate invocations can't coordinate with each
+# other except through randomness, so this is applied to every sbatch call,
+# not just the per-temperature loop. Empty (no --begin) if
+# --stagger-seconds is 0.
+random_begin_args() {
+  BEGIN_ARGS=()
+  if [[ "$STAGGER_SECONDS" -gt 0 ]]; then
+    local jitter=$((RANDOM % (STAGGER_SECONDS + 1)))
+    BEGIN_ARGS=(--begin="now+${jitter}seconds")
+  fi
 }
 
 # All parameter defaults (general input, dielectric-production config,
@@ -430,9 +470,11 @@ for T in "${TEMP_LIST[@]}"; do
       [[ -n "$CONSTRAINT" ]] && sbatch_args+=(--constraint="$CONSTRAINT")
       [[ -n "$NODELIST" ]]   && sbatch_args+=(--nodelist="$NODELIST")
 
+      random_begin_args
       echo "Submitting LAMMPS dielectric production from $STAGE1_DIR/run ..."
       JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
         "${sbatch_args[@]+"${sbatch_args[@]}"}" \
+        "${BEGIN_ARGS[@]+"${BEGIN_ARGS[@]}"}" \
         --export="ALL,$stage1_export" \
         lammps_submit.slurm)"
       echo "  LAMMPS job id: $JOBID1"
@@ -451,10 +493,12 @@ for T in "${TEMP_LIST[@]}"; do
     dependency_args=()
     [[ -n "$JOBID1" ]] && dependency_args+=(--dependency=afterok:"$JOBID1")
 
+    random_begin_args
     echo "Submitting dielectric calc from $STAGE2_DIR${JOBID1:+, dependent on job $JOBID1} ..."
     JOBID2="$(cd "$STAGE2_DIR" && sbatch --parsable \
       "${dependency_args[@]+"${dependency_args[@]}"}" \
       "${analysis_sbatch_args[@]+"${analysis_sbatch_args[@]}"}" \
+      "${BEGIN_ARGS[@]+"${BEGIN_ARGS[@]}"}" \
       --export="$stage2_export" \
       dielectric_submit.slurm)"
     echo "  dielectric-calc job id: $JOBID2"
@@ -497,9 +541,11 @@ else
   PERSISTENT_ENTRIES_FILE="$SWEEP_DIR/.dielectric_entries"
   cp "$ENTRIES_FILE" "$PERSISTENT_ENTRIES_FILE"
 
+  random_begin_args
   echo ""
   echo "Submitting aggregation job, dependent on: ${STAGE2_JOBIDS[*]} ..."
   JOBID3="$(cd "$SWEEP_DIR" && sbatch --parsable --dependency="$dependency" \
+    "${BEGIN_ARGS[@]+"${BEGIN_ARGS[@]}"}" \
     --export="ALL,ENTRIES_FILE=$PERSISTENT_ENTRIES_FILE,OUTPUT_CSV=$SUMMARY_CSV,AGGREGATE_SCRIPT=$AGGREGATE_SCRIPT" \
     "$AGGREGATE_TEMPLATE")"
   echo "  aggregation job id: $JOBID3"
