@@ -9,7 +9,8 @@ QUICK START
 1. Run the analysis:
        python bond_events.py --traj dynamics.lammpstrj --dt 2.5
 2. Open output/bond_events.lammpstrj in OVITO and add an Expression Selection:
-       EventType != 0
+       EventType != 0                    every event, on its exact frame
+       Mechanism == 1 && EventAge < 20   proton transfers, for 50 fs afterwards
 
 The default cutoffs are stated below with their justification. Deriving them
 automatically from the run's own g(r) is parked as future work — see
@@ -70,7 +71,8 @@ and carries descriptors that say *why* it happened:
 OUTPUT (all under output/, or --output-dir)
 -------------------------------------------
   bond_events.lammpstrj    input trajectory + per-atom annotation columns
-                           (Coordination EventType EventAge PartnerID Species)
+                           (Coordination EventType EventAge PartnerID Species
+                           Mechanism)
   events.jsonl             one JSON object per event, every descriptor
   events_per_frame.csv     per-frame break/form counts and species populations
   summary.txt              aggregate report
@@ -128,6 +130,23 @@ SP_HYDROXIDE = 2
 SP_FREE_H = 3
 SP_FREE_O = 4
 SP_OTHER = 5
+
+# Per-atom Mechanism codes: how the atom's most recent event was classified.
+# Unlike EventType this persists (alongside EventAge) rather than resetting each
+# frame, because the classification is what you want to keep highlighted while
+# watching the aftermath of a hop, not just on the single crossing frame.
+MECH_NONE = 0
+MECH_TRANSFER = 1
+MECH_RECROSS = 2
+MECH_DISSOCIATION = 3
+MECH_TRUNCATED = 4
+
+MECHANISM_CODES = {
+    "transfer": MECH_TRANSFER,
+    "recross": MECH_RECROSS,
+    "dissociation": MECH_DISSOCIATION,
+    "truncated": MECH_TRUNCATED,
+}
 
 # ==========================================================================
 # Trajectory reading
@@ -683,19 +702,18 @@ class BondTracker:
         acceptor_coord_before = int(self.coord[o_row])
         self.coord[o_row] += 1
         self.coord[h_row] += 1
-        self.events.append(
-            {
-                "kind": "form",
-                "frame": crossing,
-                "timestep": timestep,
-                "o_id": int(self.topology.ids[o_row]),
-                "h_id": int(self.topology.ids[h_row]),
-                "o_row": o_row,
-                "h_row": h_row,
-                "coord_o_before": acceptor_coord_before,
-                "coord_o_after": acceptor_coord_before + 1,
-            }
-        )
+        record = {
+            "kind": "form",
+            "frame": crossing,
+            "timestep": timestep,
+            "o_id": int(self.topology.ids[o_row]),
+            "h_id": int(self.topology.ids[h_row]),
+            "o_row": o_row,
+            "h_row": h_row,
+            "coord_o_before": acceptor_coord_before,
+            "coord_o_after": acceptor_coord_before + 1,
+        }
+        self.events.append(record)
         # A form may complete a pending break for the same H.
         for pending in self.pending_breaks:
             if pending.classification != "pending" or pending.h_row != h_row:
@@ -707,6 +725,11 @@ class BondTracker:
             pending.acceptor_coord_before = acceptor_coord_before
             pending.acceptor_coord_after = acceptor_coord_before + 1
             pending.form_frame = crossing
+            # Tag the form with the same mechanism, so the arrival half of a
+            # proton hop is selectable in OVITO too, not just the departure.
+            record["classification"] = pending.classification
+            record["donor_o_id"] = int(self.topology.ids[pending.o_row])
+            record["break_frame"] = pending.frame
             break
 
     def _advance_pending(self, t: int) -> None:
@@ -831,6 +854,7 @@ class Annotation(NamedTuple):
     event_age: np.ndarray
     partner_id: np.ndarray
     species: np.ndarray
+    mechanism: np.ndarray
 
 
 def replay_annotations(
@@ -868,6 +892,7 @@ def replay_annotations(
     event_type = np.zeros(n, dtype=np.int32)
     event_age = np.full(n, -1, dtype=np.int64)
     partner_id = np.full(n, -1, dtype=np.int64)
+    mechanism = np.full(n, MECH_NONE, dtype=np.int32)
 
     for row in per_frame:
         event_type[:] = EV_NONE
@@ -889,6 +914,8 @@ def replay_annotations(
             event_age[o_row] = event_age[h_row] = 0
             partner_id[o_row] = topology.ids[h_row]
             partner_id[h_row] = topology.ids[o_row]
+            mech = MECHANISM_CODES.get(event.get("classification"), MECH_NONE)
+            mechanism[o_row] = mechanism[h_row] = mech
 
         yield Annotation(
             frame=row["frame"],
@@ -898,6 +925,7 @@ def replay_annotations(
             event_age=event_age,
             partner_id=partner_id,
             species=_species_from_coordination(coord, h_partner, is_o),
+            mechanism=mechanism,
         )
 
 
@@ -923,10 +951,10 @@ def write_annotated_trajectory(
     """
     Re-emit the trajectory with per-atom annotation columns OVITO reads natively.
 
-    Columns appended: Coordination EventType EventAge PartnerID Species. These
-    become user particle properties in OVITO, so a single frame-independent
-    expression such as `EventType != 0` selects events across the whole
-    trajectory — unlike silanol.py:507-519, which emits a per-frame OR-chain of
+    Columns appended: Coordination EventType EventAge PartnerID Species
+    Mechanism. These become user particle properties in OVITO, so a single
+    frame-independent expression such as `EventType != 0` selects events across
+    the whole trajectory — unlike silanol.py:507-519, which emits a per-frame OR-chain of
     (ParticleIdentifier == N) that has to be re-pasted at every frame.
 
     This is the expensive half of the run: it re-parses the input trajectory and
@@ -956,9 +984,7 @@ def write_annotated_trajectory(
                     f"file changed between passes."
                 )
             populations.append(_population_counts(annotation))
-            _write_frame(out, frame, topology, id_str, annotation.coord,
-                         annotation.event_type, annotation.event_age,
-                         annotation.partner_id, annotation.species)
+            _write_frame(out, frame, topology, id_str, annotation)
 
     return populations
 
@@ -1006,11 +1032,7 @@ def _write_frame(
     frame: Frame,
     topology: Topology,
     id_str: np.ndarray,
-    coord: np.ndarray,
-    event_type: np.ndarray,
-    event_age: np.ndarray,
-    partner_id: np.ndarray,
-    species: np.ndarray,
+    annotation: "Annotation",
 ) -> None:
     """Write one annotated frame. Columns are formatted with vectorised numpy
     string ops; a per-atom Python loop would dominate the runtime at 26k atoms
@@ -1027,13 +1049,14 @@ def _write_frame(
     if has_v:
         names += ["vx", "vy", "vz"]
         parts += [np.char.mod("%.5f", frame.vel[:, d]) for d in range(3)]
-    names += ["Coordination", "EventType", "EventAge", "PartnerID", "Species"]
+    names += ["Coordination", "EventType", "EventAge", "PartnerID", "Species", "Mechanism"]
     parts += [
-        np.char.mod("%d", coord),
-        np.char.mod("%d", event_type),
-        np.char.mod("%d", event_age),
-        np.char.mod("%d", partner_id),
-        np.char.mod("%d", species),
+        np.char.mod("%d", annotation.coord),
+        np.char.mod("%d", annotation.event_type),
+        np.char.mod("%d", annotation.event_age),
+        np.char.mod("%d", annotation.partner_id),
+        np.char.mod("%d", annotation.species),
+        np.char.mod("%d", annotation.mechanism),
     ]
 
     joined = parts[0]

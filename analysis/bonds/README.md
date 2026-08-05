@@ -71,11 +71,32 @@ per-frame editing.
 ```
 EventType != 0                            all atoms involved in an event this frame
 EventAge >= 0 && EventAge < 20            atoms that reacted within the last 50 fs
+Mechanism == 1                            atoms whose last event was a proton transfer
+Mechanism == 1 && EventAge < 20           transfers, held on screen for 50 fs
+Mechanism == 3                            dissociations — usually means bad cutoffs
 Species == 1                              every hydronium, oxygen and hydrogens
 Species == 2                              every hydroxide
 Coordination != 2 && ParticleType == 1    any oxygen that is not part of an H2O
 PartnerID == 12345                        the other atom in a specific event
 ```
+
+### Selecting transfers specifically
+
+`EventType` cannot do it on its own: it says an H broke away, but a Grotthuss
+hop and a dissociation look identical at that instant — the difference is what
+the H does over the *next* 50 fs, and OVITO expressions have no lookahead. That
+is what `Mechanism` is for. It is assigned once the event is classified and then
+written back to the frames the event happened on:
+
+```
+Mechanism == 1 && EventType == 2          the proton, at the instant it leaves
+Mechanism == 1 && EventType == 4          the proton, at the instant it arrives
+Mechanism == 1 && EventAge < 20           donor, acceptor and proton, for 50 fs
+```
+
+Unlike `EventType`, `Mechanism` **persists** after the event rather than
+resetting each frame, so it pairs with `EventAge` to control how long a hop
+stays highlighted.
 
 Add a **Color Coding** modifier on `EventAge` (range 0–20, reversed) to get a
 fade-out trail behind each reaction, or on `Species` for a static species map.
@@ -89,6 +110,7 @@ fade-out trail behind each reaction, or on `Species` for a static species map.
 | `EventAge` | Frames since this atom's last event; `0` at the event, `-1` if it has never had one |
 | `PartnerID` | Atom id of the other atom in the most recent event, `-1` if none |
 | `Species` | `0` H₂O · `1` H₃O⁺ · `2` OH⁻ · `3` free H · `4` free O · `5` other |
+| `Mechanism` | Classification of this atom's most recent event: `0` none · `1` transfer · `2` recross · `3` dissociation · `4` truncated. **Persists**, unlike `EventType`. |
 
 Hydrogens inherit their oxygen's `Species`, so `Species == 1` selects a whole
 hydronium rather than just its oxygen.

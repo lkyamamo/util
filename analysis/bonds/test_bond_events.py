@@ -342,6 +342,17 @@ def case_transfer(workdir: Path) -> dict:
     chk("EventAge at break frame", frames[16]["EventAge"][0], 0.0)
     chk("EventAge 3 frames later", frames[19]["EventAge"][0], 3.0)
     chk("PartnerID at break", frames[16]["PartnerID"][0], 6.0)
+
+    # Mechanism is what makes transfers selectable in OVITO: EventType alone
+    # cannot tell a Grotthuss hop from a dissociation, since the difference is
+    # what the H does over the following frames.
+    chk("Mechanism before the event", frames[5]["Mechanism"][0], 0.0)
+    chk("donor tagged transfer at break", frames[16]["Mechanism"][0], 1.0)
+    chk("H tagged transfer at break", frames[16]["Mechanism"][5], 1.0)
+    chk("acceptor tagged transfer at form", frames[17]["Mechanism"][1], 1.0)
+    # Persists after the event, so `Mechanism == 1 && EventAge < 20` works.
+    chk("Mechanism persists", frames[30]["Mechanism"][0], 1.0)
+    chk("spectators untouched", float(frames[30]["Mechanism"][2]), 0.0)
     return summary
 
 
@@ -421,7 +432,7 @@ def case_no_velocities(workdir: Path, reference: dict) -> None:
         header = [f.readline() for _ in range(9)][8].split()[2:]
     chk("annotated columns", header,
         ["id", "element", "x", "y", "z",
-         "Coordination", "EventType", "EventAge", "PartnerID", "Species"])
+         "Coordination", "EventType", "EventAge", "PartnerID", "Species", "Mechanism"])
 
 
 def case_no_ovito_dump(workdir: Path) -> None:
