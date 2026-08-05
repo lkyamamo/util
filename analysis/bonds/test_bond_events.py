@@ -34,6 +34,10 @@ CASES
                  classification window runs off the end. Ground truth: the break
                  is reported as 'truncated' and counted in n_pending_at_eof
                  rather than silently dropped.
+6. no_velocities Case 2 written without vx vy vz columns. Ground truth:
+                 detection identical to case 2, since the criterion is purely
+                 geometric; only v_radial/ke_h/ke_h_over_kT are absent, and they
+                 must be absent rather than zero.
 """
 
 from __future__ import annotations
@@ -83,8 +87,13 @@ def write_dump(
     elements: Sequence[str],
     positions: np.ndarray,     # (n_frames, n_atoms, 3), unwrapped
     velocities: Optional[np.ndarray] = None,
+    with_velocity_columns: bool = True,
 ) -> None:
-    """Write a LAMMPS custom dump matching OH-therm.input's column layout."""
+    """Write a LAMMPS custom dump matching OH-therm.input's column layout.
+
+    with_velocity_columns=False omits vx vy vz entirely, as a dump written
+    without them would — not zeros, but no columns at all.
+    """
     n_frames, n_atoms, _ = positions.shape
     ids = np.arange(1, n_atoms + 1)
     with open(path, "w") as f:
@@ -95,14 +104,19 @@ def write_dump(
             f.write("ITEM: BOX BOUNDS pp pp pp\n")
             for d in range(3):
                 f.write(f"{BOX_LO[d]:.10e} {BOX_HI[d]:.10e}\n")
-            f.write("ITEM: ATOMS id element x y z vx vy vz\n")
+            if with_velocity_columns:
+                f.write("ITEM: ATOMS id element x y z vx vy vz\n")
+            else:
+                f.write("ITEM: ATOMS id element x y z\n")
             for i in range(n_atoms):
-                v = velocities[t, i] if velocities is not None else (0.0, 0.0, 0.0)
-                f.write(
+                row = (
                     f"{ids[i]} {elements[i]} "
-                    f"{wrapped[i, 0]:.6f} {wrapped[i, 1]:.6f} {wrapped[i, 2]:.6f} "
-                    f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n"
+                    f"{wrapped[i, 0]:.6f} {wrapped[i, 1]:.6f} {wrapped[i, 2]:.6f}"
                 )
+                if with_velocity_columns:
+                    v = velocities[t, i] if velocities is not None else (0.0, 0.0, 0.0)
+                    row += f" {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}"
+                f.write(row + "\n")
 
 
 def flicker_trajectory(n_cycles: int = 10) -> Tuple[List[str], np.ndarray]:
@@ -191,11 +205,12 @@ def run_case(
     elements: Sequence[str],
     positions: np.ndarray,
     extra_args: Sequence[str] = (),
+    with_velocity_columns: bool = True,
 ) -> Tuple[dict, List[dict], Path]:
     """Write the trajectory, run bond_events.py on it, return (summary, events, outdir)."""
     traj = workdir / f"{name}.lammpstrj"
     outdir = workdir / f"{name}_output"
-    write_dump(traj, elements, positions)
+    write_dump(traj, elements, positions, with_velocity_columns=with_velocity_columns)
 
     cmd = [
         sys.executable, str(SCRIPT),
@@ -354,6 +369,43 @@ def case_eof(workdir: Path) -> None:
     chk("break frame", break_event["frame"], 12)
 
 
+def case_no_velocities(workdir: Path, reference: dict) -> None:
+    print("\n6. no velocities — a dump without vx vy vz must still work")
+    # dump.lammpstrj carries velocities, but plenty of dumps do not (e.g.
+    # analysis/structure/SiOH.0.lammpstrj, or dielectric-therm.input's
+    # 'id type x y z'). Detection is purely geometric, so everything except the
+    # three kinetic descriptors must be unchanged.
+    elements, pos = transfer_trajectory()
+    summary, events, outdir = run_case(
+        workdir, "no_velocities", elements, pos, with_velocity_columns=False
+    )
+
+    chk("breaks", summary["n_breaks"], reference["n_breaks"])
+    chk("forms", summary["n_forms"], reference["n_forms"])
+    chk("classifications", summary["classifications"], reference["classifications"])
+
+    break_event = next(e for e in events if e["kind"] == "break")
+    chk("break frame unchanged", break_event["frame"], 16)
+    chk("acceptor unchanged", break_event.get("acceptor_o_id"), 2)
+    chk("O...O unchanged", break_event.get("oo_distance_at_break"), 2.6, tol=1e-3)
+    chk("angle unchanged", break_event.get("ohO_angle_at_break"), 180.0, tol=0.5)
+    chk("donor coord unchanged",
+        (break_event.get("coord_o_donor_before"), break_event.get("coord_o_donor_after")), (2, 1))
+
+    # The velocity-derived descriptors must be absent, not zero — a zero
+    # v_radial would silently pollute the summary statistics.
+    for key in ("v_radial", "ke_h", "ke_h_over_kT"):
+        chk(f"{key} omitted", key in break_event, False)
+
+    # The annotated trajectory must drop the velocity columns rather than
+    # emit placeholders, so OVITO does not show a bogus zero Velocity property.
+    with open(outdir / "bond_events.lammpstrj") as f:
+        header = [f.readline() for _ in range(9)][8].split()[2:]
+    chk("annotated columns", header,
+        ["id", "element", "x", "y", "z",
+         "Coordination", "EventType", "EventAge", "PartnerID", "Species"])
+
+
 def main() -> int:
     if not SCRIPT.exists():
         raise SystemExit(f"bond_events.py not found next to this test: {SCRIPT}")
@@ -367,6 +419,7 @@ def main() -> int:
         case_dissociation(workdir)
         case_pbc(workdir, transfer_summary)
         case_eof(workdir)
+        case_no_velocities(workdir, transfer_summary)
 
     print("\n" + "=" * 62)
     if _failures:
