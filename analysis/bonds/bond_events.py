@@ -99,7 +99,7 @@ from collections import deque
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, NamedTuple, Optional, Sequence, Tuple
 
 import numpy as np
 import freud
@@ -820,27 +820,36 @@ class BondTracker:
 # ==========================================================================
 
 
-def write_annotated_trajectory(
-    args: argparse.Namespace,
+class Annotation(NamedTuple):
+    """One frame's per-atom annotation. The arrays are reused between frames, so
+    consume them before advancing the generator."""
+
+    frame: int
+    timestep: int
+    coord: np.ndarray
+    event_type: np.ndarray
+    event_age: np.ndarray
+    partner_id: np.ndarray
+    species: np.ndarray
+
+
+def replay_annotations(
     topology: Topology,
     initial_bonds: Sequence[Tuple[int, int]],
     events: Sequence[dict],
-    out_path: Path,
-) -> List[dict]:
+    per_frame: Sequence[dict],
+) -> Iterator[Annotation]:
     """
-    Re-emit the trajectory with per-atom annotation columns OVITO reads natively.
+    Replay the confirmed bond set forward and yield per-atom annotations.
 
-    The bond set is *replayed* from the initial bonds plus the event list rather
-    than recomputed, so pass 2 needs no neighbour search and is guaranteed
-    consistent with the events in events.jsonl.
+    Deliberately does not touch the trajectory: pass 1 already recorded every
+    frame's index and timestep, and the bond set is fully determined by the
+    initial bonds plus the event list. So species populations cost nothing,
+    and re-reading the trajectory is needed only if the annotated dump is
+    actually being written.
 
-    Columns appended: Coordination EventType EventAge PartnerID Species.
-    These become user particle properties in OVITO, so a single frame-independent
-    expression such as `EventType != 0` selects events across the whole
-    trajectory — unlike silanol.py:507-519, which emits a per-frame OR-chain of
-    (ParticleIdentifier == N) that has to be re-pasted at every frame.
-
-    Returns per-frame species populations for the summary.
+    Replaying (rather than recomputing from distances) also guarantees the
+    annotations agree with events.jsonl by construction.
     """
     n = topology.n_atoms
     is_o = topology.elements == "O"
@@ -860,42 +869,96 @@ def write_annotated_trajectory(
     event_age = np.full(n, -1, dtype=np.int64)
     partner_id = np.full(n, -1, dtype=np.int64)
 
+    for row in per_frame:
+        event_type[:] = EV_NONE
+        event_age[event_age >= 0] += 1
+
+        for event in by_frame.get(row["frame"], []):
+            o_row, h_row = event["o_row"], event["h_row"]
+            if event["kind"] == "break":
+                coord[o_row] -= 1
+                coord[h_row] -= 1
+                if h_partner[h_row] == o_row:
+                    h_partner[h_row] = -1
+                event_type[o_row], event_type[h_row] = EV_O_BREAK, EV_H_BREAK
+            else:
+                coord[o_row] += 1
+                coord[h_row] += 1
+                h_partner[h_row] = o_row
+                event_type[o_row], event_type[h_row] = EV_O_FORM, EV_H_FORM
+            event_age[o_row] = event_age[h_row] = 0
+            partner_id[o_row] = topology.ids[h_row]
+            partner_id[h_row] = topology.ids[o_row]
+
+        yield Annotation(
+            frame=row["frame"],
+            timestep=row["timestep"],
+            coord=coord,
+            event_type=event_type,
+            event_age=event_age,
+            partner_id=partner_id,
+            species=_species_from_coordination(coord, h_partner, is_o),
+        )
+
+
+def species_populations(
+    topology: Topology,
+    initial_bonds: Sequence[Tuple[int, int]],
+    events: Sequence[dict],
+    per_frame: Sequence[dict],
+) -> List[dict]:
+    """Per-frame species counts. Cheap — no trajectory read, no neighbour search."""
+    return [_population_counts(a) for a in replay_annotations(
+        topology, initial_bonds, events, per_frame)]
+
+
+def write_annotated_trajectory(
+    args: argparse.Namespace,
+    topology: Topology,
+    initial_bonds: Sequence[Tuple[int, int]],
+    events: Sequence[dict],
+    per_frame: Sequence[dict],
+    out_path: Path,
+) -> List[dict]:
+    """
+    Re-emit the trajectory with per-atom annotation columns OVITO reads natively.
+
+    Columns appended: Coordination EventType EventAge PartnerID Species. These
+    become user particle properties in OVITO, so a single frame-independent
+    expression such as `EventType != 0` selects events across the whole
+    trajectory — unlike silanol.py:507-519, which emits a per-frame OR-chain of
+    (ParticleIdentifier == N) that has to be re-pasted at every frame.
+
+    This is the expensive half of the run: it re-parses the input trajectory and
+    writes one of comparable size. Everything else, species populations
+    included, comes from replay_annotations() without touching the trajectory.
+
+    Returns per-frame species populations for the summary.
+    """
     id_str = np.char.mod("%d", topology.ids)
     populations: List[dict] = []
 
+    frames = read_frames(
+        args.traj,
+        start=args.frames[0] if args.frames else 0,
+        stop=args.frames[1] if args.frames else None,
+        stride=args.stride,
+        type_map=_parse_type_map(args.type_map),
+    )
+    annotations = replay_annotations(topology, initial_bonds, events, per_frame)
+
     with open(out_path, "w") as out:
-        for frame, _ in read_frames(
-            args.traj,
-            start=args.frames[0] if args.frames else 0,
-            stop=args.frames[1] if args.frames else None,
-            stride=args.stride,
-            type_map=_parse_type_map(args.type_map),
-        ):
-            event_type[:] = EV_NONE
-            live = event_age >= 0
-            event_age[live] += 1
-
-            for event in by_frame.get(frame.index, []):
-                o_row, h_row = event["o_row"], event["h_row"]
-                if event["kind"] == "break":
-                    coord[o_row] -= 1
-                    coord[h_row] -= 1
-                    if h_partner[h_row] == o_row:
-                        h_partner[h_row] = -1
-                    event_type[o_row], event_type[h_row] = EV_O_BREAK, EV_H_BREAK
-                else:
-                    coord[o_row] += 1
-                    coord[h_row] += 1
-                    h_partner[h_row] = o_row
-                    event_type[o_row], event_type[h_row] = EV_O_FORM, EV_H_FORM
-                event_age[o_row] = event_age[h_row] = 0
-                partner_id[o_row] = topology.ids[h_row]
-                partner_id[h_row] = topology.ids[o_row]
-
-            species = _species_from_coordination(coord, h_partner, is_o)
-            populations.append(_population_counts(frame, species))
-            _write_frame(out, frame, topology, id_str, coord, event_type,
-                         event_age, partner_id, species)
+        for annotation, (frame, _) in zip(annotations, frames):
+            if annotation.frame != frame.index:
+                raise ValueError(
+                    f"Replay desynchronised from the trajectory at frame "
+                    f"{frame.index} (replay had {annotation.frame}) — the input "
+                    f"file changed between passes."
+                )
+            populations.append(_population_counts(annotation))
+            _write_frame(out, frame, topology, id_str, annotation.coord,
+                         annotation.event_type, annotation.event_age,
+                         annotation.partner_id, annotation.species)
 
     return populations
 
@@ -925,11 +988,11 @@ def _species_from_coordination(
     return species
 
 
-def _population_counts(frame: Frame, species: np.ndarray) -> dict:
-    counts = np.bincount(species, minlength=SP_OTHER + 1)
+def _population_counts(annotation: "Annotation") -> dict:
+    counts = np.bincount(annotation.species, minlength=SP_OTHER + 1)
     return {
-        "frame": frame.index,
-        "timestep": frame.timestep,
+        "frame": annotation.frame,
+        "timestep": annotation.timestep,
         "n_hydronium": int(counts[SP_HYDRONIUM]) ,
         "n_hydroxide": int(counts[SP_HYDROXIDE]),
         "n_free_h": int(counts[SP_FREE_H]),
@@ -1322,11 +1385,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     t1 = time.time()
     print(f"  {n_frames} frames, pass 1 in {t1 - t0:.2f}s")
 
-    populations: List[dict] = []
-    if not args.no_ovito_dump:
+    if args.no_ovito_dump:
+        # Species populations come from replaying the event list, not from the
+        # trajectory, so skipping the annotated dump costs only the dump itself.
+        populations = species_populations(
+            topology, tracker.initial_bonds, tracker.events, tracker.per_frame
+        )
+    else:
         out_path = output_dir / "bond_events.lammpstrj"
         populations = write_annotated_trajectory(
-            args, topology, tracker.initial_bonds, tracker.events, out_path
+            args, topology, tracker.initial_bonds, tracker.events,
+            tracker.per_frame, out_path,
         )
         print(f"  pass 2 in {time.time() - t1:.2f}s -> {out_path}")
 

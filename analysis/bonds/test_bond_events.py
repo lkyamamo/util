@@ -38,6 +38,10 @@ CASES
                  detection identical to case 2, since the criterion is purely
                  geometric; only v_radial/ke_h/ke_h_over_kT are absent, and they
                  must be absent rather than zero.
+7. no_ovito_dump Case 2 run with and without --no-ovito-dump. Ground truth:
+                 every output except bond_events.lammpstrj is byte-identical,
+                 species columns included -- skipping the expensive pass must
+                 cost only the trajectory file.
 """
 
 from __future__ import annotations
@@ -66,13 +70,22 @@ TRANSFER_WINDOW = 20
 _failures: List[str] = []
 
 
+def _brief(value, limit: int = 90) -> str:
+    """Shorten long values so a whole-file comparison does not flood the output."""
+    text = repr(value)
+    return text if len(text) <= limit else f"{text[:limit]}... ({len(text)} chars)"
+
+
 def chk(label: str, got, expected, tol: float = 1e-3) -> None:
     if isinstance(expected, float) or isinstance(got, float):
         ok = got is not None and abs(float(got) - float(expected)) <= tol
     else:
         ok = got == expected
     status = "PASS" if ok else "FAIL"
-    print(f"  [{status}] {label}: got {got!r}, expected {expected!r}")
+    if ok and isinstance(expected, str) and len(expected) > 90:
+        print(f"  [{status}] {label}")          # equal and long: nothing to show
+    else:
+        print(f"  [{status}] {label}: got {_brief(got)}, expected {_brief(expected)}")
     if not ok:
         _failures.append(label)
 
@@ -206,9 +219,14 @@ def run_case(
     positions: np.ndarray,
     extra_args: Sequence[str] = (),
     with_velocity_columns: bool = True,
+    traj_name: Optional[str] = None,
 ) -> Tuple[dict, List[dict], Path]:
-    """Write the trajectory, run bond_events.py on it, return (summary, events, outdir)."""
-    traj = workdir / f"{name}.lammpstrj"
+    """Write the trajectory, run bond_events.py on it, return (summary, events, outdir).
+
+    traj_name lets two cases share one input file, so outputs that quote the
+    trajectory path stay comparable between them.
+    """
+    traj = workdir / f"{traj_name or name}.lammpstrj"
     outdir = workdir / f"{name}_output"
     write_dump(traj, elements, positions, with_velocity_columns=with_velocity_columns)
 
@@ -406,6 +424,33 @@ def case_no_velocities(workdir: Path, reference: dict) -> None:
          "Coordination", "EventType", "EventAge", "PartnerID", "Species"])
 
 
+def case_no_ovito_dump(workdir: Path) -> None:
+    print("\n7. --no-ovito-dump — must cost only the trajectory file, nothing else")
+    # Species populations are replayed from the event list rather than measured
+    # from the trajectory, so skipping the expensive pass must not silently
+    # drop the species columns or the charge-imbalance sanity check.
+    elements, pos = transfer_trajectory()
+    # Same input file for both, so the trajectory path quoted in summary.txt
+    # matches and the comparison is about content, not filenames.
+    run_case(workdir, "with_dump", elements, pos, traj_name="shared")
+    run_case(workdir, "sans_dump", elements, pos, traj_name="shared",
+             extra_args=["--no-ovito-dump"])
+
+    full = workdir / "with_dump_output"
+    lite = workdir / "sans_dump_output"
+
+    for name in ("events.jsonl", "summary.json", "summary.txt", "events_per_frame.csv"):
+        chk(f"{name} identical", (full / name).read_text(), (lite / name).read_text())
+
+    chk("trajectory written only by the full run",
+        ((full / "bond_events.lammpstrj").exists(), (lite / "bond_events.lammpstrj").exists()),
+        (True, False))
+
+    # The species columns must carry real numbers in both, not blanks.
+    row = (lite / "events_per_frame.csv").read_text().splitlines()[20].split(",")
+    chk("species columns populated without the dump", all(c != "" for c in row), True)
+
+
 def main() -> int:
     if not SCRIPT.exists():
         raise SystemExit(f"bond_events.py not found next to this test: {SCRIPT}")
@@ -420,6 +465,7 @@ def main() -> int:
         case_pbc(workdir, transfer_summary)
         case_eof(workdir)
         case_no_velocities(workdir, transfer_summary)
+        case_no_ovito_dump(workdir)
 
     print("\n" + "=" * 62)
     if _failures:
