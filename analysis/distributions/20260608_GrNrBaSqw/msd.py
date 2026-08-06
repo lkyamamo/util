@@ -11,8 +11,37 @@ QUICK START
    columns required). Defaults to dynamics.lammpstrj (env var DYNAMICS_TRAJ)
    — the same higher-frequency trajectory vdos.py reads; it already has
    wrapped x y z, which is all this needs.
-2. Set TIME_UNIT to the time between consecutive dumped frames, in fs.
+2. Set the required environment variables listed under CONFIGURATION below.
 3. Run:  python msd.py
+
+CONFIGURATION
+-------------
+Each setting comes from exactly one environment variable — no fallback names,
+and no silent defaults for anything that changes the result.
+
+REQUIRED (unset or empty is a hard error; the script will not guess):
+  DYNAMICS_DT        fs between dumped frames — the ONLY variable msd.py and
+                     vdos.py share, since it describes dynamics.lammpstrj
+                     rather than either analysis
+  MSD_CORR_LENGTH    fs; max time lag
+  MSD_CORR_INTERVAL  fs; spacing between reference frames
+  MSD_FIT_FRACTION   tail fraction of the window used for the D fit
+
+Optional (the default is the identity choice — read the whole trajectory —
+so leaving it unset cannot distort a result):
+  MSD_N_FRAMES       max frames to read; 0 = all      (default 0)
+  MSD_STRIDE         read every Nth frame             (default 1)
+
+The MSD_ prefix is the point: msd.py and vdos.py read the same
+dynamics.lammpstrj but want different settings — MSD needs a long lag to reach
+the diffusive regime, VDOS a short one for frequency resolution — so a name
+that reached both would make one of them silently wrong. DYNAMICS_DT is the
+sole shared name: dt is a fact about the trajectory, so one value must reach
+both scripts.
+
+CORR_LENGTH previously defaulted to 75% of the trajectory when unset. It no
+longer does: that default silently set both the lag range and the diffusion
+fit window, so D depended on a number nobody chose.
 
 METHOD
 ------
@@ -78,28 +107,61 @@ import matplotlib.pyplot as plt
 # Input trajectory file — same one vdos.py reads (already has wrapped x y z).
 DUMP_FILE = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
-# Trajectory sampling. MSD_-prefixed so they are independent of vdos.py's
-# VDOS_N_FRAMES/VDOS_STRIDE and dsf.py's N_FRAMES/STRIDE, even though all
-# three read the same dump.
-N_FRAMES = int(os.environ.get("MSD_N_FRAMES", "0"))    # max frames to read; 0 = all
-STRIDE   = int(os.environ.get("MSD_STRIDE", "1"))      # read every Nth frame
+# Every setting below is read from exactly one environment variable, all
+# MSD_-prefixed except DYNAMICS_DT — no fallback names. msd.py and vdos.py read
+# the same dynamics.lammpstrj but want different settings (MSD needs a long lag
+# to reach the diffusive regime, VDOS a short one for frequency resolution), so
+# a name that reached both would make one of them silently wrong.
+# Required settings have no default: an unset or empty value is a hard error,
+# never a silently substituted number. Missing ones are collected so a single
+# run reports every one of them at once instead of failing one at a time.
+_MISSING = []
 
-# Time between consecutive dumped frames, in fs — the ONE parameter msd.py
-# and vdos.py share (it's a property of the trajectory, not of either
-# analysis), so it keeps the unprefixed TIME_UNIT name both read, with the
-# same fallback to DT (dsf.py's name for the same quantity, same dump).
-TIME_UNIT = float(os.environ.get("TIME_UNIT", os.environ.get("DT", "1.0")))
+def _require(name, description):
+    """Value of `name`, or None after recording it as missing."""
+    value = os.environ.get(name, "")
+    if value == "":
+        _MISSING.append(f"  {name:<22} {description}")
+        return None
+    return value
 
-# Max time lag / reference spacing, in fs — same units and defaulting as
-# vdos.py's CORR_LENGTH/CORR_INTERVAL (75%/10% of trajectory duration if
-# unset), but read from MSD_-prefixed env vars so MSD's correlation window is
-# set independently of VDOS's.
-_CORR_LENGTH_ENV = os.environ.get("MSD_CORR_LENGTH")
-_CORR_INTERVAL_ENV = os.environ.get("MSD_CORR_INTERVAL")
+def _check_required(script):
+    if _MISSING:
+        raise SystemExit(
+            f"{script}: required environment variable(s) not set:\n"
+            + "\n".join(_MISSING)
+            + "\n\nThese determine the numbers this script produces, so it will not "
+              "guess them.\nSet them in submit_pipeline.conf (driven by "
+              "submit_pipeline.sh / submit_pipeline_local.sh)\nor in the Analysis "
+              "parameters block of distribution_run.sh / distribution_submit.slurm."
+        )
 
+def _env(name, default):
+    """Optional setting: value of `name` if non-empty, else `default`. Used only
+    where the default cannot silently distort the result — reading every frame,
+    or an algorithm choice documented in this file's header."""
+    value = os.environ.get(name, "")
+    return value if value != "" else default
+
+
+# Trajectory sampling. Optional: the defaults are the identity choice (read
+# every frame of the trajectory), so leaving them unset cannot distort a result.
+N_FRAMES = int(_env("MSD_N_FRAMES", "0"))   # max frames to read; 0 = all
+STRIDE   = int(_env("MSD_STRIDE", "1"))     # read every Nth frame
+
+# --- Required. DYNAMICS_DT is the one variable msd.py and vdos.py share: it is
+# a property of dynamics.lammpstrj itself, not of either analysis, so both
+# scripts must read the same value. The rest are MSD's alone.
+_DYNAMICS_DT_ENV   = _require("DYNAMICS_DT", "fs between dumped frames")
+_CORR_LENGTH_ENV   = _require("MSD_CORR_LENGTH", "fs; max time lag")
+_CORR_INTERVAL_ENV = _require("MSD_CORR_INTERVAL", "fs; spacing between reference frames")
+_FIT_FRACTION_ENV  = _require("MSD_FIT_FRACTION", "tail fraction of the window used for the D fit")
+_check_required("msd.py")
+
+TIME_UNIT = float(_DYNAMICS_DT_ENV)
 # Fraction of the tail of the correlation window used for the diffusion-
 # coefficient linear fit (excludes the early ballistic/non-diffusive regime).
-FIT_FRACTION = float(os.environ.get("MSD_FIT_FRACTION", "0.5"))
+FIT_FRACTION = float(_FIT_FRACTION_ENV)
 
 # Output files (set to None to skip writing)
 OUTPUT_CSV  = "msd.csv"
@@ -320,14 +382,9 @@ if __name__ == '__main__':
     unique_els = sorted(set(elements.tolist()))
     print(f"  Elements: {unique_els}")
 
-    # CORR_LENGTH/CORR_INTERVAL defaults depend on the trajectory's total
-    # duration, so they're resolved here rather than in the config block —
-    # same defaulting logic as vdos.py/msd.cpp's no-args default.
-    total_duration_fs = n_frames_read * TIME_UNIT
-    CORR_LENGTH = float(_CORR_LENGTH_ENV) if _CORR_LENGTH_ENV is not None else 0.75 * total_duration_fs
-    CORR_INTERVAL = float(_CORR_INTERVAL_ENV) if _CORR_INTERVAL_ENV is not None else 0.10 * CORR_LENGTH
-    print(f"  CORR_LENGTH={CORR_LENGTH:.1f} fs, CORR_INTERVAL={CORR_INTERVAL:.1f} fs"
-          f"{' (defaulted)' if _CORR_LENGTH_ENV is None else ''}")
+    CORR_LENGTH = float(_CORR_LENGTH_ENV)
+    CORR_INTERVAL = float(_CORR_INTERVAL_ENV)
+    print(f"  CORR_LENGTH={CORR_LENGTH:.1f} fs, CORR_INTERVAL={CORR_INTERVAL:.1f} fs")
 
     corr_length_frames = min(round(CORR_LENGTH / TIME_UNIT), n_frames_read)
     corr_interval_frames = max(1, round(CORR_INTERVAL / TIME_UNIT))

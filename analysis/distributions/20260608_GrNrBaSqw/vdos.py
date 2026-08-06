@@ -16,8 +16,45 @@ QUICK START
    resolving vibrational frequencies needs much finer time sampling than
    structural analysis does; see OH-therm.input/b-SiO-therm.input's second
    dump block.
-2. Set TIME_UNIT to the time between consecutive dumped frames, in fs.
+2. Set the required environment variables listed under CONFIGURATION below.
 3. Run:  python vdos.py
+
+CONFIGURATION
+-------------
+Each setting comes from exactly one environment variable — no fallback names,
+and no silent defaults for anything that changes the result.
+
+REQUIRED (unset or empty is a hard error; the script will not guess):
+  DYNAMICS_DT            fs between dumped frames — the ONLY variable vdos.py
+                         and msd.py share, since it describes
+                         dynamics.lammpstrj rather than either analysis
+  VDOS_CORR_LENGTH       fs; VACF max lag / Welch-segment length. Sets the
+                         frequency resolution: dnu ~ 1/CORR_LENGTH
+  VDOS_CORR_INTERVAL     fs; spacing between VACF reference frames. Sets the
+                         noise level only
+  VDOS_MAX_FREQUENCY_EV  eV; upper limit of the output DOS grid
+
+Optional — sampling defaults are the identity choice (read the whole
+trajectory), the rest are documented algorithm conventions, not physics:
+  VDOS_N_FRAMES      max frames to read; 0 = all   (default 0)
+  VDOS_STRIDE        read every Nth frame          (default 1)
+  VDOS_NUM_GRIDS     frequency grid points         (default 5000)
+  VDOS_METHOD        see METHOD below              (default vacf_cosine_transform)
+  VDOS_WINDOW        see METHOD below              (default cosine_lag / hann)
+  VDOS_NORMALIZATION see NORMALIZATION below       (default phonon)
+  VDOS_THREADS       FFT workers, 0 = all cores    (default 0)
+  VDOS_PLOT_XUNIT    meV | THz | cm-1 | eV         (default meV / THz)
+
+The VDOS_ prefix is the point: vdos.py and msd.py read the same
+dynamics.lammpstrj but want different settings — VDOS needs a short lag for
+frequency resolution, MSD a long one to reach the diffusive regime — so a name
+that reached both would make one of them silently wrong. DYNAMICS_DT is the
+sole shared name: dt is a fact about the trajectory, so one value must reach
+both scripts.
+
+CORR_LENGTH previously defaulted to 75% of the trajectory when unset, and
+MAX_FREQUENCY_EV to 0.1 eV (806 cm^-1, which silently truncates most spectra).
+Neither defaults any more.
 
 METHOD
 ------
@@ -104,48 +141,81 @@ import matplotlib.pyplot as plt
 # Input trajectory file
 DUMP_FILE = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
-# Trajectory sampling (frame-reading only — msd.cpp has no equivalent, it
-# always reads every frame of its input file). VDOS_-prefixed so they are
-# independent of msd.py's MSD_N_FRAMES/MSD_STRIDE and dsf.py's N_FRAMES/STRIDE,
-# even though all three read the same dump.
-N_FRAMES = int(os.environ.get("VDOS_N_FRAMES", "0"))    # max frames to read; 0 = all
-STRIDE   = int(os.environ.get("VDOS_STRIDE", "1"))      # read every Nth frame
+# Every setting below is read from exactly one environment variable, all
+# VDOS_-prefixed except DYNAMICS_DT — no fallback names. vdos.py and msd.py
+# read the same dynamics.lammpstrj but want different settings (VDOS needs a
+# short lag for frequency resolution, MSD a long one to reach the diffusive
+# regime), so a name that reached both would make one of them silently wrong.
+# Required settings have no default: an unset or empty value is a hard error,
+# never a silently substituted number. Missing ones are collected so a single
+# run reports every one of them at once instead of failing one at a time.
+_MISSING = []
 
-# Time between consecutive dumped frames, in fs — same name/units as
-# msd.cpp's time_unit_fs argument. This is the ONE parameter vdos.py and
-# msd.py share (it's a property of the trajectory, not of either analysis);
-# every other setting is prefixed per script. Falls back to DT (dsf.py's name
-# for the same quantity, same dump) so the rest of this pipeline's
-# --dsf-dt-style config still reaches this script unchanged.
-TIME_UNIT = float(os.environ.get("TIME_UNIT", os.environ.get("DT", "1.0")))
+def _require(name, description):
+    """Value of `name`, or None after recording it as missing."""
+    value = os.environ.get(name, "")
+    if value == "":
+        _MISSING.append(f"  {name:<22} {description}")
+        return None
+    return value
+
+def _check_required(script):
+    if _MISSING:
+        raise SystemExit(
+            f"{script}: required environment variable(s) not set:\n"
+            + "\n".join(_MISSING)
+            + "\n\nThese determine the numbers this script produces, so it will not "
+              "guess them.\nSet them in submit_pipeline.conf (driven by "
+              "submit_pipeline.sh / submit_pipeline_local.sh)\nor in the Analysis "
+              "parameters block of distribution_run.sh / distribution_submit.slurm."
+        )
+
+def _env(name, default):
+    """Optional setting: value of `name` if non-empty, else `default`. Used only
+    where the default cannot silently distort the result — reading every frame,
+    or an algorithm choice documented in this file's header."""
+    value = os.environ.get(name, "")
+    return value if value != "" else default
+
+
+# Trajectory sampling (frame-reading only — msd.cpp has no equivalent, it
+# always reads every frame of its input file).
+N_FRAMES = int(_env("VDOS_N_FRAMES", "0"))   # max frames to read; 0 = all
+STRIDE   = int(_env("VDOS_STRIDE", "1"))    # read every Nth frame
+
+# --- Required. DYNAMICS_DT is the one variable vdos.py and msd.py share: it is
+# a property of dynamics.lammpstrj itself, not of either analysis, so both
+# scripts must read the same value. The rest are VDOS's alone.
+_DYNAMICS_DT_ENV = _require("DYNAMICS_DT", "fs between dumped frames")
 
 # Which algorithm to run — see METHOD in the module docstring.
-METHOD = os.environ.get("VDOS_METHOD", "vacf_cosine_transform")
+METHOD = _env("VDOS_METHOD", "vacf_cosine_transform")
 if METHOD not in ("vacf_cosine_transform", "fft_periodogram"):
     raise ValueError(f"Unknown VDOS_METHOD={METHOD!r}; use 'vacf_cosine_transform' or 'fft_periodogram'.")
 
-# Maximum VACF time lag / Welch-segment length, in fs — same units as
-# msd.cpp's corr_length_fs argument (its "correlation length"), read from
-# VDOS_CORR_LENGTH so it is independent of msd.py's own MSD_CORR_LENGTH. If
-# unset, defaults (after the trajectory is read) to 75% of the total
-# trajectory duration, matching msd.cpp's own no-args default.
-_CORR_LENGTH_ENV = os.environ.get("VDOS_CORR_LENGTH")
+# Maximum VACF time lag / Welch-segment length, in fs — same name/units as
+# msd.cpp's corr_length_fs argument (its "correlation length"). Sets the
+# frequency resolution of the output: dnu ~ 1/CORR_LENGTH.
+_CORR_LENGTH_ENV = _require("VDOS_CORR_LENGTH", "fs; VACF max lag / Welch-segment length")
 
 # Spacing between VACF reference frames / Welch-segment starts, in fs — same
-# units as msd.cpp's corr_interval_fs argument, read from VDOS_CORR_INTERVAL
-# (independent of msd.py's MSD_CORR_INTERVAL). If unset, defaults to 10% of
-# CORR_LENGTH, matching msd.cpp's own no-args default.
-_CORR_INTERVAL_ENV = os.environ.get("VDOS_CORR_INTERVAL")
+# name/units as msd.cpp's corr_interval_fs argument. Sets how many origins are
+# averaged, i.e. the noise level, and nothing else.
+_CORR_INTERVAL_ENV = _require("VDOS_CORR_INTERVAL", "fs; spacing between VACF reference frames")
 
-# Upper frequency limit of the output DOS grid, in eV — same units as
+# Upper frequency limit of the output DOS grid, in eV — same name/units as
 # msd.cpp's max_frequency_ev argument. Only used by METHOD='vacf_cosine_transform';
 # fft_periodogram's frequency range is fixed by CORR_LENGTH/TIME_UNIT instead.
-MAX_FREQUENCY_EV = float(os.environ.get("VDOS_MAX_FREQUENCY_EV", "0.1"))
+_MAX_FREQUENCY_EV_ENV = _require("VDOS_MAX_FREQUENCY_EV", "eV; upper limit of the output DOS grid")
+_check_required("vdos.py")
+
+TIME_UNIT = float(_DYNAMICS_DT_ENV)
+MAX_FREQUENCY_EV = float(_MAX_FREQUENCY_EV_ENV)
 
 # Number of frequency grid points. Same value as msd.cpp's hardcoded
 # num_grids=5000 (not a msd.cpp CLI argument, but its only value in practice).
 # Only used by METHOD='vacf_cosine_transform'.
-NUM_GRIDS = int(os.environ.get("VDOS_NUM_GRIDS", "5000"))
+NUM_GRIDS = int(_env("VDOS_NUM_GRIDS", "5000"))
 
 # Window applied before the frequency transform. Valid choices depend on
 # METHOD (the two methods window physically different things — a VACF vs. a
@@ -153,7 +223,7 @@ NUM_GRIDS = int(os.environ.get("VDOS_NUM_GRIDS", "5000"))
 # msd.cpp when METHOD='vacf_cosine_transform', or this script's own Hann
 # choice under 'fft_periodogram'.
 _DEFAULT_WINDOW = {'vacf_cosine_transform': 'cosine_lag', 'fft_periodogram': 'hann'}[METHOD]
-WINDOW = os.environ.get("VDOS_WINDOW", _DEFAULT_WINDOW)
+WINDOW = _env("VDOS_WINDOW", _DEFAULT_WINDOW)
 _VALID_WINDOWS = {'vacf_cosine_transform': ('cosine_lag', 'none'), 'fft_periodogram': ('hann', 'none')}
 if WINDOW not in _VALID_WINDOWS[METHOD]:
     raise ValueError(
@@ -161,18 +231,18 @@ if WINDOW not in _VALID_WINDOWS[METHOD]:
     )
 
 # How partial/total curves are combined and scaled — see module docstring.
-NORMALIZATION = os.environ.get("VDOS_NORMALIZATION", "phonon")
+NORMALIZATION = _env("VDOS_NORMALIZATION", "phonon")
 if NORMALIZATION not in ("phonon", "unit_area"):
     raise ValueError(f"Unknown VDOS_NORMALIZATION={NORMALIZATION!r}; use 'phonon' or 'unit_area'.")
 
 # FFT threading — only used by METHOD='fft_periodogram' and only if scipy is
 # installed; 0 = all available cores.
-N_THREADS = int(os.environ.get("VDOS_THREADS", "0"))
+N_THREADS = int(_env("VDOS_THREADS", "0"))
 
 # x-axis unit for vdos.png — 'meV', 'THz', 'cm-1', or 'eV'. The CSV always
 # contains all four regardless of this setting. Defaults to meV (msd.cpp's
 # own dos.dat convention) under vacf_cosine_transform, THz otherwise.
-PLOT_XUNIT = os.environ.get("VDOS_PLOT_XUNIT", "meV" if METHOD == "vacf_cosine_transform" else "THz")
+PLOT_XUNIT = _env("VDOS_PLOT_XUNIT", "meV" if METHOD == "vacf_cosine_transform" else "THz")
 
 # Output files (set to None to skip writing)
 OUTPUT_CSV  = "vdos.csv"
@@ -516,16 +586,9 @@ if __name__ == '__main__':
     unique_els = sorted(set(elements.tolist()))
     print(f"  Elements: {unique_els}")
 
-    # CORR_LENGTH/CORR_INTERVAL defaults depend on the trajectory's total
-    # duration, so they're resolved here rather than in the config block —
-    # same defaulting logic as msd.cpp's main() when run with only a
-    # trajectory argument (corr_length = 75% of total time, corr_interval =
-    # 10% of corr_length).
-    total_duration_fs = n_frames_read * TIME_UNIT
-    CORR_LENGTH = float(_CORR_LENGTH_ENV) if _CORR_LENGTH_ENV is not None else 0.75 * total_duration_fs
-    CORR_INTERVAL = float(_CORR_INTERVAL_ENV) if _CORR_INTERVAL_ENV is not None else 0.10 * CORR_LENGTH
-    print(f"  CORR_LENGTH={CORR_LENGTH:.1f} fs, CORR_INTERVAL={CORR_INTERVAL:.1f} fs"
-          f"{' (defaulted)' if _CORR_LENGTH_ENV is None else ''}")
+    CORR_LENGTH = float(_CORR_LENGTH_ENV)
+    CORR_INTERVAL = float(_CORR_INTERVAL_ENV)
+    print(f"  CORR_LENGTH={CORR_LENGTH:.1f} fs, CORR_INTERVAL={CORR_INTERVAL:.1f} fs")
 
     corr_length_frames = min(round(CORR_LENGTH / TIME_UNIT), n_frames_read)
     corr_interval_frames = max(1, round(CORR_INTERVAL / TIME_UNIT))

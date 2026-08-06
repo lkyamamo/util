@@ -29,6 +29,65 @@ export VDOS_THREADS=$N_THREADS
 echo "Threads: $OMP_NUM_THREADS"
 
 ############################
+# Analysis parameters
+############################
+
+# Each value below is passed to the .py scripts as an environment variable.
+# Edit the text after ":-" to set one. Keys marked REQUIRED have no default —
+# vdos.py/msd.py abort with a list of what is missing rather than substituting
+# a number, since these determine the results. The rest fall back to the
+# script's own default (see the CONFIGURATION block at the top of each .py).
+# The "${VAR:-...}" form means an already-exported value wins, so the pipeline
+# submitters (submit_pipeline.sh / submit_pipeline_local.sh) can drive this
+# script without their settings being clobbered by the edits here.
+#
+# vdos.py and msd.py read the same dynamics.lammpstrj but want different
+# settings — VDOS needs a short CORR_LENGTH for frequency resolution, MSD a
+# long one to reach the diffusive regime — so each has its own prefixed
+# variables. DYNAMICS_DT is the one and only value they share: the dt of the
+# trajectory itself, which describes neither analysis in particular.
+
+DYNAMICS_DT="${DYNAMICS_DT:-}"          # REQUIRED by vdos.py and msd.py; fs between frames
+
+# dsf.py
+DT="${DT:-}"                            # fs between dumped frames
+N_FRAMES="${N_FRAMES:-}"                # max frames to read; 0 = all
+STRIDE="${STRIDE:-}"                    # read every Nth frame
+
+# vdos.py
+VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
+VDOS_STRIDE="${VDOS_STRIDE:-}"
+VDOS_CORR_LENGTH="${VDOS_CORR_LENGTH:-}"          # REQUIRED. fs; VACF max lag. Sets the
+                                                  # frequency resolution: dnu ~ 1/CORR_LENGTH
+VDOS_CORR_INTERVAL="${VDOS_CORR_INTERVAL:-}"      # REQUIRED. fs; spacing between VACF origins
+VDOS_MAX_FREQUENCY_EV="${VDOS_MAX_FREQUENCY_EV:-}"  # REQUIRED. eV; DOS grid upper limit
+VDOS_NUM_GRIDS="${VDOS_NUM_GRIDS:-}"
+VDOS_METHOD="${VDOS_METHOD:-}"                    # vacf_cosine_transform | fft_periodogram
+VDOS_WINDOW="${VDOS_WINDOW:-}"
+VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"      # phonon | unit_area
+
+# msd.py
+MSD_N_FRAMES="${MSD_N_FRAMES:-}"
+MSD_STRIDE="${MSD_STRIDE:-}"
+MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"            # REQUIRED. fs; max time lag. Also sets the
+                                                  # diffusion fit window, so D depends on it
+MSD_CORR_INTERVAL="${MSD_CORR_INTERVAL:-}"        # REQUIRED. fs; spacing between reference frames
+MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"          # REQUIRED. tail fraction used for the D fit
+
+# Export only the ones actually set, so an empty value leaves the .py default
+# in effect rather than reaching Python as an empty string.
+for _var in DYNAMICS_DT DT N_FRAMES STRIDE \
+            VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
+            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION \
+            MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION; do
+    if [ -n "${!_var}" ]; then
+        export "$_var"
+        echo "  $_var=${!_var}"
+    fi
+done
+unset _var
+
+############################
 # Load environment
 ############################
 

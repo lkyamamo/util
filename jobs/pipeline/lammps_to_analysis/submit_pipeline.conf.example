@@ -63,19 +63,25 @@ DSF_Q_MAX=""
 DSF_N_Q_BINS=""
 # DYNAMICS_DT is the only parameter vdos.py and msd.py share (the dt of
 # dynamics.lammpstrj, a property of the trajectory rather than of either
-# analysis); everything else below is per script and set independently.
-DYNAMICS_DT=""
+# analysis); everything else below is per script and set independently —
+# VDOS needs a short correlation length for frequency resolution, MSD a long
+# one to reach the diffusive regime.
+#
+# Keys marked REQUIRED have no default: leaving one empty aborts the run up
+# front (before the LAMMPS stage) rather than silently substituting a number.
+# The values below are examples for a 2 fs / 50 ps water trajectory.
+DYNAMICS_DT="2.0"                    # REQUIRED when RUN_VDOS=1 or RUN_MSD=1
 VDOS_N_FRAMES=""
 VDOS_STRIDE=""
-VDOS_CORR_LENGTH=""
-VDOS_CORR_INTERVAL=""
-VDOS_MAX_FREQUENCY_EV=""
+VDOS_CORR_LENGTH="2000"              # REQUIRED when RUN_VDOS=1 — sets frequency resolution (dnu ~ 1/L)
+VDOS_CORR_INTERVAL="100"             # REQUIRED when RUN_VDOS=1 — sets noise level only
+VDOS_MAX_FREQUENCY_EV="0.5"          # REQUIRED when RUN_VDOS=1 — 0.5 eV = 4033 cm^-1
 VDOS_NUM_GRIDS=""
 VDOS_METHOD=""
 VDOS_WINDOW=""
 VDOS_NORMALIZATION=""
 MSD_N_FRAMES=""
 MSD_STRIDE=""
-MSD_CORR_LENGTH=""
-MSD_CORR_INTERVAL=""
-MSD_FIT_FRACTION=""
+MSD_CORR_LENGTH="5000"               # REQUIRED when RUN_MSD=1 — max time lag
+MSD_CORR_INTERVAL="500"              # REQUIRED when RUN_MSD=1 — spacing between origins
+MSD_FIT_FRACTION="0.4"               # REQUIRED when RUN_MSD=1 — tail fraction for the D fit

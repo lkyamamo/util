@@ -72,19 +72,16 @@ Optional:
     --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
 
-    vdos.py and msd.py share exactly one parameter — the time between dumped
-    frames of dynamics.lammpstrj, a property of the trajectory rather than of
-    either analysis. Every other setting below is per script, so the two can
-    be sampled and windowed completely independently:
-    --dynamics-dt FLOAT             vdos.py/msd.py TIME_UNIT (fs between dumped
-                                    frames of dynamics.lammpstrj), e.g. 1.0 — falls
-                                    back to --dsf-dt/DT if omitted, but set this
-                                    explicitly if running vdos.py/msd.py without
-                                    dsf.py or with a different DT
+    --dynamics-dt FLOAT             dt of dynamics.lammpstrj in fs, e.g. 2.0 — the
+                                    ONLY value vdos.py and msd.py share, since it
+                                    describes the trajectory rather than either
+                                    analysis. Every other flag below is per script.
 
-    --vdos-n-frames INT             vdos.py N_FRAMES (max frames to read; 0 = all),
-                                    e.g. 5000
-    --vdos-stride INT                vdos.py STRIDE (read every Nth frame), e.g. 1
+    vdos.py — every flag below is independent of the msd.py flags that follow,
+    even where they name the same quantity (VDOS wants a short correlation
+    length for frequency resolution, MSD a long one for the diffusive regime):
+    --vdos-n-frames INT             vdos.py N_FRAMES (max frames to read; 0 = all)
+    --vdos-stride INT               vdos.py STRIDE (read every Nth frame)
     --vdos-corr-length FLOAT        vdos.py CORR_LENGTH (fs; VACF max lag /
                                     Welch-segment length), e.g. 5000
     --vdos-corr-interval FLOAT      vdos.py CORR_INTERVAL (fs; spacing between
@@ -97,10 +94,15 @@ Optional:
                                     vacf_cosine_transform, 'hann'/'none' under fft_periodogram
     --vdos-normalization STR         vdos.py NORMALIZATION: 'phonon' (default) or 'unit_area'
 
-    --msd-n-frames INT               msd.py N_FRAMES (max frames to read; 0 = all),
-                                    e.g. 5000
-    --msd-stride INT                 msd.py STRIDE (read every Nth frame), e.g. 1
-    --msd-corr-length FLOAT          msd.py CORR_LENGTH (fs; max MSD time lag), e.g. 5000
+    msd.py — same trajectory as vdos.py, but set independently: MSD wants a long
+    correlation length to reach the diffusive regime, VDOS a short one for
+    frequency resolution.
+    --msd-n-frames INT               msd.py N_FRAMES (max frames to read; 0 = all)
+    --msd-stride INT                 msd.py STRIDE (read every Nth frame)
+    --msd-corr-length FLOAT          msd.py CORR_LENGTH (fs; max time lag), e.g. 5000.
+                                    Defaults to 75% of the trajectory if omitted —
+                                    which also sets the diffusion fit window, so D
+                                    depends on it
     --msd-corr-interval FLOAT        msd.py CORR_INTERVAL (fs; spacing between
                                     reference frames), e.g. 500
     --msd-fit-fraction FLOAT         msd.py FIT_FRACTION: fraction of the tail of the
@@ -196,20 +198,35 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Copy $SCRIPT_DIR/submit_pipeline.conf.example to $CONFIG_FILE and edit it for your setup." >&2
   exit 1
 fi
+# Pre-declare the per-script analysis keys as empty so that a conf predating
+# any of them still works under `set -u` (an unset key would otherwise abort
+# with "unbound variable"). The conf overrides whichever of these it sets.
+DYNAMICS_DT="${DYNAMICS_DT:-}"
+VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
+VDOS_STRIDE="${VDOS_STRIDE:-}"
+VDOS_CORR_LENGTH="${VDOS_CORR_LENGTH:-}"
+VDOS_CORR_INTERVAL="${VDOS_CORR_INTERVAL:-}"
+VDOS_MAX_FREQUENCY_EV="${VDOS_MAX_FREQUENCY_EV:-}"
+VDOS_NUM_GRIDS="${VDOS_NUM_GRIDS:-}"
+VDOS_METHOD="${VDOS_METHOD:-}"
+VDOS_WINDOW="${VDOS_WINDOW:-}"
+VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"
+MSD_N_FRAMES="${MSD_N_FRAMES:-}"
+MSD_STRIDE="${MSD_STRIDE:-}"
+MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"
+MSD_CORR_INTERVAL="${MSD_CORR_INTERVAL:-}"
+MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"
+
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
 
-# vdos.py/msd.py config vars introduced when the two scripts were split apart
-# (they now share only the trajectory's dt). submit_pipeline.conf is gitignored,
-# so an existing one won't have them yet — default them to empty rather than
-# tripping `set -u` further down. VDOS_DT, which used to feed both scripts, is
-# gone; flag it loudly instead of silently ignoring a value someone set.
-: "${DYNAMICS_DT:=}" "${VDOS_N_FRAMES:=}" "${VDOS_STRIDE:=}" \
-  "${MSD_N_FRAMES:=}" "${MSD_STRIDE:=}" "${MSD_CORR_LENGTH:=}" "${MSD_CORR_INTERVAL:=}"
+# VDOS_DT used to carry the dt for both scripts; it is now DYNAMICS_DT. Because
+# submit_pipeline.conf is gitignored it does not travel with a pull, so a conf
+# still carrying VDOS_DT would otherwise be silently ignored.
 if [[ -n "${VDOS_DT:-}" ]]; then
-  echo "Error: VDOS_DT in $CONFIG_FILE is no longer used — it has been renamed to" >&2
-  echo "DYNAMICS_DT (flag --dynamics-dt), the one parameter vdos.py and msd.py still" >&2
-  echo "share. Rename it there; see submit_pipeline.conf.example." >&2
+  echo "Error: VDOS_DT is no longer used — it has been renamed to DYNAMICS_DT" >&2
+  echo "(flag --dynamics-dt), the one parameter vdos.py and msd.py still share." >&2
+  echo "Rename it in $CONFIG_FILE; see submit_pipeline.conf.example." >&2
   exit 1
 fi
 
@@ -312,6 +329,35 @@ check_zero_or_one "$RUN_BAD" --run-bad
 check_zero_or_one "$RUN_VDOS" --run-vdos
 check_zero_or_one "$RUN_MSD" --run-msd
 
+# vdos.py and msd.py refuse to guess the parameters that determine their
+# numbers. Catch a missing one here, before anything is submitted or run,
+# rather than after the (long) LAMMPS stage has already completed.
+check_required_analysis_params() {
+  local missing=()
+  if [[ "$RUN_VDOS" == "1" ]]; then
+    [[ -n "$VDOS_CORR_LENGTH" ]]      || missing+=("  --vdos-corr-length / VDOS_CORR_LENGTH           fs; VACF max lag (sets frequency resolution)")
+    [[ -n "$VDOS_CORR_INTERVAL" ]]    || missing+=("  --vdos-corr-interval / VDOS_CORR_INTERVAL       fs; spacing between VACF reference frames")
+    [[ -n "$VDOS_MAX_FREQUENCY_EV" ]] || missing+=("  --vdos-max-frequency-ev / VDOS_MAX_FREQUENCY_EV eV; upper limit of the DOS grid")
+  fi
+  if [[ "$RUN_MSD" == "1" ]]; then
+    [[ -n "$MSD_CORR_LENGTH" ]]   || missing+=("  --msd-corr-length / MSD_CORR_LENGTH             fs; max time lag")
+    [[ -n "$MSD_CORR_INTERVAL" ]] || missing+=("  --msd-corr-interval / MSD_CORR_INTERVAL         fs; spacing between reference frames")
+    [[ -n "$MSD_FIT_FRACTION" ]]  || missing+=("  --msd-fit-fraction / MSD_FIT_FRACTION           tail fraction used for the D fit")
+  fi
+  if [[ "$RUN_VDOS" == "1" || "$RUN_MSD" == "1" ]]; then
+    [[ -n "$DYNAMICS_DT" ]] || missing+=("  --dynamics-dt / DYNAMICS_DT                     fs between dynamics.lammpstrj frames")
+  fi
+  if (( ${#missing[@]} )); then
+    echo "Error: required analysis parameter(s) not set:" >&2
+    printf '%s\n' "${missing[@]}" >&2
+    echo >&2
+    echo "These determine the numbers vdos.py/msd.py produce, so nothing guesses them." >&2
+    echo "Set them in $CONFIG_FILE or pass the matching flag." >&2
+    exit 1
+  fi
+}
+check_required_analysis_params
+
 if [[ "$FORCE" == "1" && -z "$FORCE_REASON" ]]; then
   echo 'Error: --force requires a non-empty reason, e.g. --force "re-running after fixing potential file"' >&2
   exit 1
@@ -409,9 +455,10 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$DSF_WINDOW_SIZE" ]]     && export_vars+=",WINDOW_SIZE=$DSF_WINDOW_SIZE"
 [[ -n "$DSF_Q_MAX" ]]           && export_vars+=",Q_MAX=$DSF_Q_MAX"
 [[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",N_Q_BINS=$DSF_N_Q_BINS"
-# TIME_UNIT is the only value vdos.py and msd.py both read; everything below
-# it is namespaced VDOS_*/MSD_* so the two scripts stay fully independent.
-[[ -n "$DYNAMICS_DT" ]]           && export_vars+=",TIME_UNIT=$DYNAMICS_DT"
+# vdos.py and msd.py read the same dynamics.lammpstrj but want different
+# settings, so each reads its own prefixed vars and nothing else. DYNAMICS_DT
+# is the one and only value they share: the dt of the trajectory itself.
+[[ -n "$DYNAMICS_DT" ]]           && export_vars+=",DYNAMICS_DT=$DYNAMICS_DT"
 [[ -n "$VDOS_N_FRAMES" ]]         && export_vars+=",VDOS_N_FRAMES=$VDOS_N_FRAMES"
 [[ -n "$VDOS_STRIDE" ]]           && export_vars+=",VDOS_STRIDE=$VDOS_STRIDE"
 [[ -n "$VDOS_CORR_LENGTH" ]]      && export_vars+=",VDOS_CORR_LENGTH=$VDOS_CORR_LENGTH"
@@ -421,11 +468,11 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$VDOS_METHOD" ]]           && export_vars+=",VDOS_METHOD=$VDOS_METHOD"
 [[ -n "$VDOS_WINDOW" ]]           && export_vars+=",VDOS_WINDOW=$VDOS_WINDOW"
 [[ -n "$VDOS_NORMALIZATION" ]]    && export_vars+=",VDOS_NORMALIZATION=$VDOS_NORMALIZATION"
-[[ -n "$MSD_N_FRAMES" ]]           && export_vars+=",MSD_N_FRAMES=$MSD_N_FRAMES"
-[[ -n "$MSD_STRIDE" ]]             && export_vars+=",MSD_STRIDE=$MSD_STRIDE"
-[[ -n "$MSD_CORR_LENGTH" ]]        && export_vars+=",MSD_CORR_LENGTH=$MSD_CORR_LENGTH"
-[[ -n "$MSD_CORR_INTERVAL" ]]      && export_vars+=",MSD_CORR_INTERVAL=$MSD_CORR_INTERVAL"
-[[ -n "$MSD_FIT_FRACTION" ]]       && export_vars+=",MSD_FIT_FRACTION=$MSD_FIT_FRACTION"
+[[ -n "$MSD_N_FRAMES" ]]          && export_vars+=",MSD_N_FRAMES=$MSD_N_FRAMES"
+[[ -n "$MSD_STRIDE" ]]            && export_vars+=",MSD_STRIDE=$MSD_STRIDE"
+[[ -n "$MSD_CORR_LENGTH" ]]       && export_vars+=",MSD_CORR_LENGTH=$MSD_CORR_LENGTH"
+[[ -n "$MSD_CORR_INTERVAL" ]]     && export_vars+=",MSD_CORR_INTERVAL=$MSD_CORR_INTERVAL"
+[[ -n "$MSD_FIT_FRACTION" ]]      && export_vars+=",MSD_FIT_FRACTION=$MSD_FIT_FRACTION"
 
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
