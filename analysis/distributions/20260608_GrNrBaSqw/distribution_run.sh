@@ -7,14 +7,28 @@
 #   ./distribution_run.sh 8            — use 8 threads
 
 ############################
+# Trajectory — set these before running
+############################
+
+# TRAJ: structural trajectory (rdf_freud.py/bad_freud.py).
+# DYNAMICS_TRAJ: separate, higher-frequency trajectory (dsf.py/vdos.py/msd.py) —
+# resolving vibrational frequencies needs much finer time sampling than
+# structural analysis does. Same defaults as distribution_submit.slurm.
+TRAJ="${TRAJ:-../OH.lammpstrj}"
+DYNAMICS_TRAJ="${DYNAMICS_TRAJ:-../dynamics.lammpstrj}"
+export TRAJ DYNAMICS_TRAJ
+echo "Trajectory: $TRAJ"
+echo "Dynamics trajectory: $DYNAMICS_TRAJ"
+
+############################
 # Run flags — set 1 to run, 0 to skip
 ############################
 
-RUN_DSF=1
-RUN_RDF=1
-RUN_BAD=1
-RUN_VDOS=1
-RUN_MSD=1
+RUN_DSF="${RUN_DSF:-1}"
+RUN_RDF="${RUN_RDF:-1}"
+RUN_BAD="${RUN_BAD:-1}"
+RUN_VDOS="${RUN_VDOS:-1}"
+RUN_MSD="${RUN_MSD:-1}"
 
 ############################
 # Thread count
