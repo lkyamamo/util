@@ -19,6 +19,8 @@ Algorithm
 3.  Apply placements in list order, one at a time. Each new atom is inserted
     immediately, so a later placement may target an atom an earlier one created.
     New ids continue from the file's highest id; existing ids are never touched.
+    A placement that lands outside the box is wrapped back in and warned about,
+    with the image indices it moved through folded into its image flags.
 4.  Append Masses rows for any new types and zero Velocities rows for the new
     atoms, then write the output file.
 
@@ -32,6 +34,9 @@ Assumptions
 - New atoms inherit the target atom's molecule ID and image flags; charge (for
   atom_style charge/full) defaults to 0.0. Edit the written file if you need
   something else.
+- Wrapping is per-axis and assumes an orthogonal box; on a triclinic cell the
+  warning says so, and the image flags should be checked by hand. Files with no
+  image flag columns are still wrapped, but the indices cannot be recorded.
 - New atom types must extend the existing range contiguously, because the
   "N atom types" header is written as the number of Masses rows.
 - Files with Bonds/Angles/Dihedrals are rejected: adding an atom would leave
@@ -153,10 +158,10 @@ def _validate(data: LammpsData, placements: list, new_type_masses: dict[int, flo
         dupes = sorted(set(data.atoms.index[data.atoms.index.duplicated()]))
         raise ValueError(f"{INPUT_FILE} has duplicate atom ids: {dupes}")
 
-    max_type    = int(data.masses.index.max())
     known_ids   = set(int(i) for i in data.atoms.index)
+    known_types = set(int(t) for t in data.masses.index)
     next_new_id = int(data.atoms.index.max()) + 1
-    next_type   = max_type + 1
+    next_type   = max(known_types) + 1
 
     for position, (target_id, new_type, offset) in enumerate(placements, start=1):
         where = f"placement {position} {(target_id, new_type, offset)}"
@@ -172,7 +177,9 @@ def _validate(data: LammpsData, placements: list, new_type_masses: dict[int, flo
         known_ids.add(next_new_id)
         next_new_id += 1
 
-        if new_type > max_type:
+        # Only a type seen for the first time extends the range; later placements
+        # may reuse a type an earlier one introduced.
+        if new_type not in known_types:
             if new_type != next_type:
                 raise ValueError(
                     f"{where}: type {new_type} would leave a gap in the type range "
@@ -183,16 +190,18 @@ def _validate(data: LammpsData, placements: list, new_type_masses: dict[int, flo
                     f"{where}: type {new_type} is new; add its mass to "
                     f"NEW_TYPE_MASSES, e.g. NEW_TYPE_MASSES = {{{new_type}: 1.008}}"
                 )
+            known_types.add(new_type)
             next_type += 1
 
 
 # ── placement ─────────────────────────────────────────────────────────────────
 
-def _new_atom_row(target: pd.Series, new_type: int,
-                  new_position: np.ndarray, columns: list[str]) -> dict:
+def _new_atom_row(target: pd.Series, new_type: int, new_position: np.ndarray,
+                  image_shift: np.ndarray, columns: list[str]) -> dict:
     """
     Build an Atoms row for a placed atom: the given type and position, with
-    molecule ID and image flags inherited from the target and charge zeroed.
+    molecule ID inherited from the target, charge zeroed, and image flags taken
+    from the target plus whatever wrapping the placement needed.
     """
     row: dict = {"type": int(new_type)}
     row.update(dict(zip(_COORDS, (float(c) for c in new_position))))
@@ -200,22 +209,47 @@ def _new_atom_row(target: pd.Series, new_type: int,
         row["molecule-ID"] = int(target["molecule-ID"])
     if "q" in columns:
         row["q"] = 0.0
-    for flag in ("nx", "ny", "nz"):
+    for axis, flag in enumerate(("nx", "ny", "nz")):
         if flag in columns:
-            row[flag] = int(target[flag])
+            row[flag] = int(target[flag]) + int(image_shift[axis])
     return row
 
 
-def _check_in_box(data: LammpsData, position: np.ndarray, where: str) -> None:
-    """Raise if a placed atom falls outside the box; placements are not wrapped."""
-    bounds = np.asarray(data.box.bounds, dtype=float)
-    outside = [
-        f"{axis} = {value:.4f} outside [{lo:.4f}, {hi:.4f}]"
-        for axis, value, (lo, hi) in zip(_COORDS, position, bounds)
-        if value < lo or value > hi
-    ]
-    if outside:
-        raise ValueError(f"{where}: placed atom lies outside the box — " + "; ".join(outside))
+def _wrap_into_box(data: LammpsData, position: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Wrap a position into the box under PBC. Returns the wrapped position and the
+    image indices it moved through, such that wrapped + image x L = the original
+    position — the same convention as LAMMPS' image flags.
+    """
+    bounds  = np.asarray(data.box.bounds, dtype=float)
+    lengths = bounds[:, 1] - bounds[:, 0]
+    image_shift = np.floor((position - bounds[:, 0]) / lengths).astype(int)
+    return position - image_shift * lengths, image_shift
+
+
+def _warn_wrapped(where: str, atom_id: int, raw: np.ndarray, wrapped: np.ndarray,
+                  image_shift: np.ndarray, data: LammpsData, columns: list[str]) -> None:
+    """Report a placement that landed outside the box and had to be wrapped."""
+    moved = ", ".join(
+        f"{axis} {raw[i]:.4f} -> {wrapped[i]:.4f}"
+        for i, axis in enumerate(_COORDS) if image_shift[i]
+    )
+    images = " ".join(str(int(i)) for i in image_shift)
+    message = (
+        f"{where}: new atom {atom_id} landed outside the box and was wrapped "
+        f"({moved}); image indices {images}"
+    )
+    if not any(flag in columns for flag in ("nx", "ny", "nz")):
+        message += (
+            " — the file has no image flag columns, so the indices cannot be "
+            "recorded and the unwrapped position is lost"
+        )
+    if data.box.tilt is not None and any(data.box.tilt):
+        message += (
+            " — the box is triclinic and this wrap ignores tilt, so check the "
+            "result by hand"
+        )
+    warnings.warn(message, stacklevel=3)
 
 
 def _closest_existing(data: LammpsData, position: np.ndarray) -> tuple[int, float]:
@@ -242,9 +276,13 @@ def place_atoms(data: LammpsData, placements: list,
     for position_index, (target_id, new_type, offset) in enumerate(placements, start=1):
         where  = f"placement {position_index} {(target_id, new_type, offset)}"
         target = data.atoms.loc[target_id]
-        new_position = target[_COORDS].to_numpy(dtype=float) + np.asarray(offset, dtype=float)
+        raw_position = target[_COORDS].to_numpy(dtype=float) + np.asarray(offset, dtype=float)
 
-        _check_in_box(data, new_position, where)
+        new_position, image_shift = _wrap_into_box(data, raw_position)
+        if image_shift.any():
+            _warn_wrapped(where, next_id, raw_position, new_position,
+                          image_shift, data, columns)
+
         if MIN_SEPARATION is not None:
             neighbor_id, distance = _closest_existing(data, new_position)
             if distance < MIN_SEPARATION:
@@ -258,7 +296,8 @@ def place_atoms(data: LammpsData, placements: list,
             data.masses.loc[new_type] = {"mass": float(new_type_masses[new_type])}
             data.masses.sort_index(inplace=True)
 
-        data.atoms.loc[next_id] = _new_atom_row(target, new_type, new_position, columns)
+        data.atoms.loc[next_id] = _new_atom_row(target, new_type, new_position,
+                                                image_shift, columns)
         if data.velocities is not None:
             data.velocities.loc[next_id] = {"vx": 0.0, "vy": 0.0, "vz": 0.0}
 
