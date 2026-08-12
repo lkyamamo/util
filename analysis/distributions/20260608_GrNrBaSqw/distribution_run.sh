@@ -29,6 +29,9 @@ RUN_RDF="${RUN_RDF:-1}"
 RUN_BAD="${RUN_BAD:-1}"
 RUN_VDOS="${RUN_VDOS:-1}"
 RUN_MSD="${RUN_MSD:-1}"
+# vdos_dynmat.py needs dynmat.dat, which only exists if the LAMMPS run was made
+# with RUN_DYNMAT=1 — so unlike the others this defaults to off.
+RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 
 ############################
 # Thread count
@@ -88,12 +91,34 @@ MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"            # REQUIRED. fs; max time lag. 
 MSD_CORR_INTERVAL="${MSD_CORR_INTERVAL:-}"        # REQUIRED. fs; spacing between reference frames
 MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"          # REQUIRED. tail fraction used for the D fit
 
+# vdos_dynmat.py — the harmonic counterpart to vdos.py. It reads the dynamical
+# matrix LAMMPS wrote (not a trajectory), plus the first frame of $TRAJ for the
+# per-atom element labels. DYNMAT_FILE/DYNMAT_BINARY must match what the LAMMPS
+# stage used, which submit_pipeline.sh guarantees by sending both stages the same
+# value.
+DYNMAT_FILE="${DYNMAT_FILE:-}"                              # default dynmat.dat
+DYNMAT_BINARY="${DYNMAT_BINARY:-}"                          # yes | no (default no)
+VDOS_DYNMAT_MAX_FREQUENCY="${VDOS_DYNMAT_MAX_FREQUENCY:-}"  # REQUIRED. DOS grid upper
+                                                            # limit, in VDOS_DYNMAT_XUNIT
+VDOS_DYNMAT_XUNIT="${VDOS_DYNMAT_XUNIT:-}"                  # meV | THz | cm-1 | eV
+VDOS_DYNMAT_BINS="${VDOS_DYNMAT_BINS:-}"                    # frequency grid points
+VDOS_DYNMAT_SMEARING="${VDOS_DYNMAT_SMEARING:-}"            # Gaussian FWHM in XUNIT; 0 = off
+VDOS_DYNMAT_MATRIX_STYLE="${VDOS_DYNMAT_MATRIX_STYLE:-}"    # regular | eskm
+VDOS_DYNMAT_NORMALIZATION="${VDOS_DYNMAT_NORMALIZATION:-}"  # phonon | unit_area
+VDOS_DYNMAT_PARTIAL="${VDOS_DYNMAT_PARTIAL:-}"              # yes | no
+VDOS_DYNMAT_ASR="${VDOS_DYNMAT_ASR:-}"                      # none | simple
+VDOS_DYNMAT_OUTPUT="${VDOS_DYNMAT_OUTPUT:-}"                # output basename
+
 # Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
 for _var in DYNAMICS_DT DT N_FRAMES STRIDE \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
             VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION \
-            MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION; do
+            MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION \
+            DYNMAT_FILE DYNMAT_BINARY \
+            VDOS_DYNMAT_MAX_FREQUENCY VDOS_DYNMAT_XUNIT VDOS_DYNMAT_BINS \
+            VDOS_DYNMAT_SMEARING VDOS_DYNMAT_MATRIX_STYLE VDOS_DYNMAT_NORMALIZATION \
+            VDOS_DYNMAT_PARTIAL VDOS_DYNMAT_ASR VDOS_DYNMAT_OUTPUT; do
     if [ -n "${!_var}" ]; then
         export "$_var"
         echo "  $_var=${!_var}"
@@ -134,4 +159,11 @@ fi
 if [ "$RUN_MSD" -eq 1 ]; then
     echo "--- msd.py ---"
     python msd.py
+fi
+
+# vdos_dynmat.py diagonalizes the dynamical matrix; np.linalg.eigh is a threaded
+# LAPACK call, so OMP_NUM_THREADS above is what parallelizes it.
+if [ "$RUN_VDOS_DYNMAT" -eq 1 ]; then
+    echo "--- vdos_dynmat.py ---"
+    python vdos_dynmat.py
 fi

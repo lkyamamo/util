@@ -47,6 +47,20 @@ Optional:
   --run-bad {0|1}                Run bad_freud.py (bond angle distribution) (default: 1)
   --run-vdos {0|1}                Run vdos.py (vibrational density of states) (default: 0)
   --run-msd {0|1}                 Run msd.py (mean square displacement / diffusion) (default: 0)
+  --run-vdos-dynmat {0|1}          Run the dynamical-matrix VDOS (default: 0). This one
+                                   spans BOTH stages: it sets LAMMPS's RUN_DYNMAT=1, which
+                                   appends a minimization + dynamical_matrix block to the
+                                   end of in.input (acting on the final MD configuration),
+                                   and then runs vdos_dynmat.py on the resulting matrix.
+                                   Needs a LAMMPS build with the PHONON package — see
+                                   --lmp-bin.
+
+  --lmp-bin PATH                   LAMMPS executable (default:
+                                   /home1/lkyamamo/executables/lammps/lmp_mpi_phonon_2019,
+                                   set in jobs/slurm/lammps_submit.slurm). The default is
+                                   the phonon build because dynamical_matrix needs the
+                                   PHONON package; point this at lmp_mpi_shock_2019 to go
+                                   back to the previous binary.
 
   Physics config — each overrides that script's own hardcoded default
   (see the CONFIGURATION block at the top of each .py) when passed; omit
@@ -108,6 +122,53 @@ Optional:
     --msd-fit-fraction FLOAT         msd.py FIT_FRACTION: fraction of the tail of the
                                     correlation window used for the diffusion-coefficient
                                     linear fit, e.g. 0.5
+
+    Dynamical-matrix VDOS (--run-vdos-dynmat 1). The --dynmat-* flags drive the
+    LAMMPS stage and reach in.input as -var; the --vdos-dynmat-* flags drive
+    vdos_dynmat.py in the analysis stage. Omit any to leave the default in the
+    .input file / the .py's CONFIGURATION block in effect.
+
+    Cost before you enable this: the finite-difference loop is 6N force
+    evaluations and the matrix is (3N)^2. At replicate 6 6 6 (N=5184) that is
+    31104 force evaluations and a 15552x15552 matrix — ~1.9 GB, ~2.9 GB as text.
+    Budget stage-1 --time accordingly and consider --dynmat-binary yes.
+
+    --dynmat-min-style STR           min_style for the pre-dynmat minimization (default cg)
+    --dynmat-min-etol FLOAT          minimize etol    (default 1.0e-12)
+    --dynmat-min-ftol FLOAT          minimize ftol    (default 1.0e-12) — the one that
+                                     matters most; residual forces become spurious
+                                     imaginary modes in the spectrum
+    --dynmat-min-maxiter INT         minimize maxiter (default 100000)
+    --dynmat-min-maxeval INT         minimize maxeval (default 1000000)
+    --dynmat-displacement FLOAT      finite-difference displacement in Angstrom
+                                     (default 0.0001). Too small is numerical noise,
+                                     too large samples anharmonicity — the spectrum
+                                     should be stable across 1e-5..1e-3
+    --dynmat-file NAME               matrix filename written by LAMMPS and read by
+                                     vdos_dynmat.py (default dynmat.dat)
+    --dynmat-binary {yes|no}         write raw float64 instead of text (default no).
+                                     Halves the file and removes the text parse; both
+                                     stages read this same flag, so they cannot disagree
+
+    --vdos-dynmat-max-frequency FLOAT  REQUIRED when --run-vdos-dynmat 1. Upper limit of
+                                     the DOS grid, in --vdos-dynmat-xunit's unit, e.g. 500
+                                     (meV). No default: too low silently truncates
+    --vdos-dynmat-xunit STR          meV | THz | cm-1 | eV (default meV). The CSV always
+                                     carries all four; this sets the plot axis and the
+                                     unit --vdos-dynmat-max-frequency/-smearing are in
+    --vdos-dynmat-bins INT           frequency grid points (default 500)
+    --vdos-dynmat-smearing FLOAT     Gaussian FWHM in xunit; 0 = plain histogram
+                                     (default 0)
+    --vdos-dynmat-matrix-style STR   regular | eskm (default regular) — must match the
+                                     dynamical_matrix style in the .input file, since it
+                                     sets the eigenvalue-to-frequency conversion
+    --vdos-dynmat-normalization STR  phonon (default; integral = 3 per atom) or unit_area
+    --vdos-dynmat-partial {yes|no}   per-element partial DOS (default yes). 'no' uses
+                                     eigvalsh instead of eigh, halving memory and runtime
+    --vdos-dynmat-asr STR            none (default) or simple — impose the acoustic sum
+                                     rule, pushing the 3 acoustic modes to exactly zero
+    --vdos-dynmat-output NAME        output basename (default vdos_dynmat), giving
+                                     <date>_<name>.csv and <date>_<name>.png
   None of these use commas (sbatch --export is comma-delimited and silently
   truncates any value containing one), so no quoting/encoding is needed
   beyond normal shell quoting of the whole flag value.
@@ -216,6 +277,25 @@ MSD_STRIDE="${MSD_STRIDE:-}"
 MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"
 MSD_CORR_INTERVAL="${MSD_CORR_INTERVAL:-}"
 MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"
+RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
+LMP_BIN="${LMP_BIN:-}"
+DYNMAT_MIN_STYLE="${DYNMAT_MIN_STYLE:-}"
+DYNMAT_MIN_ETOL="${DYNMAT_MIN_ETOL:-}"
+DYNMAT_MIN_FTOL="${DYNMAT_MIN_FTOL:-}"
+DYNMAT_MIN_MAXITER="${DYNMAT_MIN_MAXITER:-}"
+DYNMAT_MIN_MAXEVAL="${DYNMAT_MIN_MAXEVAL:-}"
+DYNMAT_DISPLACEMENT="${DYNMAT_DISPLACEMENT:-}"
+DYNMAT_FILE="${DYNMAT_FILE:-}"
+DYNMAT_BINARY="${DYNMAT_BINARY:-}"
+VDOS_DYNMAT_MAX_FREQUENCY="${VDOS_DYNMAT_MAX_FREQUENCY:-}"
+VDOS_DYNMAT_XUNIT="${VDOS_DYNMAT_XUNIT:-}"
+VDOS_DYNMAT_BINS="${VDOS_DYNMAT_BINS:-}"
+VDOS_DYNMAT_SMEARING="${VDOS_DYNMAT_SMEARING:-}"
+VDOS_DYNMAT_MATRIX_STYLE="${VDOS_DYNMAT_MATRIX_STYLE:-}"
+VDOS_DYNMAT_NORMALIZATION="${VDOS_DYNMAT_NORMALIZATION:-}"
+VDOS_DYNMAT_PARTIAL="${VDOS_DYNMAT_PARTIAL:-}"
+VDOS_DYNMAT_ASR="${VDOS_DYNMAT_ASR:-}"
+VDOS_DYNMAT_OUTPUT="${VDOS_DYNMAT_OUTPUT:-}"
 
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
@@ -284,6 +364,25 @@ while [[ $# -gt 0 ]]; do
     --msd-corr-length) MSD_CORR_LENGTH="$2"; shift 2 ;;
     --msd-corr-interval) MSD_CORR_INTERVAL="$2"; shift 2 ;;
     --msd-fit-fraction) MSD_FIT_FRACTION="$2"; shift 2 ;;
+    --run-vdos-dynmat) RUN_VDOS_DYNMAT="$2"; shift 2 ;;
+    --lmp-bin) LMP_BIN="$2"; shift 2 ;;
+    --dynmat-min-style) DYNMAT_MIN_STYLE="$2"; shift 2 ;;
+    --dynmat-min-etol) DYNMAT_MIN_ETOL="$2"; shift 2 ;;
+    --dynmat-min-ftol) DYNMAT_MIN_FTOL="$2"; shift 2 ;;
+    --dynmat-min-maxiter) DYNMAT_MIN_MAXITER="$2"; shift 2 ;;
+    --dynmat-min-maxeval) DYNMAT_MIN_MAXEVAL="$2"; shift 2 ;;
+    --dynmat-displacement) DYNMAT_DISPLACEMENT="$2"; shift 2 ;;
+    --dynmat-file) DYNMAT_FILE="$2"; shift 2 ;;
+    --dynmat-binary) DYNMAT_BINARY="$2"; shift 2 ;;
+    --vdos-dynmat-max-frequency) VDOS_DYNMAT_MAX_FREQUENCY="$2"; shift 2 ;;
+    --vdos-dynmat-xunit) VDOS_DYNMAT_XUNIT="$2"; shift 2 ;;
+    --vdos-dynmat-bins) VDOS_DYNMAT_BINS="$2"; shift 2 ;;
+    --vdos-dynmat-smearing) VDOS_DYNMAT_SMEARING="$2"; shift 2 ;;
+    --vdos-dynmat-matrix-style) VDOS_DYNMAT_MATRIX_STYLE="$2"; shift 2 ;;
+    --vdos-dynmat-normalization) VDOS_DYNMAT_NORMALIZATION="$2"; shift 2 ;;
+    --vdos-dynmat-partial) VDOS_DYNMAT_PARTIAL="$2"; shift 2 ;;
+    --vdos-dynmat-asr) VDOS_DYNMAT_ASR="$2"; shift 2 ;;
+    --vdos-dynmat-output) VDOS_DYNMAT_OUTPUT="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
     --skip-trajectory) SKIP_TRAJECTORY="1"; shift 1 ;;
@@ -328,6 +427,7 @@ check_zero_or_one "$RUN_RDF" --run-rdf
 check_zero_or_one "$RUN_BAD" --run-bad
 check_zero_or_one "$RUN_VDOS" --run-vdos
 check_zero_or_one "$RUN_MSD" --run-msd
+check_zero_or_one "$RUN_VDOS_DYNMAT" --run-vdos-dynmat
 
 # vdos.py and msd.py refuse to guess the parameters that determine their
 # numbers. Catch a missing one here, before anything is submitted or run,
@@ -346,6 +446,12 @@ check_required_analysis_params() {
   fi
   if [[ "$RUN_VDOS" == "1" || "$RUN_MSD" == "1" ]]; then
     [[ -n "$DYNAMICS_DT" ]] || missing+=("  --dynamics-dt / DYNAMICS_DT                     fs between dynamics.lammpstrj frames")
+  fi
+  # Checked here rather than in stage 2 for the same reason as the others, but it
+  # matters more: the dynamical-matrix run is the expensive part of stage 1, and
+  # discovering a missing grid limit afterwards would waste all of it.
+  if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
+    [[ -n "$VDOS_DYNMAT_MAX_FREQUENCY" ]] || missing+=("  --vdos-dynmat-max-frequency / VDOS_DYNMAT_MAX_FREQUENCY  upper limit of the DOS grid, in VDOS_DYNMAT_XUNIT")
   fi
   if (( ${#missing[@]} )); then
     echo "Error: required analysis parameter(s) not set:" >&2
@@ -373,7 +479,14 @@ fi
 
 if [[ "$SKIP_TRAJECTORY" == "1" ]]; then
   missing_traj=0
-  for f in "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE"; do
+  required_stage1_files=("$STAGE1_DIR/run/$DUMP_FILE" "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE")
+  # The dynamical matrix is a stage-1 product too, so skipping stage 1 means it
+  # must already be there. Checked here so re-running only the post-processing
+  # fails up front instead of leaving a dangling symlink for stage 2 to trip on.
+  if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
+    required_stage1_files+=("$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}")
+  fi
+  for f in "${required_stage1_files[@]}"; do
     if [[ ! -e "$f" ]]; then
       echo "Error: --skip-trajectory was given but $f does not exist." >&2
       missing_traj=1
@@ -434,14 +547,22 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/bad_freud.py" \
    "$ANALYSIS_TEMPLATE_DIR/vdos.py" \
    "$ANALYSIS_TEMPLATE_DIR/msd.py" \
+   "$ANALYSIS_TEMPLATE_DIR/vdos_dynmat.py" \
    "$ANALYSIS_TEMPLATE_DIR/distribution_submit.slurm" \
    "$STAGE2_DIR/"
 ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
 ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
+# The dynamical matrix, like the trajectories, is consumed read-only. No second
+# link is needed for the atom->element mapping: vdos_dynmat.py takes that from
+# the first frame of $DUMP_FILE above, which lists the same atoms in the same
+# ID order the matrix rows use.
+if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
+  ln -s "$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}" "$STAGE2_DIR/${DYNMAT_FILE:-dynmat.dat}"
+fi
 
 # None of these values may contain a comma — sbatch --export is
 # comma-delimited and silently truncates anything after an embedded one.
-export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS,RUN_MSD=$RUN_MSD"
+export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS,RUN_MSD=$RUN_MSD,RUN_VDOS_DYNMAT=$RUN_VDOS_DYNMAT"
 [[ -n "$RDF_R_MAX" ]]           && export_vars+=",R_MAX=$RDF_R_MAX"
 [[ -n "$RDF_BINS_VAL" ]]        && export_vars+=",RDF_BINS=$RDF_BINS_VAL"
 [[ -n "$BAD_ELEMENTS" ]]        && export_vars+=",ELEMENTS=$BAD_ELEMENTS"
@@ -473,6 +594,35 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$MSD_CORR_LENGTH" ]]       && export_vars+=",MSD_CORR_LENGTH=$MSD_CORR_LENGTH"
 [[ -n "$MSD_CORR_INTERVAL" ]]     && export_vars+=",MSD_CORR_INTERVAL=$MSD_CORR_INTERVAL"
 [[ -n "$MSD_FIT_FRACTION" ]]      && export_vars+=",MSD_FIT_FRACTION=$MSD_FIT_FRACTION"
+# vdos_dynmat.py. DYNMAT_FILE and DYNMAT_BINARY are the two names that also go to
+# stage 1 (below) — one value each, so the writer and the reader cannot disagree
+# about the filename or the text/binary format.
+[[ -n "$DYNMAT_FILE" ]]                 && export_vars+=",DYNMAT_FILE=$DYNMAT_FILE"
+[[ -n "$DYNMAT_BINARY" ]]               && export_vars+=",DYNMAT_BINARY=$DYNMAT_BINARY"
+[[ -n "$VDOS_DYNMAT_MAX_FREQUENCY" ]]   && export_vars+=",VDOS_DYNMAT_MAX_FREQUENCY=$VDOS_DYNMAT_MAX_FREQUENCY"
+[[ -n "$VDOS_DYNMAT_XUNIT" ]]           && export_vars+=",VDOS_DYNMAT_XUNIT=$VDOS_DYNMAT_XUNIT"
+[[ -n "$VDOS_DYNMAT_BINS" ]]            && export_vars+=",VDOS_DYNMAT_BINS=$VDOS_DYNMAT_BINS"
+[[ -n "$VDOS_DYNMAT_SMEARING" ]]        && export_vars+=",VDOS_DYNMAT_SMEARING=$VDOS_DYNMAT_SMEARING"
+[[ -n "$VDOS_DYNMAT_MATRIX_STYLE" ]]    && export_vars+=",VDOS_DYNMAT_MATRIX_STYLE=$VDOS_DYNMAT_MATRIX_STYLE"
+[[ -n "$VDOS_DYNMAT_NORMALIZATION" ]]   && export_vars+=",VDOS_DYNMAT_NORMALIZATION=$VDOS_DYNMAT_NORMALIZATION"
+[[ -n "$VDOS_DYNMAT_PARTIAL" ]]         && export_vars+=",VDOS_DYNMAT_PARTIAL=$VDOS_DYNMAT_PARTIAL"
+[[ -n "$VDOS_DYNMAT_ASR" ]]             && export_vars+=",VDOS_DYNMAT_ASR=$VDOS_DYNMAT_ASR"
+[[ -n "$VDOS_DYNMAT_OUTPUT" ]]          && export_vars+=",VDOS_DYNMAT_OUTPUT=$VDOS_DYNMAT_OUTPUT"
+
+# Stage 1's own environment. Until now stage 1 needed none — everything it used
+# was baked into in.input — so this is the first --export it gets. RUN_VDOS_DYNMAT
+# reaches LAMMPS under the name its input scripts use, RUN_DYNMAT; the rest pass
+# through jobs/slurm/lammps_submit.slurm, which turns each set name into a -var.
+stage1_export="ALL,RUN_DYNMAT=$RUN_VDOS_DYNMAT"
+[[ -n "$LMP_BIN" ]]             && stage1_export+=",LMP_BIN=$LMP_BIN"
+[[ -n "$DYNMAT_MIN_STYLE" ]]    && stage1_export+=",DYNMAT_MIN_STYLE=$DYNMAT_MIN_STYLE"
+[[ -n "$DYNMAT_MIN_ETOL" ]]     && stage1_export+=",DYNMAT_MIN_ETOL=$DYNMAT_MIN_ETOL"
+[[ -n "$DYNMAT_MIN_FTOL" ]]     && stage1_export+=",DYNMAT_MIN_FTOL=$DYNMAT_MIN_FTOL"
+[[ -n "$DYNMAT_MIN_MAXITER" ]]  && stage1_export+=",DYNMAT_MIN_MAXITER=$DYNMAT_MIN_MAXITER"
+[[ -n "$DYNMAT_MIN_MAXEVAL" ]]  && stage1_export+=",DYNMAT_MIN_MAXEVAL=$DYNMAT_MIN_MAXEVAL"
+[[ -n "$DYNMAT_DISPLACEMENT" ]] && stage1_export+=",DYNMAT_DISPLACEMENT=$DYNMAT_DISPLACEMENT"
+[[ -n "$DYNMAT_FILE" ]]         && stage1_export+=",DYNMAT_FILE=$DYNMAT_FILE"
+[[ -n "$DYNMAT_BINARY" ]]       && stage1_export+=",DYNMAT_BINARY=$DYNMAT_BINARY"
 
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
@@ -480,6 +630,7 @@ enabled_scripts=""
 [[ "$RUN_BAD" == "1" ]] && enabled_scripts+="bad_freud.py "
 [[ "$RUN_VDOS" == "1" ]] && enabled_scripts+="vdos.py "
 [[ "$RUN_MSD" == "1" ]] && enabled_scripts+="msd.py "
+[[ "$RUN_VDOS_DYNMAT" == "1" ]] && enabled_scripts+="vdos_dynmat.py "
 enabled_scripts="${enabled_scripts% }"
 
 ############################
@@ -494,6 +645,8 @@ if [[ "$INTERACTIVE" == "1" ]]; then
     (
       export SLURM_SUBMIT_DIR="$STAGE1_DIR/run"
       export SLURM_NTASKS="${NTASKS:-64}"
+      IFS=',' read -ra _kv_pairs <<< "${stage1_export#ALL,}"
+      for pair in "${_kv_pairs[@]}"; do export "$pair"; done
       cd "$STAGE1_DIR/run" && bash lammps_submit.slurm
     )
     echo "LAMMPS run finished."
@@ -518,7 +671,7 @@ Pipeline completed interactively:
 
 $(if [[ -n "$enabled_scripts" ]]; then
   echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-* flags is using each script's own default —"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-*/--vdos-dynmat-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY
@@ -537,7 +690,9 @@ else
 
     echo "Submitting LAMMPS run from $STAGE1_DIR/run ..."
     JOBID1="$(cd "$STAGE1_DIR/run" && sbatch --parsable \
-      "${sbatch_args[@]+"${sbatch_args[@]}"}" lammps_submit.slurm)"
+      "${sbatch_args[@]+"${sbatch_args[@]}"}" \
+      --export="$stage1_export" \
+      lammps_submit.slurm)"
     echo "  LAMMPS job id: $JOBID1"
   fi
 
@@ -570,7 +725,7 @@ Pipeline submitted:
 
 $(if [[ -n "$enabled_scripts" ]]; then
   echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-* flags is using each script's own default —"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-*/--vdos-dynmat-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY
