@@ -117,8 +117,10 @@ DYNMAT_FILE=""                       # matrix filename, default dynmat.dat. One 
                                      # reaches both stages, so the writer and the reader
                                      # cannot disagree
 DYNMAT_BINARY=""                     # yes = raw float64, no (default) = text
-VDOS_DYNMAT_MAX_FREQUENCY="500"      # REQUIRED when RUN_VDOS_DYNMAT=1 — DOS grid upper
-                                     # limit, in VDOS_DYNMAT_XUNIT. 500 meV = 4033 cm^-1
+VDOS_DYNMAT_MAX_FREQUENCY="200"      # REQUIRED when RUN_VDOS_DYNMAT=1 — DOS grid upper
+                                     # limit, in VDOS_DYNMAT_XUNIT. 200 meV = 1613 cm^-1,
+                                     # which covers a-SiO2 (stretching band tops out near
+                                     # 1200 cm^-1). Water needs ~500 meV for the O-H stretch
 VDOS_DYNMAT_XUNIT=""                 # meV (default) | THz | cm-1 | eV. The CSV always
                                      # carries all four; this sets the plot axis and the
                                      # unit MAX_FREQUENCY/SMEARING are read in
@@ -131,3 +133,19 @@ VDOS_DYNMAT_PARTIAL=""               # yes (default) | no — 'no' skips the per
                                      # curves and halves memory and runtime
 VDOS_DYNMAT_ASR=""                   # none (default) | simple — acoustic sum rule
 VDOS_DYNMAT_OUTPUT=""                # output basename, default vdos_dynmat
+
+# Mode-character analysis: what kind of motion each band is. Builds a local
+# orthonormal frame at every bridging atom (for a-SiO2, an O with exactly two Si
+# neighbours) and splits each mode's motion into stretching / bending / rocking,
+# the standard band assignment for silica glass. Also emits the participation
+# ratio (extended vs localized modes — the boson-peak diagnostic) and the
+# reduced DOS g(nu)/nu^2. Adds <date>_vdos_dynmat_modes.csv, one row per mode.
+#
+# Needs the coordinates LAMMPS writes right after `minimize`, so a matrix from a
+# run predating that write_dump line cannot be analysed this way.
+VDOS_DYNMAT_CHARACTER=""             # yes | no (default no)
+DYNMAT_REF_TRAJ=""                   # minimized coordinates, default dynmat_ref.lammpstrj.
+                                     # One value reaches both stages, like DYNMAT_FILE
+VDOS_DYNMAT_BRIDGE_ELEMENT=""        # the bridging atom, default O
+VDOS_DYNMAT_NEIGHBOR_ELEMENT=""      # its two neighbours, default Si
+VDOS_DYNMAT_BOND_CUTOFF=""           # bridge-neighbour max distance in A, default 2.2

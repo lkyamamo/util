@@ -107,6 +107,14 @@ VDOS_DYNMAT_NORMALIZATION="${VDOS_DYNMAT_NORMALIZATION:-}"  # phonon | unit_area
 VDOS_DYNMAT_PARTIAL="${VDOS_DYNMAT_PARTIAL:-}"              # yes | no
 VDOS_DYNMAT_ASR="${VDOS_DYNMAT_ASR:-}"                      # none | simple
 VDOS_DYNMAT_OUTPUT="${VDOS_DYNMAT_OUTPUT:-}"                # output basename
+# Mode-character analysis: which motion each band is (rocking / bending /
+# stretching at bridging oxygens), plus participation ratio and g(nu)/nu^2.
+# Needs DYNMAT_REF_TRAJ, the coordinates LAMMPS wrote right after `minimize`.
+VDOS_DYNMAT_CHARACTER="${VDOS_DYNMAT_CHARACTER:-}"          # yes | no (default no)
+DYNMAT_REF_TRAJ="${DYNMAT_REF_TRAJ:-}"                      # default dynmat_ref.lammpstrj
+VDOS_DYNMAT_BRIDGE_ELEMENT="${VDOS_DYNMAT_BRIDGE_ELEMENT:-}"      # default O
+VDOS_DYNMAT_NEIGHBOR_ELEMENT="${VDOS_DYNMAT_NEIGHBOR_ELEMENT:-}"  # default Si
+VDOS_DYNMAT_BOND_CUTOFF="${VDOS_DYNMAT_BOND_CUTOFF:-}"      # Angstrom, default 2.2
 
 # Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
@@ -117,7 +125,9 @@ for _var in DYNAMICS_DT DT N_FRAMES STRIDE \
             DYNMAT_FILE DYNMAT_BINARY \
             VDOS_DYNMAT_MAX_FREQUENCY VDOS_DYNMAT_XUNIT VDOS_DYNMAT_BINS \
             VDOS_DYNMAT_SMEARING VDOS_DYNMAT_MATRIX_STYLE VDOS_DYNMAT_NORMALIZATION \
-            VDOS_DYNMAT_PARTIAL VDOS_DYNMAT_ASR VDOS_DYNMAT_OUTPUT; do
+            VDOS_DYNMAT_PARTIAL VDOS_DYNMAT_ASR VDOS_DYNMAT_OUTPUT \
+            VDOS_DYNMAT_CHARACTER DYNMAT_REF_TRAJ VDOS_DYNMAT_BRIDGE_ELEMENT \
+            VDOS_DYNMAT_NEIGHBOR_ELEMENT VDOS_DYNMAT_BOND_CUTOFF; do
     if [ -n "${!_var}" ]; then
         export "$_var"
         echo "  $_var=${!_var}"

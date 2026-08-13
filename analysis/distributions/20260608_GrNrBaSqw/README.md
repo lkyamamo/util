@@ -21,7 +21,7 @@ frame of `dump.lammpstrj`, for element labels).
 | `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `sq.png`, `dsf.csv`, `dsf.png` |
 | `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `vdos.png` |
 | `msd.py` | Mean square displacement and self-diffusion coefficient (10⁻⁵ cm²/s) per element | `msd.csv`, `msd.png` |
-| `vdos_dynmat.py` | Vibrational density of states from the LAMMPS dynamical matrix — harmonic, 0 K, no trajectory | `vdos_dynmat.csv`, `vdos_dynmat.png` |
+| `vdos_dynmat.py` | Vibrational density of states from the LAMMPS dynamical matrix — harmonic, 0 K, no trajectory; optionally the stretch/bend/rock band assignment, participation ratio and boson peak | `vdos_dynmat.csv`, `vdos_dynmat.png`, `vdos_dynmat_modes.csv`, `vdos_dynmat_character.png` |
 
 ---
 
@@ -333,6 +333,11 @@ it sets this conversion, so a mismatch rescales the whole spectrum.
 | `VDOS_DYNMAT_PARTIAL` | `yes` | `no` skips per-element curves, uses `eigvalsh`, halves memory and runtime |
 | `VDOS_DYNMAT_ASR` | `none` | `simple` imposes the acoustic sum rule |
 | `VDOS_DYNMAT_THREADS` | unset | BLAS threads; the pipeline's `OMP_NUM_THREADS` already covers this |
+| `VDOS_DYNMAT_CHARACTER` | `no` | `yes` adds the mode-character analysis below |
+| `DYNMAT_REF_TRAJ` | `dynmat_ref.lammpstrj` | minimized coordinates; one value reaches both stages |
+| `VDOS_DYNMAT_BRIDGE_ELEMENT` | `O` | the bridging atom |
+| `VDOS_DYNMAT_NEIGHBOR_ELEMENT` | `Si` | its two neighbours |
+| `VDOS_DYNMAT_BOND_CUTOFF` | `2.2` | bridge–neighbour max distance, Å |
 | `VDOS_DYNMAT_OUTPUT` | `vdos_dynmat` | output basename |
 
 `MAX_FREQUENCY` is required, like `vdos.py`'s `VDOS_MAX_FREQUENCY_EV`, because a
@@ -352,6 +357,75 @@ computation, so it scales across the trajectory job's ranks (though LAMMPS
 gathers 9N doubles on *every* rank, so per-rank memory does not fall). The Python
 half is single-node and thread parallel — `np.linalg.eigh` is a threaded LAPACK
 call driven by `OMP_NUM_THREADS`. There is no distributed diagonalization.
+
+### Mode character — what kind of motion each band is
+
+`VDOS_DYNMAT_CHARACTER=yes` adds the standard amorphous-silica band assignment,
+following Bell & Dean and Taraskin & Elliott. At every **bridging** oxygen (one
+with exactly two Si neighbours) the two bond directions r̂₁, r̂₂ define three
+mutually orthogonal directions — two in the Si–O–Si plane, one normal to it:
+
+| direction | definition | motion | band |
+|---|---|---|---|
+| **stretch** | `norm(r̂₁ − r̂₂)`, along Si···Si | one Si–O lengthens as the other shortens | ~1050–1200 cm⁻¹ (130–150 meV) |
+| **bend** | `norm(r̂₁ + r̂₂)`, along the bisector | the Si–O–Si angle opens and closes | ~800 cm⁻¹ (~100 meV) |
+| **rock** | `norm(r̂₁ × r̂₂)`, ⊥ to the plane | O moves out of the Si–O–Si plane | ~400–500 cm⁻¹ (50–60 meV) |
+
+The two in-plane directions are perpendicular for free: `(r̂₁−r̂₂)·(r̂₁+r̂₂) =
+|r̂₁|² − |r̂₂|² = 0` because both are unit vectors — the diagonals of a rhombus.
+So the three form a *complete* basis and each oxygen's displacement splits
+exactly, `|u|² = (u·ŝ)² + (u·b̂)² + (u·r̂)²`.
+
+**Nothing is classified.** Every mode gets three fractions summing to 1, e.g.
+`(0.62, 0.21, 0.17)` — no thresholds, no labels. The bands appear when the DOS is
+weighted by those fractions, which is why `DoS(stretch)+DoS(bend)+DoS(rock)`
+equals `DoS(Total)` exactly.
+
+Three things to know about what the fractions mean:
+
+- Only **bridging-oxygen** motion is in the denominator. Si motion and
+  non-bridging-O motion contribute nothing, so a fraction reads "of the bridging-O
+  motion in this mode, how much is stretch" — not "of the whole mode". The
+  element-partial DOS covers the rest.
+- A 0.5/0.5 mode is genuinely ambiguous between "half the oxygens rocking, half
+  stretching" and "every oxygen at 45°". The per-mode table narrows this; only
+  looking at the eigenvector settles it.
+- Displacements are `u = e/√m`, **not** the eigenvectors. The eigenvectors of a
+  mass-weighted matrix are not displacements, and using them directly would
+  misweight oxygen against silicon throughout.
+
+A **linear** bridge (180°) has no plane: `r̂₁+r̂₂` and `r̂₁×r̂₂` both vanish and
+bend/rock become physically degenerate. Ideal β-cristobalite is exactly this, so
+the script substitutes an arbitrary perpendicular pair and reports how many
+bridges are within 5° of linear. Their *sum* (transverse motion) is still
+meaningful; the split between bend and rock is not. Stretch is unaffected.
+
+Alongside the decomposition you also get:
+
+- **Participation ratio**, `PR(m) = 1/(N Σᵢ|eᵢ|⁴)`, from `1/N` (all motion on one
+  atom) to `1` (every atom moving). In a glass this is half the physics — it is
+  how propagons, diffusons and locons are separated, and how the boson-peak
+  region is identified.
+- **Reduced DOS** `g(ν)/ν²` as a CSV column and plot panel. Debye predicts
+  `g ~ ν²`, so this is flat for a crystal and shows a peak in a glass — the boson
+  peak.
+- A **coordination census**: how many oxygens are 1-, 2-, 3-coordinated, and the
+  mean Si–O–Si angle. In a quenched glass some oxygens are non-bridging, and the
+  census says how much of the structure the decomposition actually covers. Worth
+  reading as a glass-quality check in its own right.
+
+Extra outputs when this is on:
+
+- `<date>_vdos_dynmat_modes.csv` — one row per mode: frequency in all four units,
+  participation ratio, `frac_stretch/bend/rock`, and per-element fractions. This
+  is what makes "which modes are in this peak" answerable.
+- `<date>_vdos_dynmat_character.png` — three panels: character-resolved DOS,
+  participation ratio vs frequency, and the reduced DOS.
+
+It needs `dynmat_ref.lammpstrj`, the coordinates LAMMPS writes immediately after
+`minimize`. The last frame of `dump.lammpstrj` will not do: it predates the
+minimization, and the relaxation rotates exactly the bond directions this
+analysis projects onto.
 
 ### Reading the diagnostics
 

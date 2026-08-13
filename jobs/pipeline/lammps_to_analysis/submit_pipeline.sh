@@ -296,6 +296,11 @@ VDOS_DYNMAT_NORMALIZATION="${VDOS_DYNMAT_NORMALIZATION:-}"
 VDOS_DYNMAT_PARTIAL="${VDOS_DYNMAT_PARTIAL:-}"
 VDOS_DYNMAT_ASR="${VDOS_DYNMAT_ASR:-}"
 VDOS_DYNMAT_OUTPUT="${VDOS_DYNMAT_OUTPUT:-}"
+VDOS_DYNMAT_CHARACTER="${VDOS_DYNMAT_CHARACTER:-}"
+DYNMAT_REF_TRAJ="${DYNMAT_REF_TRAJ:-}"
+VDOS_DYNMAT_BRIDGE_ELEMENT="${VDOS_DYNMAT_BRIDGE_ELEMENT:-}"
+VDOS_DYNMAT_NEIGHBOR_ELEMENT="${VDOS_DYNMAT_NEIGHBOR_ELEMENT:-}"
+VDOS_DYNMAT_BOND_CUTOFF="${VDOS_DYNMAT_BOND_CUTOFF:-}"
 
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
@@ -383,6 +388,11 @@ while [[ $# -gt 0 ]]; do
     --vdos-dynmat-partial) VDOS_DYNMAT_PARTIAL="$2"; shift 2 ;;
     --vdos-dynmat-asr) VDOS_DYNMAT_ASR="$2"; shift 2 ;;
     --vdos-dynmat-output) VDOS_DYNMAT_OUTPUT="$2"; shift 2 ;;
+    --vdos-dynmat-character) VDOS_DYNMAT_CHARACTER="$2"; shift 2 ;;
+    --dynmat-ref-traj) DYNMAT_REF_TRAJ="$2"; shift 2 ;;
+    --vdos-dynmat-bridge-element) VDOS_DYNMAT_BRIDGE_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-neighbor-element) VDOS_DYNMAT_NEIGHBOR_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-bond-cutoff) VDOS_DYNMAT_BOND_CUTOFF="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
     --skip-trajectory) SKIP_TRAJECTORY="1"; shift 1 ;;
@@ -558,6 +568,10 @@ ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 # ID order the matrix rows use.
 if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
   ln -s "$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}" "$STAGE2_DIR/${DYNMAT_FILE:-dynmat.dat}"
+  # The minimized geometry, needed only by the mode-character analysis. Linked
+  # unconditionally so turning VDOS_DYNMAT_CHARACTER on later needs no re-run.
+  _ref="${DYNMAT_REF_TRAJ:-dynmat_ref.lammpstrj}"
+  ln -s "$STAGE1_DIR/run/$_ref" "$STAGE2_DIR/$_ref"
 fi
 
 # None of these values may contain a comma — sbatch --export is
@@ -608,6 +622,11 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$VDOS_DYNMAT_PARTIAL" ]]         && export_vars+=",VDOS_DYNMAT_PARTIAL=$VDOS_DYNMAT_PARTIAL"
 [[ -n "$VDOS_DYNMAT_ASR" ]]             && export_vars+=",VDOS_DYNMAT_ASR=$VDOS_DYNMAT_ASR"
 [[ -n "$VDOS_DYNMAT_OUTPUT" ]]          && export_vars+=",VDOS_DYNMAT_OUTPUT=$VDOS_DYNMAT_OUTPUT"
+[[ -n "$VDOS_DYNMAT_CHARACTER" ]]       && export_vars+=",VDOS_DYNMAT_CHARACTER=$VDOS_DYNMAT_CHARACTER"
+[[ -n "$DYNMAT_REF_TRAJ" ]]             && export_vars+=",DYNMAT_REF_TRAJ=$DYNMAT_REF_TRAJ"
+[[ -n "$VDOS_DYNMAT_BRIDGE_ELEMENT" ]]  && export_vars+=",VDOS_DYNMAT_BRIDGE_ELEMENT=$VDOS_DYNMAT_BRIDGE_ELEMENT"
+[[ -n "$VDOS_DYNMAT_NEIGHBOR_ELEMENT" ]] && export_vars+=",VDOS_DYNMAT_NEIGHBOR_ELEMENT=$VDOS_DYNMAT_NEIGHBOR_ELEMENT"
+[[ -n "$VDOS_DYNMAT_BOND_CUTOFF" ]]     && export_vars+=",VDOS_DYNMAT_BOND_CUTOFF=$VDOS_DYNMAT_BOND_CUTOFF"
 
 # Stage 1's own environment. Until now stage 1 needed none — everything it used
 # was baked into in.input — so this is the first --export it gets. RUN_VDOS_DYNMAT
@@ -623,6 +642,8 @@ stage1_export="ALL,RUN_DYNMAT=$RUN_VDOS_DYNMAT"
 [[ -n "$DYNMAT_DISPLACEMENT" ]] && stage1_export+=",DYNMAT_DISPLACEMENT=$DYNMAT_DISPLACEMENT"
 [[ -n "$DYNMAT_FILE" ]]         && stage1_export+=",DYNMAT_FILE=$DYNMAT_FILE"
 [[ -n "$DYNMAT_BINARY" ]]       && stage1_export+=",DYNMAT_BINARY=$DYNMAT_BINARY"
+# One value again: LAMMPS writes this file, vdos_dynmat.py reads it.
+[[ -n "$DYNMAT_REF_TRAJ" ]]     && stage1_export+=",DYNMAT_REF_FILE=$DYNMAT_REF_TRAJ"
 
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "

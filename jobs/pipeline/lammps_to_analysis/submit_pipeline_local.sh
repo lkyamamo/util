@@ -269,6 +269,11 @@ VDOS_DYNMAT_NORMALIZATION=""
 VDOS_DYNMAT_PARTIAL=""
 VDOS_DYNMAT_ASR=""
 VDOS_DYNMAT_OUTPUT=""
+VDOS_DYNMAT_CHARACTER=""
+DYNMAT_REF_TRAJ=""
+VDOS_DYNMAT_BRIDGE_ELEMENT=""
+VDOS_DYNMAT_NEIGHBOR_ELEMENT=""
+VDOS_DYNMAT_BOND_CUTOFF=""
 
 # VDOS_DT used to carry the dt for both scripts; it is now DYNAMICS_DT. Because
 # submit_pipeline.conf is gitignored it does not travel with a pull, so a conf
@@ -343,6 +348,11 @@ while [[ $# -gt 0 ]]; do
     --vdos-dynmat-partial) VDOS_DYNMAT_PARTIAL="$2"; shift 2 ;;
     --vdos-dynmat-asr) VDOS_DYNMAT_ASR="$2"; shift 2 ;;
     --vdos-dynmat-output) VDOS_DYNMAT_OUTPUT="$2"; shift 2 ;;
+    --vdos-dynmat-character) VDOS_DYNMAT_CHARACTER="$2"; shift 2 ;;
+    --dynmat-ref-traj) DYNMAT_REF_TRAJ="$2"; shift 2 ;;
+    --vdos-dynmat-bridge-element) VDOS_DYNMAT_BRIDGE_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-neighbor-element) VDOS_DYNMAT_NEIGHBOR_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-bond-cutoff) VDOS_DYNMAT_BOND_CUTOFF="$2"; shift 2 ;;
     --dynamics-dt) DYNAMICS_DT="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -480,6 +490,8 @@ ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 # first frame of $DUMP_FILE, whose atom order is the matrix's row order.
 if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
   ln -s "$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}" "$STAGE2_DIR/${DYNMAT_FILE:-dynmat.dat}"
+  _ref="${DYNMAT_REF_TRAJ:-dynmat_ref.lammpstrj}"
+  ln -s "$STAGE1_DIR/run/$_ref" "$STAGE2_DIR/$_ref"
 fi
 
 enabled_scripts=""
@@ -513,10 +525,11 @@ echo "Running LAMMPS locally in $STAGE1_DIR/run ..."
   # One flag drives both stages: RUN_VDOS_DYNMAT reaches LAMMPS under the name its
   # input scripts use, RUN_DYNMAT, and gates vdos_dynmat.py in stage 2 below.
   RUN_DYNMAT="$RUN_VDOS_DYNMAT"
+  DYNMAT_REF_FILE="$DYNMAT_REF_TRAJ"
   lmp_vars=()
   for _v in RUN_DYNMAT DYNMAT_MIN_STYLE DYNMAT_MIN_ETOL DYNMAT_MIN_FTOL \
             DYNMAT_MIN_MAXITER DYNMAT_MIN_MAXEVAL DYNMAT_DISPLACEMENT \
-            DYNMAT_FILE DYNMAT_BINARY; do
+            DYNMAT_FILE DYNMAT_REF_FILE DYNMAT_BINARY; do
     if [[ -n "${!_v:-}" ]]; then
       lmp_vars+=(-var "$_v" "${!_v}")
       echo "  -var $_v ${!_v}"
@@ -587,6 +600,11 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$VDOS_DYNMAT_PARTIAL" ]]       && export VDOS_DYNMAT_PARTIAL="$VDOS_DYNMAT_PARTIAL"
   [[ -n "$VDOS_DYNMAT_ASR" ]]           && export VDOS_DYNMAT_ASR="$VDOS_DYNMAT_ASR"
   [[ -n "$VDOS_DYNMAT_OUTPUT" ]]        && export VDOS_DYNMAT_OUTPUT="$VDOS_DYNMAT_OUTPUT"
+  [[ -n "$VDOS_DYNMAT_CHARACTER" ]]     && export VDOS_DYNMAT_CHARACTER="$VDOS_DYNMAT_CHARACTER"
+  [[ -n "$DYNMAT_REF_TRAJ" ]]           && export DYNMAT_REF_TRAJ="$DYNMAT_REF_TRAJ"
+  [[ -n "$VDOS_DYNMAT_BRIDGE_ELEMENT" ]]   && export VDOS_DYNMAT_BRIDGE_ELEMENT="$VDOS_DYNMAT_BRIDGE_ELEMENT"
+  [[ -n "$VDOS_DYNMAT_NEIGHBOR_ELEMENT" ]] && export VDOS_DYNMAT_NEIGHBOR_ELEMENT="$VDOS_DYNMAT_NEIGHBOR_ELEMENT"
+  [[ -n "$VDOS_DYNMAT_BOND_CUTOFF" ]]   && export VDOS_DYNMAT_BOND_CUTOFF="$VDOS_DYNMAT_BOND_CUTOFF"
 
   if [[ "$RUN_DSF" == "1" ]]; then echo "--- dsf.py ---"; python dsf.py; fi
   if [[ "$RUN_RDF" == "1" ]]; then echo "--- rdf_freud.py ---"; python rdf_freud.py; fi

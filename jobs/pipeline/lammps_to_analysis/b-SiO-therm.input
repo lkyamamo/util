@@ -26,6 +26,7 @@ variable        DYNMAT_MIN_MAXITER  index 100000
 variable        DYNMAT_MIN_MAXEVAL  index 1000000
 variable        DYNMAT_DISPLACEMENT index 0.0001
 variable        DYNMAT_FILE         index dynmat.dat
+variable        DYNMAT_REF_FILE     index dynmat_ref.lammpstrj
 variable        DYNMAT_BINARY       index no
 
 # dynamical_matrix needs an atom map, and atom_modify must come before
@@ -140,6 +141,16 @@ if "${RUN_DYNMAT} == 0" then "jump SELF end_dynmat"
 
 min_style       ${DYNMAT_MIN_STYLE}
 minimize        ${DYNMAT_MIN_ETOL} ${DYNMAT_MIN_FTOL} ${DYNMAT_MIN_MAXITER} ${DYNMAT_MIN_MAXEVAL}
+
+# The minimized geometry, for vdos_dynmat.py's mode-character analysis. That
+# analysis projects each mode onto local Si-O-Si frames, so it needs the exact
+# coordinates the force constants below were evaluated at -- the last MD frame
+# in dump.lammpstrj is the configuration BEFORE this minimization, and the
+# relaxation rotates bond directions, which is precisely what the projection
+# measures. write_dump emits one frame immediately, with no run.
+write_dump      all custom ${DYNMAT_REF_FILE} id element x y z &
+                modify element Si O sort id
+
 dynamical_matrix all regular ${DYNMAT_DISPLACEMENT} file ${DYNMAT_FILE} binary ${DYNMAT_BINARY}
 
 label end_dynmat

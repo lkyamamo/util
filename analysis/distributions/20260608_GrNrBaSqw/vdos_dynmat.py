@@ -51,6 +51,13 @@ Optional:
                              OMP_NUM_THREADS alone
   VDOS_DYNMAT_OUTPUT         output basename               (default vdos_dynmat)
 
+Mode-character analysis (see MODE CHARACTER below), all optional:
+  VDOS_DYNMAT_CHARACTER          yes | no                  (default no)
+  DYNMAT_REF_TRAJ                minimized coordinates     (default dynmat_ref.lammpstrj)
+  VDOS_DYNMAT_BRIDGE_ELEMENT     the bridging atom         (default O)
+  VDOS_DYNMAT_NEIGHBOR_ELEMENT   its two neighbours        (default Si)
+  VDOS_DYNMAT_BOND_CUTOFF        bridge-neighbour max, A   (default 2.2)
+
 BINS only changes how smooth the curve looks, so it has a default; MAX_FREQUENCY
 changes which physics is in the plot at all, so it does not.
 
@@ -281,10 +288,36 @@ ASR = _env("VDOS_DYNMAT_ASR", "none")
 if ASR not in ("none", "simple"):
     raise ValueError(f"Unknown VDOS_DYNMAT_ASR={ASR!r}; use 'none' or 'simple'.")
 
+# Mode-character analysis — see MODE CHARACTER in the module docstring. Off by
+# default: it needs positions at the minimum, which only exist if the LAMMPS
+# stage wrote them, and it costs an extra pass over the eigenvectors.
+CHARACTER = _env("VDOS_DYNMAT_CHARACTER", "no")
+if CHARACTER not in ("yes", "no"):
+    raise ValueError(f"Unknown VDOS_DYNMAT_CHARACTER={CHARACTER!r}; use 'yes' or 'no'.")
+
+# Coordinates at the minimized geometry, written by the LAMMPS stage's
+# write_dump immediately after `minimize`. Only read when CHARACTER='yes' — this
+# has to be the post-minimization geometry, since the whole analysis is a
+# projection onto bond directions and the relaxation rotates them.
+DYNMAT_REF_TRAJ = os.environ.get("DYNMAT_REF_TRAJ", "dynmat_ref.lammpstrj")
+
+# The local frame is built at each BRIDGE atom from its two NEIGHBOR-element
+# neighbours: for a-SiO2 that is an oxygen bridging two silicons, the Si-O-Si
+# unit whose three orthogonal displacement directions are the standard band
+# assignment for silica glass.
+BRIDGE_ELEMENT   = _env("VDOS_DYNMAT_BRIDGE_ELEMENT", "O")
+NEIGHBOR_ELEMENT = _env("VDOS_DYNMAT_NEIGHBOR_ELEMENT", "Si")
+BOND_CUTOFF      = float(_env("VDOS_DYNMAT_BOND_CUTOFF", "2.2"))   # Angstrom
+if BOND_CUTOFF <= 0:
+    raise ValueError(f"VDOS_DYNMAT_BOND_CUTOFF must be positive, got {BOND_CUTOFF}.")
+
 # Output basename; .csv and .png are appended (set either to None to skip).
 _OUTPUT_BASE = _env("VDOS_DYNMAT_OUTPUT", "vdos_dynmat")
 OUTPUT_CSV   = f"{_OUTPUT_BASE}.csv"
 OUTPUT_PLOT  = f"{_OUTPUT_BASE}.png"
+# Written only when CHARACTER='yes'.
+OUTPUT_MODES     = f"{_OUTPUT_BASE}_modes.csv"
+OUTPUT_CHARACTER = f"{_OUTPUT_BASE}_character.png"
 
 # Plot appearance
 PLOT_DPI = 150
@@ -297,8 +330,14 @@ PLOT_DPI = 150
 def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
-OUTPUT_CSV  = _dated(OUTPUT_CSV)
-OUTPUT_PLOT = _dated(OUTPUT_PLOT)
+OUTPUT_CSV       = _dated(OUTPUT_CSV)
+OUTPUT_PLOT      = _dated(OUTPUT_PLOT)
+OUTPUT_MODES     = _dated(OUTPUT_MODES)
+OUTPUT_CHARACTER = _dated(OUTPUT_CHARACTER)
+
+# The three orthogonal directions the bridging atom can move in, in the order
+# they are reported. Names follow the silica-glass literature.
+CHARACTER_NAMES = ('stretch', 'bend', 'rock')
 
 THZ_PER_CM1 = 0.0299792458   # 1 cm^-1 = 0.0299792458 THz
 EV_PER_THZ  = 0.0041356677   # 1 THz = h * 1e12 Hz = 4.1356677e-3 eV (E = h*nu)
@@ -393,6 +432,253 @@ def read_elements(filename):
                 )
 
     return elements
+
+
+def read_frame_with_positions(filename):
+    """
+    Read elements, positions and box from the first (only) frame of the
+    reference dump written after `minimize`.
+
+    Returns (elements, positions, box_lengths, tilt) with positions in the
+    dump's own order, which `read_elements`' ID check has already established is
+    ascending atom ID — the matrix row order.
+    """
+    with open(filename) as f:
+        if not f.readline():
+            raise ValueError(f"{filename} is empty.")
+        f.readline()                                   # timestep
+        f.readline()
+        n_atoms = int(f.readline().strip())
+
+        bounds_header = f.readline().split()           # ITEM: BOX BOUNDS [xy xz yz] pp pp pp
+        lo, hi, tilt = np.empty(3), np.empty(3), np.zeros(3)
+        for axis in range(3):
+            parts = f.readline().split()
+            lo[axis], hi[axis] = float(parts[0]), float(parts[1])
+            if len(parts) > 2:                         # triclinic: xy, xz, yz
+                tilt[axis] = float(parts[2])
+
+        header = f.readline().split()
+        cols = header[2:]
+        missing = [c for c in ('element', 'x', 'y', 'z') if c not in cols]
+        if missing:
+            raise ValueError(
+                f"{filename} is missing column(s) {missing}. The mode-character "
+                f"analysis needs 'id element x y z'; see the write_dump line in the "
+                f"RUN_DYNMAT block of OH-therm.input / b-SiO-therm.input."
+            )
+        ce, cx, cy, cz = (cols.index(c) for c in ('element', 'x', 'y', 'z'))
+
+        rows = [f.readline().split() for _ in range(n_atoms)]
+
+    elements  = np.array([r[ce] for r in rows])
+    positions = np.array([[float(r[cx]), float(r[cy]), float(r[cz])] for r in rows])
+
+    # LAMMPS triclinic bounds are the bounding box of the tilted cell, not the
+    # cell lengths; correcting for that is only worth doing if it comes up.
+    if np.any(tilt != 0.0):
+        raise ValueError(
+            f"{filename} describes a triclinic box (tilt factors {tilt}). The "
+            f"mode-character analysis assumes an orthogonal cell for its minimum-"
+            f"image bond vectors, so it would silently mis-assign bonds across the "
+            f"periodic boundary. Set VDOS_DYNMAT_CHARACTER=no, or extend "
+            f"find_bridges() to pass the tilt through to freud."
+        )
+
+    return elements, positions, hi - lo
+
+
+def find_bridges(elements, positions, box_lengths, bridge_element,
+                 neighbor_element, cutoff):
+    """
+    Find every bridge_element atom bonded to exactly two neighbor_element atoms,
+    and build the local orthonormal frame at each.
+
+    With r1, r2 the unit vectors from the bridge to its two neighbours, the three
+    directions are
+
+        stretch = norm(r1 - r2)   along the neighbour-neighbour line; one bond
+                                  lengthens as the other shortens
+        bend    = norm(r1 + r2)   along the bisector; opens and closes the
+                                  neighbour-bridge-neighbour angle
+        rock    = norm(r1 x r2)   perpendicular to the plane
+
+    r1-r2 and r1+r2 are orthogonal whenever |r1| = |r2|, and the cross product is
+    perpendicular to both, so the three form a complete orthonormal basis for the
+    bridge atom's motion — this is a decomposition, not a heuristic split.
+
+    Returns (bridge_indices, frames, census) where frames is
+    (n_bridge, 3, 3) indexed [atom, direction, xyz] in CHARACTER_NAMES order.
+    """
+    import freud   # only needed for CHARACTER='yes'; keeps the base script numpy-only
+
+    box = freud.box.Box(Lx=box_lengths[0], Ly=box_lengths[1], Lz=box_lengths[2])
+    is_bridge   = elements == bridge_element
+    is_neighbor = elements == neighbor_element
+    if not is_bridge.any() or not is_neighbor.any():
+        raise ValueError(
+            f"No {bridge_element} or no {neighbor_element} atoms in the reference "
+            f"dump (elements present: {sorted(set(elements.tolist()))}). Set "
+            f"VDOS_DYNMAT_BRIDGE_ELEMENT / VDOS_DYNMAT_NEIGHBOR_ELEMENT for this system."
+        )
+
+    bridge_idx   = np.flatnonzero(is_bridge)
+    neighbor_idx = np.flatnonzero(is_neighbor)
+    wrapped = box.wrap(positions)
+
+    # Query direction, and the use of nl.vectors, both follow bad_freud.py's
+    # _query(): building over the neighbours and probing with the bridge atoms
+    # makes freud return the bonds already segmented by bridge atom, and its
+    # vectors are minimum-image corrected so no manual wrapping is needed.
+    nl = freud.locality.AABBQuery(box, wrapped[neighbor_idx]).query(
+        wrapped[bridge_idx], {'r_max': cutoff, 'r_min': 1e-6, 'exclude_ii': False}
+    ).toNeighborList()
+
+    counts   = np.asarray(nl.neighbor_counts).astype(np.intp)
+    segments = np.asarray(nl.segments).astype(np.intp)
+    vectors  = np.asarray(nl.vectors) / np.asarray(nl.distances)[:, None]
+
+    census = {
+        'bridge_total':   int(len(bridge_idx)),
+        'coordination':   {int(c): int(n) for c, n in
+                           zip(*np.unique(counts, return_counts=True))},
+        'neighbor_total': int(len(neighbor_idx)),
+    }
+
+    keep = counts == 2
+    kept_bridge = bridge_idx[keep]
+    if not keep.any():
+        raise ValueError(
+            f"No {bridge_element} atom has exactly two {neighbor_element} neighbours "
+            f"within {cutoff} A, so no local frame can be built. Check "
+            f"VDOS_DYNMAT_BOND_CUTOFF against the first peak of the {bridge_element}-"
+            f"{neighbor_element} RDF."
+        )
+
+    # The two bond directions of each two-coordinated bridge atom sit at
+    # segments[i] and segments[i]+1 in the flat bond list.
+    first = segments[keep]
+    r1, r2 = vectors[first], vectors[first + 1]
+
+    def _unit(v):
+        return v / np.linalg.norm(v, axis=1, keepdims=True)
+
+    angles = np.degrees(np.arccos(np.clip((r1 * r2).sum(axis=1), -1.0, 1.0)))
+
+    # Built as stretch -> rock -> bend rather than the three literal expressions,
+    # because rock x stretch is proportional to (r1 + r2) exactly (expand the
+    # triple product) while staying orthonormal by construction instead of by
+    # coincidence of three separate normalizations.
+    stretch = _unit(r1 - r2)
+    cross = np.cross(r1, r2)
+    cross_norm = np.linalg.norm(cross, axis=1)          # = |sin(angle)|
+
+    # A linear bridge has no plane: at 180 degrees both r1 + r2 and r1 x r2
+    # vanish, and bend and rock become physically degenerate — any two
+    # perpendicular directions across the axis are equivalent by symmetry. Ideal
+    # beta-cristobalite is exactly this case, so it has to be handled rather than
+    # left to divide by zero.
+    #
+    # The threshold is about the precision of the input coordinates, not machine
+    # epsilon. The reference dump stores positions to ~6 decimals, so a bond
+    # direction carries ~1e-6 of error; the cross product's *direction* is then
+    # only meaningful while |sin(angle)| stays well above that. At 1e-3 (within
+    # 0.06 degrees of linear) the direction is good to ~0.1%, and below it the
+    # cross is noise and the arbitrary perpendicular is strictly better.
+    degenerate = cross_norm < 1e-3
+    if degenerate.any():
+        fallback = np.zeros((int(degenerate.sum()), 3))
+        axis = np.argmin(np.abs(stretch[degenerate]), axis=1)     # least-aligned axis
+        fallback[np.arange(len(fallback)), axis] = 1.0
+        cross[degenerate] = np.cross(stretch[degenerate], fallback)
+
+    # r1 x r2 is perpendicular to r1 - r2 analytically, but that cancellation is
+    # ill-conditioned exactly where the cross is small — normalizing then amplifies
+    # the residual. Projecting the component along stretch back out costs nothing
+    # and makes the frame orthonormal to machine precision at every angle.
+    cross -= (cross * stretch).sum(axis=1, keepdims=True) * stretch
+    rock = _unit(cross)
+    bend = np.cross(rock, stretch)                       # unit and orthogonal by construction
+
+    frames = np.stack([stretch, bend, rock], axis=1)
+
+    census['angles_deg'] = angles
+    census['degenerate'] = int(degenerate.sum())
+    # Not singular but ill-conditioned: near 180 degrees the plane is poorly
+    # defined, so the bend/rock split is noisy even though their sum is not.
+    census['near_linear'] = int((angles > 175.0).sum())
+    return kept_bridge, frames, census
+
+
+def mode_character(eigenvectors, bridge_indices, frames, masses, chunk=256):
+    """
+    Fraction of each mode's bridge-atom motion along stretch, bend and rock.
+
+    The eigenvectors of a mass-weighted matrix are not displacements: with
+    D = Phi/sqrt(m_i m_j), the physical displacement is u_i = e_i/sqrt(m_i). The
+    projections below are geometric, so they must use u, not e — skipping this
+    would systematically misweight the lighter species, which for silica is the
+    oxygen that carries all the band character.
+
+    Chunked over bridge atoms so the (n_bridge, 3, n_modes) displacement block
+    never has to exist in full.
+
+    Returns {name: (n_modes,) fraction}, each in [0, 1] and summing to 1 across
+    the three names (up to floating point).
+    """
+    n_modes = eigenvectors.shape[1]
+    totals = {name: np.zeros(n_modes) for name in CHARACTER_NAMES}
+    denominator = np.zeros(n_modes)
+
+    inv_sqrt_m = 1.0 / np.sqrt(masses[bridge_indices])        # (n_bridge,)
+
+    for start in range(0, len(bridge_indices), chunk):
+        stop = min(start + chunk, len(bridge_indices))
+        rows = (3 * bridge_indices[start:stop, None] + np.arange(3)).ravel()
+        u = eigenvectors[rows].reshape(stop - start, 3, n_modes)
+        u = u * inv_sqrt_m[start:stop, None, None]            # e -> displacement
+
+        denominator += np.einsum('oam,oam->m', u, u)
+        for axis, name in enumerate(CHARACTER_NAMES):
+            projection = np.einsum('oam,oa->om', u, frames[start:stop, axis, :])
+            totals[name] += np.einsum('om,om->m', projection, projection)
+
+    safe = np.where(denominator > 0, denominator, 1.0)
+    return {name: value / safe for name, value in totals.items()}
+
+
+def participation_ratio(eigenvectors, n_atoms, chunk=512):
+    """
+    PR(m) = 1 / (N * sum_i |e_i|^4), with |e_i|^2 the atom's share of mode m.
+
+    Ranges from 1/N (all the motion on one atom) to 1 (every atom moving
+    equally), so it separates extended modes from localized ones — the standard
+    way to pick out the boson-peak region and the localized high-frequency modes
+    in a glass.
+
+    Defined on the mass-weighted eigenvector, which is the usual convention: e is
+    orthonormal, so |e_i|^2 is atom i's fraction of the mode's kinetic energy and
+    the sum over atoms is exactly 1.
+    """
+    n_modes = eigenvectors.shape[1]
+    quartic = np.zeros(n_modes)
+    for start in range(0, n_atoms, chunk):
+        stop = min(start + chunk, n_atoms)
+        block = eigenvectors[3 * start:3 * stop].reshape(stop - start, 3, n_modes)
+        share = np.einsum('oam,oam->om', block, block)        # |e_i|^2
+        quartic += np.einsum('om,om->m', share, share)
+    return 1.0 / (n_atoms * quartic)
+
+
+def reduced_dos(total_curve, grid):
+    """
+    g(nu)/nu^2 — the conventional way to display the boson peak, the excess over
+    the Debye prediction that g(nu) ~ nu^2 flattens into a constant. The nu = 0
+    bin is NaN rather than infinity so it simply does not plot.
+    """
+    with np.errstate(divide='ignore', invalid='ignore'):
+        reduced = np.where(grid > 0, total_curve / np.square(grid), np.nan)
+    return reduced
 
 
 def read_matrix(filename, n_atoms, binary):
@@ -555,19 +841,119 @@ def _freq_all_units(grid, xunit):
     return {unit: freq_THz * factor for unit, factor in UNIT_PER_THZ.items()}
 
 
-def save_csv(results, freq_by_unit, filename):
-    """Save results dict {element_or_'total': array} to CSV. Column layout is
-    identical to vdos.py's so the two methods' outputs can be overlaid."""
+def save_csv(results, freq_by_unit, filename, extra=None):
+    """Save results dict {element_or_'total': array} to CSV. The first columns are
+    identical to vdos.py's so the two methods' outputs can be overlaid; `extra`
+    appends further named columns (character-resolved DOS, reduced DOS) after."""
     order = [el for el in results if el != 'total'] + ['total']
     header_parts = ['freq_meV', 'freq_THz', 'freq_cm-1', 'freq_eV']
     columns = [freq_by_unit['meV'], freq_by_unit['THz'], freq_by_unit['cm-1'], freq_by_unit['eV']]
     for label in order:
         header_parts.append('DoS(Total)' if label == 'total' else f'DoS({label})')
         columns.append(results[label])
+    for label, values in (extra or {}).items():
+        header_parts.append(label)
+        columns.append(values)
     header = ','.join(header_parts)
     data = np.column_stack(columns)
     np.savetxt(filename, data, delimiter=',', header=header, comments='', fmt='%.6f')
     print(f"Data table saved to {filename}")
+
+
+def save_modes_csv(freqs, freq_by_unit_of, pr, character, element_fracs, filename):
+    """
+    One row per mode: its frequency in all four units, its participation ratio,
+    and its character and element fractions. This is what makes 'which modes are
+    in this peak' answerable — the DOS curves only show which character dominates
+    a region, not which individual modes put it there.
+    """
+    header_parts = ['freq_meV', 'freq_THz', 'freq_cm-1', 'freq_eV', 'participation_ratio']
+    columns = [freq_by_unit_of['meV'], freq_by_unit_of['THz'],
+               freq_by_unit_of['cm-1'], freq_by_unit_of['eV'], pr]
+    for name in CHARACTER_NAMES:
+        header_parts.append(f'frac_{name}')
+        columns.append(character[name])
+    for element, values in sorted(element_fracs.items()):
+        header_parts.append(f'frac_{element}')
+        columns.append(values)
+    np.savetxt(filename, np.column_stack(columns), delimiter=',',
+               header=','.join(header_parts), comments='', fmt='%.6f')
+    print(f"Per-mode table saved to {filename}  ({len(freqs)} modes)")
+
+
+def plot_character(grid, character_curves, total, pr, mode_freqs, filename, xunit=XUNIT):
+    """
+    Three stacked panels: what kind of motion each band is, how localized its
+    modes are, and the reduced DOS that exposes the boson peak.
+    """
+    fig, axes = plt.subplots(3, 1, figsize=(8, 11), sharex=True)
+
+    ax = axes[0]
+    ax.plot(grid, total, color='0.3', linewidth=1.6, label='total')
+    for name in CHARACTER_NAMES:
+        ax.plot(grid, character_curves[name], linewidth=1.2, label=name)
+    ax.set_ylabel('DOS (states / atom / ' + xunit + ')')
+    ax.set_title('Character-resolved DOS (bridging-atom motion)')
+    ax.legend()
+
+    ax = axes[1]
+    # One point per mode: scatter rather than a curve, because the spread of PR
+    # at a given frequency is itself the information — a tight low band means
+    # every mode there is equally extended, a wide one means they are not.
+    ax.plot(mode_freqs, pr, '.', markersize=2, alpha=0.4)
+    ax.set_ylabel('participation ratio')
+    ax.set_title('Localization (1 = every atom moves, 1/N = one atom moves)')
+    ax.set_ylim(0, 1)
+
+    ax = axes[2]
+    ax.plot(grid, reduced_dos(total, grid), color='C3', linewidth=1.2)
+    ax.set_ylabel(f'g / {xunit}²')
+    ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
+    ax.set_title('Reduced DOS g(ν)/ν² — a peak here is the boson peak')
+
+    fig.tight_layout()
+    fig.savefig(filename, dpi=PLOT_DPI)
+    plt.close(fig)
+    print(f"Character plot saved to {filename}")
+
+
+def report_census(census, bridge_element, neighbor_element, cutoff):
+    """
+    Report the coordination of every bridge atom. In a quenched glass some
+    oxygens are non-bridging and some silicons are mis-coordinated; the local
+    frame only exists for the two-coordinated ones, so this says how much of the
+    structure the decomposition actually covers — and doubles as a glass-quality
+    check worth reading on its own.
+    """
+    total = census['bridge_total']
+    print(f"  Coordination census ({bridge_element} by {neighbor_element} neighbours "
+          f"within {cutoff} A):")
+    for coordination, count in sorted(census['coordination'].items()):
+        kind = {0: 'isolated', 1: 'non-bridging', 2: 'bridging'}.get(coordination, 'over-coordinated')
+        print(f"    {coordination}-coordinated: {count:6d}  ({100.0*count/total:5.1f}%)  {kind}")
+    bridging = census['coordination'].get(2, 0)
+    print(f"  Local frames built on {bridging}/{total} {bridge_element} atoms "
+          f"({100.0*bridging/total:.1f}% of them); the character fractions describe "
+          f"only their motion.")
+    if bridging < total:
+        print(f"  NOTE: {total - bridging} {bridge_element} atom(s) are not two-coordinated "
+              f"and contribute nothing to the character fractions. If that count is large, "
+              f"check VDOS_DYNMAT_BOND_CUTOFF against the {bridge_element}-{neighbor_element} "
+              f"RDF before reading anything into the decomposition.")
+    angles = census['angles_deg']
+    if len(angles):
+        print(f"  {bridge_element}-{neighbor_element} bridge angle: mean {angles.mean():.1f}"
+              f" +/- {angles.std():.1f} deg  (a-SiO2 sits near 144)")
+    near_linear = census.get('near_linear', 0)
+    exactly_linear = census.get('degenerate', 0)
+    if near_linear:
+        detail = f" ({exactly_linear} of them exactly linear)" if exactly_linear else ""
+        print(f"  NOTE: {near_linear} bridge(s) within 5 deg of linear{detail}. A linear "
+              f"bridge has no plane,\n"
+              f"        so bend and rock are physically degenerate there and their split is "
+              f"arbitrary — only\n"
+              f"        their SUM (the transverse motion) is meaningful for those. Stretch is "
+              f"unaffected.")
 
 
 def plot_vdos(results, freq_by_unit, filename, xunit=XUNIT):
@@ -641,9 +1027,29 @@ def report_diagnostics(freqs, xunit, max_frequency, n_snapped, tolerance):
 if __name__ == '__main__':
     import time
 
-    print(f"Reading elements from: {DUMP_FILE}")
     t0 = time.time()
-    elements = read_elements(DUMP_FILE)
+    positions = box_lengths = None
+    if CHARACTER == 'yes':
+        # The character analysis is a projection onto bond directions, so it must
+        # use the geometry the force constants were built at — the post-minimize
+        # dump, not the last MD frame.
+        print(f"Reading minimized geometry from: {DYNMAT_REF_TRAJ}")
+        try:
+            elements, positions, box_lengths = read_frame_with_positions(DYNMAT_REF_TRAJ)
+        except FileNotFoundError:
+            raise SystemExit(
+                f"vdos_dynmat.py: VDOS_DYNMAT_CHARACTER=yes needs {DYNMAT_REF_TRAJ}, the "
+                f"coordinates written just after `minimize` in the LAMMPS stage.\n"
+                f"It is produced by the write_dump line in the RUN_DYNMAT block of "
+                f"OH-therm.input / b-SiO-therm.input, so a matrix from an older run "
+                f"predating that line will not have one.\n"
+                f"Re-run the LAMMPS stage, or set VDOS_DYNMAT_CHARACTER=no."
+            )
+        print(f"  Box: {np.round(box_lengths, 4)} A")
+    else:
+        print(f"Reading elements from: {DUMP_FILE}")
+        elements = read_elements(DUMP_FILE)
+
     n_atoms = len(elements)
     unique_els = sorted(set(elements.tolist()))
     print(f"  Atoms: {n_atoms}, elements: {unique_els}")
@@ -663,13 +1069,20 @@ if __name__ == '__main__':
         print("  Applying acoustic sum rule (ASR='simple')")
         matrix = apply_asr(matrix, elements)
 
-    print(f"Diagonalizing ({'eigh, with eigenvectors' if PARTIAL == 'yes' else 'eigvalsh, eigenvalues only'})...")
+    # Character and participation ratio are both defined on the eigenvectors, so
+    # either of them forces the full eigh regardless of VDOS_DYNMAT_PARTIAL.
+    need_vectors = PARTIAL == 'yes' or CHARACTER == 'yes'
+    if CHARACTER == 'yes' and PARTIAL == 'no':
+        print("  Note: VDOS_DYNMAT_CHARACTER=yes needs eigenvectors, so PARTIAL=no "
+              "does not save anything here — computing them anyway.")
+
+    print(f"Diagonalizing ({'eigh, with eigenvectors' if need_vectors else 'eigvalsh, eigenvalues only'})...")
     # An accidentally single-threaded LAPACK turns minutes into hours at this
     # size, and it fails silently — so say out loud how many threads it will use.
     print(f"  BLAS threads: {os.environ.get('OMP_NUM_THREADS', 'unset (BLAS default)')}"
           f"  [set VDOS_DYNMAT_THREADS to override]")
     t2 = time.time()
-    if PARTIAL == 'yes':
+    if need_vectors:
         eigenvalues, eigenvectors = np.linalg.eigh(matrix)
     else:
         eigenvalues, eigenvectors = np.linalg.eigvalsh(matrix), None
@@ -683,8 +1096,29 @@ if __name__ == '__main__':
     report_diagnostics(freqs, XUNIT, MAX_FREQUENCY, n_snapped, zero_tol)
 
     weights = {'total': np.ones_like(freqs)}
+    element_fracs = {}
+    if eigenvectors is not None and PARTIAL == 'yes':
+        element_fracs = partial_weights(eigenvectors, elements)
+        weights.update(element_fracs)
+
+    character = pr = None
+    if CHARACTER == 'yes':
+        print(f"Mode character: local frames at {BRIDGE_ELEMENT} bridging two "
+              f"{NEIGHBOR_ELEMENT} within {BOND_CUTOFF} A")
+        bridge_indices, frames, census = find_bridges(
+            elements, positions, box_lengths, BRIDGE_ELEMENT, NEIGHBOR_ELEMENT, BOND_CUTOFF)
+        report_census(census, BRIDGE_ELEMENT, NEIGHBOR_ELEMENT, BOND_CUTOFF)
+
+        masses = np.array([ELEMENT_MASSES[el] for el in elements])
+        character = mode_character(eigenvectors, bridge_indices, frames, masses)
+        pr = participation_ratio(eigenvectors, n_atoms)
+        print(f"  Participation ratio: min {pr.min():.4f}, median {np.median(pr):.4f}, "
+              f"max {pr.max():.4f}")
+        # Weighting the DOS by each fraction is what turns a per-mode number into
+        # a band assignment: the curves say which motion dominates each region.
+        weights.update(character)
+
     if eigenvectors is not None:
-        weights.update(partial_weights(eigenvectors, elements))
         del eigenvectors
 
     print(f"Binning ({BINS} bins over [0, {MAX_FREQUENCY}] {XUNIT}"
@@ -693,12 +1127,25 @@ if __name__ == '__main__':
     results = normalize(curves, grid, n_atoms, NORMALIZATION)
     freq_by_unit = _freq_all_units(grid, XUNIT)
 
-    # Order the CSV/legend as vdos.py does: partials first, total last.
+    # Order the CSV/legend as vdos.py does: partials first, total last. Character
+    # curves are pulled out here so the leading columns stay byte-comparable with
+    # vdos.py's CSV; they come back as extra columns after the DoS block.
+    character_curves = {name: results.pop(name) for name in CHARACTER_NAMES if name in results}
     results = {el: results[el] for el in unique_els if el in results} | {'total': results['total']}
+
+    extra = {f'DoS({name})': curve for name, curve in character_curves.items()}
+    extra['g/nu^2'] = reduced_dos(results['total'], grid)
 
     print(f"  Total: {time.time() - t0:.2f}s")
 
     if OUTPUT_CSV is not None:
-        save_csv(results, freq_by_unit, OUTPUT_CSV)
+        save_csv(results, freq_by_unit, OUTPUT_CSV, extra=extra)
     if OUTPUT_PLOT is not None:
         plot_vdos(results, freq_by_unit, OUTPUT_PLOT)
+    if CHARACTER == 'yes':
+        if OUTPUT_MODES is not None:
+            save_modes_csv(freqs, _freq_all_units(freqs, XUNIT), pr, character,
+                           element_fracs, OUTPUT_MODES)
+        if OUTPUT_CHARACTER is not None:
+            plot_character(grid, character_curves, results['total'], pr, freqs,
+                           OUTPUT_CHARACTER)

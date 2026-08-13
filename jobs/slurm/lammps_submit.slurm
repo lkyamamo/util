@@ -65,7 +65,7 @@ echo "Running in $(pwd)"
 lmp_vars=()
 for _v in RUN_DYNMAT DYNMAT_MIN_STYLE DYNMAT_MIN_ETOL DYNMAT_MIN_FTOL \
           DYNMAT_MIN_MAXITER DYNMAT_MIN_MAXEVAL DYNMAT_DISPLACEMENT \
-          DYNMAT_FILE DYNMAT_BINARY; do
+          DYNMAT_FILE DYNMAT_REF_FILE DYNMAT_BINARY; do
   if [ -n "${!_v:-}" ]; then
     lmp_vars+=(-var "$_v" "${!_v}")
     echo "  -var $_v ${!_v}"
