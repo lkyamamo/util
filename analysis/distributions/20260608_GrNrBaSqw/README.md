@@ -302,10 +302,10 @@ The matrix is mass-weighted, so with `units metal`:
 
 | `dynamical_matrix` style | eigenvalue λ | ν [THz] |
 |---|---|---|
-| `regular` (default) | eV/(Å²·amu) | `sqrt(λ) * 15.633302` |
+| `regular` (default) | eV/(Å²·amu) | `sqrt(λ) * 15.6333042` |
 | `eskm` | 1/ps² | `sqrt(λ) / 2π` |
 
-These agree: LAMMPS's own eskm factor is 9648.5, and `sqrt(9648.5)/2π = 15.6333`.
+These agree: LAMMPS's own eskm factor is 9648.5, and `sqrt(9648.53)/2π = 15.6333`.
 `VDOS_DYNMAT_MATRIX_STYLE` must match whichever style the `.input` file used —
 it sets this conversion, so a mismatch rescales the whole spectrum.
 

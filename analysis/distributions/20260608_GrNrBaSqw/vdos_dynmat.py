@@ -79,7 +79,7 @@ METHOD
 4. Diagonalize. eigh when partial DOS is wanted, eigvalsh when it is not (which
    halves both peak memory and runtime).
 5. Convert eigenvalues to frequencies. D is mass-weighted, so in `units metal`:
-       regular : lambda in eV/(A^2*amu), nu[THz] = sqrt(lambda) * 15.633302
+       regular : lambda in eV/(A^2*amu), nu[THz] = sqrt(lambda) * 15.6333042
        eskm    : lambda in 1/ps^2,       nu[THz] = sqrt(lambda) / (2*pi)
    The two agree — LAMMPS's eskm conversion factor is 9648.5, and
    sqrt(9648.5)/(2*pi) = 15.6333. Negative eigenvalues (imaginary modes) are
@@ -304,12 +304,23 @@ THZ_PER_CM1 = 0.0299792458   # 1 cm^-1 = 0.0299792458 THz
 EV_PER_THZ  = 0.0041356677   # 1 THz = h * 1e12 Hz = 4.1356677e-3 eV (E = h*nu)
 
 # nu[THz] per sqrt(eigenvalue), by dynamical_matrix style, for `units metal`.
-# 'regular' leaves the mass-weighted force constants in eV/(A^2*amu); LAMMPS's
-# own eskm conversion factor of 9648.5 turns those into 1/ps^2, and
-# sqrt(9648.5)/(2*pi) = 15.633302 — so the two rows below are the same number
-# expressed against the two different input units.
+#
+# 'regular' leaves the mass-weighted force constants in eV/(A^2*amu). One of
+# those is 1 eV / (1 A^2 * 1 amu) = 1.602176634e-19 / (1e-20 * 1.66053907e-27)
+# = 9.648533e27 s^-2, so omega = 9.822695e13 rad/s and nu = omega/(2*pi) =
+# 15.6333042 THz.
+#
+# 'eskm' means LAMMPS already applied that same conversion itself (its metal
+# force->mvv2e = 1.0364269e-4, so 1/mvv2e = 9648.53 ps^-2), leaving lambda in
+# 1/ps^2 — from which sqrt is omega in rad/ps and nu is just omega/(2*pi).
+#
+# The two rows are therefore the same physical conversion against different
+# input units, and agree to ~1e-6: LAMMPS's mvv2e is itself a rounded constant,
+# so the eskm path inherits that rounding rather than the CODATA value used here.
+# Far below any frequency this method resolves, but it is why the two styles do
+# not agree to the last digit.
 THZ_PER_SQRT_EIGENVALUE = {
-    'regular': 15.633302,
+    'regular': 15.6333042,
     'eskm':    1.0 / (2.0 * np.pi),
 }
 
