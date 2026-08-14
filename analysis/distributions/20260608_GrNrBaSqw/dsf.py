@@ -9,7 +9,7 @@ QUICK START
    see OH-therm.input/b-SiO-therm.input's second dump block.
 2. Set DYNAMICS_DT to the time between consecutive dumped frames in fs — the
    same key vdos.py and msd.py read, since all three share the trajectory.
-3. Set N_FRAMES and WINDOW_SIZE.
+3. Set DSF_N_FRAMES (blank or 0 = the whole trajectory) and DSF_WINDOW_SIZE.
 4. Run:  python dsf.py
 
 OUTPUT
@@ -105,11 +105,18 @@ del _old, _new
 # actually used is DSF_N_FRAMES / DSF_STRIDE, so raising the stride uses fewer
 # frames over the same span rather than the same number over a longer span.
 # Skipped frames are still parsed (measured: iterating a 100-frame span costs the
-# same at stride 1, 10 and 50), so set DSF_N_FRAMES to the whole trajectory and
-# pick DSF_STRIDE for the frame count you can afford — spanning more time is
-# free, computing more frames is not.
-# Defaults: 30000 dumped frames at DYNAMICS_DT=2 fs = 60 ps, sampled every 1.2 ps.
-N_FRAMES        = int(os.environ.get("DSF_N_FRAMES", "30000"))  # frame_stop in Trajectory
+# same at stride 1, 10 and 50), so leave DSF_N_FRAMES at "all" and pick
+# DSF_STRIDE for the frame count you can afford — spanning more time is free,
+# computing more frames is not.
+#
+# Blank or 0 means the WHOLE trajectory, matching vdos.py's and msd.py's
+# documented "0 = all".  Neither spelling can be passed to dynasor untranslated:
+# frame_stop goes straight into islice(), where None means all but 0 means
+# ZERO frames — so a 0 forwarded as-is would silently produce an empty run
+# rather than an error.  Default is now all frames; it used to be 30000, which
+# silently truncated a longer trajectory.
+_N_FRAMES_ENV   = os.environ.get("DSF_N_FRAMES", "").strip()
+N_FRAMES        = (int(_N_FRAMES_ENV) if _N_FRAMES_ENV else 0) or None  # None = entire trajectory
 STRIDE          = int(os.environ.get("DSF_STRIDE", "600"))      # read every Nth frame (frame_step)
 
 # Threading — 0 = use all available cores
@@ -568,7 +575,8 @@ def plot_dsf(sample, sample_neutron, filename):
 
 if __name__ == '__main__':
     print(f"Reading trajectory: {DUMP_FILE}")
-    print(f"  N_FRAMES={N_FRAMES}, STRIDE={STRIDE}, DT={DT} fs")
+    print(f"  N_FRAMES={N_FRAMES if N_FRAMES is not None else 'all'}, "
+          f"STRIDE={STRIDE}, DT={DT} fs")
     print(f"  OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', '(all cores)')}")
 
     # Report the species assignment before any long-running work, so an interrupted

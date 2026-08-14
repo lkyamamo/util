@@ -75,7 +75,8 @@ DYNAMICS_DT="${DYNAMICS_DT:-}"          # REQUIRED by vdos.py and msd.py; fs bet
 # and msd.py read: all three analyse dynamics.lammpstrj, so its dt is one
 # number. Only the dynamic S(q,w) path uses it; static S(q) has no time axis.
 DSF_N_FRAMES="${DSF_N_FRAMES:-}"        # frame_stop INDEX into the dump, not a count;
-                                        # frames used = DSF_N_FRAMES / DSF_STRIDE
+                                        # frames used = DSF_N_FRAMES / DSF_STRIDE.
+                                        # BLANK or 0 = the whole trajectory
 DSF_STRIDE="${DSF_STRIDE:-}"            # read every Nth frame. Skipped frames are still
                                         # parsed, so widening the span is free while
                                         # computing more frames is not

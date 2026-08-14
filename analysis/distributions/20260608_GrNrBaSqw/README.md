@@ -180,7 +180,7 @@ Optional:
 |---|---|---|
 | `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element` column in dump (not numeric type) |
 | `DYNAMICS_DT` | Time between consecutive dumped frames in **femtoseconds** | The *same* key `vdos.py` and `msd.py` read — all three analyse `dynamics.lammpstrj`, so its dt is one number. Optional here (defaults to 2.0) and used only on the dynamic path; static S(q) has no time axis |
-| `DSF_N_FRAMES` | `frame_stop`, an **index** into the dump — not a count | Frames used = `DSF_N_FRAMES / DSF_STRIDE` |
+| `DSF_N_FRAMES` | `frame_stop`, an **index** into the dump — not a count | Frames used = `DSF_N_FRAMES / DSF_STRIDE`. **Blank or `0` reads the whole trajectory**, matching `vdos.py`/`msd.py`'s `0 = all`; control cost with `DSF_STRIDE` |
 | `DSF_WINDOW_SIZE` | Number of time lags for F(q,t) | Sets frequency resolution: Δν = 1/(2 × WINDOW_SIZE × DT × STRIDE); must cover several periods of the slowest mode |
 
 Optional:
