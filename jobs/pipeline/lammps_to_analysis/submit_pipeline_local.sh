@@ -75,7 +75,6 @@ Optional:
                                     R_CUTOFF/R_MINCUT), e.g.
                                     "O-Si-O:O-Si-O:2.2:0.5:2.2:0.5|H-O-H:H-O-H:1.4:0.5:1.4:0.5"
     --bad-bins INT                bad_freud.py BINS, e.g. 180
-    --dsf-dt FLOAT                dsf.py DT (fs between dumped frames), e.g. 1.0
     --dsf-n-frames INT             dsf.py N_FRAMES, e.g. 500
     --dsf-stride INT               dsf.py STRIDE, e.g. 1
     --dsf-neutron-weighting STR    dsf.py DSF_NEUTRON_WEIGHTING: 'yes' (default) or 'no'.
@@ -86,7 +85,7 @@ Optional:
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
 
     --dynamics-dt FLOAT             dt of dynamics.lammpstrj in fs, e.g. 2.0 — the
-                                    ONLY value vdos.py and msd.py share, since it
+                                    ONLY value dsf.py, vdos.py and msd.py share, since it
                                     describes the trajectory rather than either
                                     analysis. Every other flag below is per script.
 
@@ -255,7 +254,6 @@ BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
 BAD_TRIPLET_CUTOFFS=""
 BAD_BINS_VAL=""
-DSF_DT=""
 DSF_N_FRAMES=""
 DSF_STRIDE=""
 DSF_NEUTRON_WEIGHTING=""
@@ -339,7 +337,6 @@ while [[ $# -gt 0 ]]; do
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
     --bad-triplet-cutoffs) BAD_TRIPLET_CUTOFFS="$2"; shift 2 ;;
     --bad-bins) BAD_BINS_VAL="$2"; shift 2 ;;
-    --dsf-dt) DSF_DT="$2"; shift 2 ;;
     --dsf-n-frames) DSF_N_FRAMES="$2"; shift 2 ;;
     --dsf-stride) DSF_STRIDE="$2"; shift 2 ;;
     --dsf-neutron-weighting) DSF_NEUTRON_WEIGHTING="$2"; shift 2 ;;
@@ -597,7 +594,6 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$BAD_R_MINCUT" ]]        && export R_MINCUT="$BAD_R_MINCUT"
   [[ -n "$BAD_TRIPLET_CUTOFFS" ]] && export TRIPLET_CUTOFFS="$BAD_TRIPLET_CUTOFFS"
   [[ -n "$BAD_BINS_VAL" ]]        && export BAD_BINS="$BAD_BINS_VAL"
-  [[ -n "$DSF_DT" ]]              && export DSF_DT="$DSF_DT"
   [[ -n "$DSF_N_FRAMES" ]]        && export DSF_N_FRAMES="$DSF_N_FRAMES"
   [[ -n "$DSF_STRIDE" ]]          && export DSF_STRIDE="$DSF_STRIDE"
   [[ -n "$DSF_NEUTRON_WEIGHTING" ]] && export DSF_NEUTRON_WEIGHTING="$DSF_NEUTRON_WEIGHTING"

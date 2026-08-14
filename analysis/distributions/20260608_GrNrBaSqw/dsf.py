@@ -7,7 +7,8 @@ QUICK START
    Defaults to dynamics.lammpstrj (env var DYNAMICS_TRAJ) — the higher-frequency
    trajectory dumped alongside dump.lammpstrj specifically for dsf.py/vdos.py;
    see OH-therm.input/b-SiO-therm.input's second dump block.
-2. Set DT to the time between consecutive dumped frames in femtoseconds.
+2. Set DYNAMICS_DT to the time between consecutive dumped frames in fs — the
+   same key vdos.py and msd.py read, since all three share the trajectory.
 3. Set N_FRAMES and WINDOW_SIZE.
 4. Run:  python dsf.py
 
@@ -67,23 +68,30 @@ from datetime import date
 DUMP_FILE       = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
 # Every setting below is read from exactly one DSF_-prefixed environment
-# variable, the way vdos.py reads VDOS_* and msd.py reads MSD_*. The bare names
-# these used to read — DT, N_FRAMES, STRIDE, Q_MAX and so on — were generic
-# enough to collide with anything else in a shared pipeline environment, and
-# forced submit_pipeline.sh to translate DSF_DT -> DT on the way in. _legacy()
-# below turns a stale bare name into a hard error rather than ignoring it.
+# variable, the way vdos.py reads VDOS_* and msd.py reads MSD_*, with ONE
+# exception: the frame spacing comes from DYNAMICS_DT, shared with vdos.py and
+# msd.py because it describes dynamics.lammpstrj itself rather than any analysis
+# of it. The bare names these used to read — DT, N_FRAMES, STRIDE, Q_MAX and so
+# on — were generic enough to collide with anything else in a shared pipeline
+# environment. _legacy() turns a stale name into a hard error rather than
+# ignoring it, which also covers the short-lived DSF_DT.
 def _legacy(old, new):
-    """Abort if a pre-rename bare env var is set while its DSF_ name is not."""
+    """Abort if a pre-rename env var is set while its current name is not."""
     if os.environ.get(old, "") != "" and os.environ.get(new, "") == "":
+        why = ("it names the spacing between dynamics.lammpstrj frames, which vdos.py\n"
+               "  and msd.py read from that same key — one trajectory, one dt"
+               if new == "DYNAMICS_DT" else
+               "every other dsf.py setting is DSF_-prefixed, like vdos.py's VDOS_*\n"
+               "  and msd.py's MSD_*")
         raise SystemExit(
-            f"dsf.py: {old} is no longer read — it has been renamed {new}, so that every\n"
-            f"  dsf.py setting is DSF_-prefixed like vdos.py's VDOS_* and msd.py's MSD_*.\n"
+            f"dsf.py: {old} is no longer read — it is now {new}, because {why}.\n"
             f"  {old}={os.environ[old]!r} would have been silently ignored. Rename it in\n"
             f"  submit_pipeline.conf, or in the Analysis parameters block of\n"
             f"  distribution_run.sh / distribution_submit.slurm."
         )
 
-for _old, _new in (("DT", "DSF_DT"), ("N_FRAMES", "DSF_N_FRAMES"),
+for _old, _new in (("DT", "DYNAMICS_DT"), ("DSF_DT", "DYNAMICS_DT"),
+                   ("N_FRAMES", "DSF_N_FRAMES"),
                    ("STRIDE", "DSF_STRIDE"), ("Q_MAX", "DSF_Q_MAX"),
                    ("N_Q_BINS", "DSF_N_Q_BINS"), ("WINDOW_SIZE", "DSF_WINDOW_SIZE"),
                    ("WINDOW_STEP", "DSF_WINDOW_STEP"), ("Q_MAX_DYN", "DSF_Q_MAX_DYN"),
@@ -100,7 +108,7 @@ del _old, _new
 # same at stride 1, 10 and 50), so set DSF_N_FRAMES to the whole trajectory and
 # pick DSF_STRIDE for the frame count you can afford — spanning more time is
 # free, computing more frames is not.
-# Defaults: 30000 dumped frames at DSF_DT=2 fs = 60 ps, sampled every 1.2 ps.
+# Defaults: 30000 dumped frames at DYNAMICS_DT=2 fs = 60 ps, sampled every 1.2 ps.
 N_FRAMES        = int(os.environ.get("DSF_N_FRAMES", "30000"))  # frame_stop in Trajectory
 STRIDE          = int(os.environ.get("DSF_STRIDE", "600"))      # read every Nth frame (frame_step)
 
@@ -108,10 +116,15 @@ STRIDE          = int(os.environ.get("DSF_STRIDE", "600"))      # read every Nth
 # Only applied when OMP_NUM_THREADS is not already set in the environment.
 N_THREADS       = 0
 
-# Time axis. This is dsf.py's own dt, deliberately separate from DYNAMICS_DT:
-# vdos.py and msd.py share that one because it describes the trajectory, while
-# this one is read alongside DSF_STRIDE and only ever describes this analysis.
-DT              = float(os.environ.get("DSF_DT", "2.0"))        # fs between consecutive dumped frames
+# Time axis — read from DYNAMICS_DT, the SAME key vdos.py and msd.py use.
+# All three read dynamics.lammpstrj, so the spacing between its frames is a
+# property of the trajectory rather than of any one analysis. A separate DSF_DT
+# could disagree with the other two about the same physical number, which would
+# silently shift the frequency axis of S(q,w) relative to a VDOS computed from
+# the very same frames — the kind of error that produces a plausible plot.
+# Only the dynamic path uses it; static S(q) has no time axis, which is why this
+# keeps a default while vdos.py and msd.py require the key outright.
+DT              = float(os.environ.get("DYNAMICS_DT", "2.0"))   # fs between consecutive dumped frames
 
 # q-space, static S(q).
 # Q_MAX=20 Å⁻¹ is the range needed to Fourier transform S(q) into G(r) without bad

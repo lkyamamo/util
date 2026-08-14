@@ -70,10 +70,9 @@ DYNAMICS_DT="${DYNAMICS_DT:-}"          # REQUIRED by vdos.py and msd.py; fs bet
 # another analysis's setting. dsf.py errors out if the old bare names (DT,
 # N_FRAMES, STRIDE, Q_MAX, ...) are set, rather than ignoring them.
 #
-# Note DSF_DT is dsf.py's own dt and is NOT the same key as DYNAMICS_DT above:
-# vdos.py and msd.py share that one because it describes the trajectory, whereas
-# this is read together with DSF_STRIDE and describes only this analysis.
-DSF_DT="${DSF_DT:-}"                    # fs between consecutive dumped frames
+# dsf.py takes its frame spacing from DYNAMICS_DT above, the same key vdos.py
+# and msd.py read: all three analyse dynamics.lammpstrj, so its dt is one
+# number. Only the dynamic S(q,w) path uses it; static S(q) has no time axis.
 DSF_N_FRAMES="${DSF_N_FRAMES:-}"        # frame_stop INDEX into the dump, not a count;
                                         # frames used = DSF_N_FRAMES / DSF_STRIDE
 DSF_STRIDE="${DSF_STRIDE:-}"            # read every Nth frame. Skipped frames are still
@@ -170,7 +169,7 @@ VDOS_DYNMAT_BOND_CUTOFF="${VDOS_DYNMAT_BOND_CUTOFF:-}"      # Angstrom, default 
 # Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
 for _var in DYNAMICS_DT \
-            DSF_DT DSF_N_FRAMES DSF_STRIDE DSF_Q_MAX DSF_N_Q_BINS \
+            DSF_N_FRAMES DSF_STRIDE DSF_Q_MAX DSF_N_Q_BINS \
             DSF_WINDOW_SIZE DSF_WINDOW_STEP DSF_Q_MAX_DYN DSF_N_Q_BINS_DYN \
             DSF_MAX_Q_POINTS_DYN DSF_NEUTRON_WEIGHTING \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \

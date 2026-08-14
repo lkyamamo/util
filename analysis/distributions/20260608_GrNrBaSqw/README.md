@@ -179,7 +179,7 @@ Optional:
 | Variable | What it controls | Notes |
 |---|---|---|
 | `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element` column in dump (not numeric type) |
-| `DSF_DT` | Time between consecutive dumped frames in **femtoseconds** | e.g. if LAMMPS dumps every 100 steps at 0.5 fs/step → `DSF_DT = 50.0`. Not the same key as `DYNAMICS_DT`, which vdos.py and msd.py share |
+| `DYNAMICS_DT` | Time between consecutive dumped frames in **femtoseconds** | The *same* key `vdos.py` and `msd.py` read — all three analyse `dynamics.lammpstrj`, so its dt is one number. Optional here (defaults to 2.0) and used only on the dynamic path; static S(q) has no time axis |
 | `DSF_N_FRAMES` | `frame_stop`, an **index** into the dump — not a count | Frames used = `DSF_N_FRAMES / DSF_STRIDE` |
 | `DSF_WINDOW_SIZE` | Number of time lags for F(q,t) | Sets frequency resolution: Δν = 1/(2 × WINDOW_SIZE × DT × STRIDE); must cover several periods of the slowest mode |
 
@@ -200,8 +200,14 @@ Optional:
 Every `dsf.py` setting is `DSF_`-prefixed, like `vdos.py`'s `VDOS_*` and `msd.py`'s `MSD_*`. It previously
 read bare `DT`, `N_FRAMES`, `STRIDE`, `Q_MAX`, `N_Q_BINS`, `WINDOW_SIZE`, `WINDOW_STEP`, `Q_MAX_DYN`,
 `N_Q_BINS_DYN` and `MAX_Q_POINTS_DYN` — generic enough to collide with anything else in a shared pipeline
-environment, and requiring `submit_pipeline.sh` to translate `DSF_DT` → `DT` on the way in. Setting one of
-the old names now **aborts with a rename notice** rather than being silently ignored.
+environment, and requiring `submit_pipeline.sh` to translate them on the way in. Setting one of the old
+names now **aborts with a rename notice** rather than being silently ignored.
+
+The one exception is the frame spacing, which comes from `DYNAMICS_DT` rather than a `DSF_` key: `dsf.py`,
+`vdos.py` and `msd.py` all read `dynamics.lammpstrj`, so its dt is a property of the trajectory and giving
+each script its own copy would only let them disagree about one physical number — which would shift the
+frequency axis of S(q,ω) relative to a VDOS built from the very same frames. The short-lived `DSF_DT` aborts
+with the same notice.
 
 **Which normalization `Sq_neutron` is.** dynasor weights partials as `S_AB → f_A f_B S_AB` with `f = b_coh`
 and sums, with **no division by ⟨b⟩²**. So `Sq_neutron` is the unnormalized weighted sum in fm² — the

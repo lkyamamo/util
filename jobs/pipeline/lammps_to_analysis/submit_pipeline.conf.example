@@ -139,14 +139,12 @@ BAD_BINS_VAL="360"
 # -----------------------------------------------------------------------------
 # dsf.py — static S(q) and dynamic S(q,w). Reads dynamics.lammpstrj.
 # -----------------------------------------------------------------------------
-# Every dsf.py key is DSF_-prefixed, like VDOS_* and MSD_*. The bare names it
-# used to read (DT, N_FRAMES, STRIDE, Q_MAX, ...) now abort with a rename notice
-# rather than being silently ignored.
+# Every dsf.py key is DSF_-prefixed, like VDOS_* and MSD_*, with one exception:
+# the frame spacing comes from DYNAMICS_DT below, shared with vdos.py and msd.py
+# because all three analyse dynamics.lammpstrj and its dt is one number. The bare
+# names dsf.py used to read (DT, N_FRAMES, STRIDE, Q_MAX, ...), and the
+# short-lived DSF_DT, now abort with a rename notice rather than being ignored.
 #
-#   DSF_DT             fs between consecutive frames OF dynamics.lammpstrj —
-#                      the MD timestep times that dump's every-N. At 0.5 fs/step
-#                      dumped every 4 steps, DSF_DT = 2.0. NOT the same key as
-#                      DYNAMICS_DT below.
 #   DSF_N_FRAMES       frame_stop: an INDEX into the dump, not a count. Frames
 #                      actually used = DSF_N_FRAMES / DSF_STRIDE.
 #   DSF_STRIDE         Read every Nth frame. Skipped frames are still parsed, so
@@ -184,7 +182,6 @@ BAD_BINS_VAL="360"
 #   DSF_NEUTRON_WEIGHTING  yes (default) | no. "no" drops the neutron-weighted
 #                      S(q) columns; required for H/D systems, where dsf.py
 #                      refuses to weight at all (protium vs deuterium sign flip).
-DSF_DT=""
 DSF_N_FRAMES=""
 DSF_STRIDE=""
 DSF_Q_MAX=""
@@ -193,17 +190,20 @@ DSF_WINDOW_SIZE=""
 DSF_NEUTRON_WEIGHTING=""
 
 # -----------------------------------------------------------------------------
-# Shared by vdos.py and msd.py
+# Shared by dsf.py, vdos.py and msd.py
 # -----------------------------------------------------------------------------
-# DYNAMICS_DT is the ONLY parameter the two share: it is the dt of
-# dynamics.lammpstrj, a property of the trajectory rather than of either
-# analysis. Everything else is per script and set independently — VDOS needs a
-# SHORT correlation length for frequency resolution, MSD a LONG one to reach the
-# diffusive regime, which is why they are not one setting.
+# DYNAMICS_DT is the ONLY parameter the three share: it is the dt of
+# dynamics.lammpstrj, a property of the trajectory rather than of any analysis of
+# it, so giving each script its own copy would only let them disagree about one
+# physical number. Everything else is per script and set independently — VDOS
+# needs a SHORT correlation length for frequency resolution, MSD a LONG one to
+# reach the diffusive regime, which is why those are not one setting.
 #
-#   DYNAMICS_DT        REQUIRED when RUN_VDOS=1 or RUN_MSD=1. fs between
-#                      dynamics.lammpstrj frames. Sets the Nyquist limit
-#                      1/(2*DT) = 250 THz at 2 fs.
+#   DYNAMICS_DT        REQUIRED when RUN_VDOS=1 or RUN_MSD=1; optional for
+#                      dsf.py, which defaults to 2.0 and only uses it on the
+#                      dynamic S(q,w) path (static S(q) has no time axis).
+#                      fs between dynamics.lammpstrj frames. Sets the Nyquist
+#                      limit 1/(2*DT) = 250 THz at 2 fs.
 DYNAMICS_DT="2.0"
 
 # -----------------------------------------------------------------------------
