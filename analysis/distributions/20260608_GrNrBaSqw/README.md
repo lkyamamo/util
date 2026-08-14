@@ -6,7 +6,9 @@ Each script produces independent output and can be run in any order or simultane
 `dsf.py`/`vdos.py`/`msd.py` read a separate, higher-frequency trajectory
 (`dynamics.lammpstrj`) — resolving vibrational frequencies and diffusion
 needs much finer time sampling than structural analysis does. See "All
-scripts — trajectory input" below.
+scripts — trajectory input" below. `vdos_dynmat.py` is the exception: it reads
+no trajectory at all, only the dynamical matrix LAMMPS wrote (plus the first
+frame of `dump.lammpstrj`, for element labels).
 
 ---
 
@@ -19,6 +21,7 @@ scripts — trajectory input" below.
 | `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `sq.png`, `dsf.csv`, `dsf.png` |
 | `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `vdos.png` |
 | `msd.py` | Mean square displacement and self-diffusion coefficient (10⁻⁵ cm²/s) per element | `msd.csv`, `msd.png` |
+| `vdos_dynmat.py` | Vibrational density of states from the LAMMPS dynamical matrix — harmonic, 0 K, no trajectory; optionally the stretch/bend/rock band assignment, participation ratio and boson peak | `vdos_dynmat.csv`, `vdos_dynmat.png`, `vdos_dynmat_modes.csv`, `vdos_dynmat_character.png` |
 
 ---
 
@@ -39,6 +42,7 @@ RUN_RDF=1
 RUN_BAD=1
 RUN_VDOS=1
 RUN_MSD=1
+RUN_VDOS_DYNMAT=0   # defaults off: needs a dynmat.dat from the LAMMPS stage
 ```
 
 ### Locally (all cores)
@@ -57,6 +61,7 @@ python rdf_freud.py
 python bad_freud.py
 python vdos.py
 python msd.py
+python vdos_dynmat.py
 ```
 
 ---
@@ -330,3 +335,199 @@ pip install scipy     # optional: multi-threaded FFT for vdos.py's fft_periodogr
 | `dsf.py` | `element` (symbol) — **required** | `x y z` or `xs ys zs` or `xu yu zu` | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
 | `vdos.py` | `element` (symbol) — **required** | `vx vy vz` (velocities) — **required**; positions not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
 | `msd.py` | `element` (symbol) — **required** | `x y z` (wrapped, real, Å) — **required**; velocities not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
+| `vdos_dynmat.py` | `element` (symbol) — **required** | not read | Reads only frame 0 of `dump.lammpstrj`, for the element of each matrix row; the physics comes from `dynmat.dat` |
+
+---
+
+## `vdos_dynmat.py` — VDOS from the dynamical matrix
+
+A second, independent route to the same quantity `vdos.py` produces. `vdos.py`
+measures what the atoms actually did at the simulation temperature; this measures
+the curvature of the potential energy surface at a single minimum.
+
+| | `vdos.py` | `vdos_dynmat.py` |
+|---|---|---|
+| Source | velocity autocorrelation of `dynamics.lammpstrj` | eigenvalues of the force-constant matrix |
+| Temperature | the MD temperature | 0 K (harmonic) |
+| Linewidth | thermal + `1/CORR_LENGTH` resolution limit | discrete modes; width is whatever you set with `SMEARING` |
+| Anharmonicity | included | excluded — peaks sit slightly higher |
+| Cost | reading a long trajectory | 6N force evaluations + a (3N)² diagonalization |
+
+Both write the same CSV column layout, so the two can be overlaid directly. Peak
+positions should agree. Absolute heights will not quite, under `phonon`
+normalization — the two reach "≈3 per atom" by different routes — so use
+`unit_area` on both if you want the heights to line up too.
+
+### Two stages
+
+Enabled with a single pipeline flag, `--run-vdos-dynmat 1`, which drives both:
+
+1. **LAMMPS.** Sets `RUN_DYNMAT=1`, which activates a block at the end of
+   `OH-therm.input` / `b-SiO-therm.input`: minimize the configuration the MD run
+   just finished with, then `dynamical_matrix all regular ${DYNMAT_DISPLACEMENT}
+   file ${DYNMAT_FILE}`. Requires a LAMMPS build with the **PHONON** package —
+   which is why `jobs/slurm/lammps_submit.slurm` now defaults to
+   `lmp_mpi_phonon_2019` (override with `--lmp-bin`).
+2. **Analysis.** `vdos_dynmat.py` reshapes the matrix to (3N, 3N), symmetrizes,
+   diagonalizes, converts eigenvalues to frequencies, and histograms them.
+
+### Why no reference dump is needed
+
+`dynamical_matrix` iterates atoms by global ID, so matrix row `3i+α` is atom
+`i+1`. `dump.lammpstrj` is written with `dump_modify sort id`, so frame 0 lists
+atoms in that same order — and because the matrix is built on the final
+configuration of the run that wrote that dump (same atoms, same IDs, no
+`replicate` in between), the dump's `element` column indexes the matrix rows
+directly. The script checks `9N²` against the dump's atom count and refuses to
+run if they disagree, and checks that the IDs really are `1..N` in order.
+
+### Units
+
+The matrix is mass-weighted, so with `units metal`:
+
+| `dynamical_matrix` style | eigenvalue λ | ν [THz] |
+|---|---|---|
+| `regular` (default) | eV/(Å²·amu) | `sqrt(λ) * 15.6333042` |
+| `eskm` | 1/ps² | `sqrt(λ) / 2π` |
+
+These agree: LAMMPS's own eskm factor is 9648.5, and `sqrt(9648.53)/2π = 15.6333`.
+`VDOS_DYNMAT_MATRIX_STYLE` must match whichever style the `.input` file used —
+it sets this conversion, so a mismatch rescales the whole spectrum.
+
+### Variables
+
+`DYNMAT_*` drive the LAMMPS stage (they reach `in.input` as `-var`);
+`VDOS_DYNMAT_*` drive the Python. All are optional except one.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DYNMAT_MIN_STYLE` | `cg` | `min_style` for the pre-dynmat minimization |
+| `DYNMAT_MIN_ETOL` | `1.0e-12` | `minimize` etol |
+| `DYNMAT_MIN_FTOL` | `1.0e-12` | `minimize` ftol — the one that matters; residual forces become spurious imaginary modes |
+| `DYNMAT_MIN_MAXITER` | `100000` | `minimize` maxiter |
+| `DYNMAT_MIN_MAXEVAL` | `1000000` | `minimize` maxeval |
+| `DYNMAT_DISPLACEMENT` | `0.0001` | finite-difference step, Å |
+| `DYNMAT_FILE` | `dynmat.dat` | matrix filename; one value reaches both stages |
+| `DYNMAT_BINARY` | `no` | `yes` = raw float64 (half the size, no text parse) |
+| `VDOS_DYNMAT_MAX_FREQUENCY` | **required** | DOS grid upper limit, in `XUNIT` |
+| `VDOS_DYNMAT_XUNIT` | `meV` | `meV` \| `THz` \| `cm-1` \| `eV`; sets the plot axis and the unit the two above are read in |
+| `VDOS_DYNMAT_BINS` | `500` | frequency grid points |
+| `VDOS_DYNMAT_SMEARING` | `0` | Gaussian FWHM in `XUNIT`; 0 = plain histogram |
+| `VDOS_DYNMAT_MATRIX_STYLE` | `regular` | must match the `.input` file |
+| `VDOS_DYNMAT_NORMALIZATION` | `phonon` | `phonon` (∫ = 3 per atom) or `unit_area` |
+| `VDOS_DYNMAT_PARTIAL` | `yes` | `no` skips per-element curves, uses `eigvalsh`, halves memory and runtime |
+| `VDOS_DYNMAT_ASR` | `none` | `simple` imposes the acoustic sum rule |
+| `VDOS_DYNMAT_THREADS` | unset | BLAS threads; the pipeline's `OMP_NUM_THREADS` already covers this |
+| `VDOS_DYNMAT_CHARACTER` | `no` | `yes` adds the mode-character analysis below |
+| `DYNMAT_REF_TRAJ` | `dynmat_ref.lammpstrj` | minimized coordinates; one value reaches both stages |
+| `VDOS_DYNMAT_BRIDGE_ELEMENT` | `O` | the bridging atom |
+| `VDOS_DYNMAT_NEIGHBOR_ELEMENT` | `Si` | its two neighbours |
+| `VDOS_DYNMAT_BOND_CUTOFF` | `2.2` | bridge–neighbour max distance, Å |
+| `VDOS_DYNMAT_OUTPUT` | `vdos_dynmat` | output basename |
+
+`MAX_FREQUENCY` is required, like `vdos.py`'s `VDOS_MAX_FREQUENCY_EV`, because a
+default that is too low truncates the spectrum silently rather than failing.
+`BINS` only changes smoothness, so it has one.
+
+### Cost
+
+The finite-difference loop is 6N force evaluations and the matrix is (3N)². The
+cell is whatever the MD run used, so at `replicate 6 6 6` (N=5184) that is 31104
+force evaluations and a 15552×15552 matrix: ~1.9 GB in memory, ~2.9 GB as text,
+peaking near 3× that during the diagonalization. Budget the trajectory job's
+`--time` for it and consider `DYNMAT_BINARY="yes"`.
+
+Parallelization: the LAMMPS half is MPI parallel like any other force
+computation, so it scales across the trajectory job's ranks (though LAMMPS
+gathers 9N doubles on *every* rank, so per-rank memory does not fall). The Python
+half is single-node and thread parallel — `np.linalg.eigh` is a threaded LAPACK
+call driven by `OMP_NUM_THREADS`. There is no distributed diagonalization.
+
+### Mode character — what kind of motion each band is
+
+`VDOS_DYNMAT_CHARACTER=yes` adds the standard amorphous-silica band assignment,
+following Bell & Dean and Taraskin & Elliott. At every **bridging** oxygen (one
+with exactly two Si neighbours) the two bond directions r̂₁, r̂₂ define three
+mutually orthogonal directions — two in the Si–O–Si plane, one normal to it:
+
+| direction | definition | motion | band |
+|---|---|---|---|
+| **stretch** | `norm(r̂₁ − r̂₂)`, along Si···Si | one Si–O lengthens as the other shortens | ~1050–1200 cm⁻¹ (130–150 meV) |
+| **bend** | `norm(r̂₁ + r̂₂)`, along the bisector | the Si–O–Si angle opens and closes | ~800 cm⁻¹ (~100 meV) |
+| **rock** | `norm(r̂₁ × r̂₂)`, ⊥ to the plane | O moves out of the Si–O–Si plane | ~400–500 cm⁻¹ (50–60 meV) |
+
+The two in-plane directions are perpendicular for free: `(r̂₁−r̂₂)·(r̂₁+r̂₂) =
+|r̂₁|² − |r̂₂|² = 0` because both are unit vectors — the diagonals of a rhombus.
+So the three form a *complete* basis and each oxygen's displacement splits
+exactly, `|u|² = (u·ŝ)² + (u·b̂)² + (u·r̂)²`.
+
+**Nothing is classified.** Every mode gets three fractions summing to 1, e.g.
+`(0.62, 0.21, 0.17)` — no thresholds, no labels. The bands appear when the DOS is
+weighted by those fractions, which is why `DoS(stretch)+DoS(bend)+DoS(rock)`
+equals `DoS(Total)` exactly.
+
+Three things to know about what the fractions mean:
+
+- Only **bridging-oxygen** motion is in the denominator. Si motion and
+  non-bridging-O motion contribute nothing, so a fraction reads "of the bridging-O
+  motion in this mode, how much is stretch" — not "of the whole mode". The
+  element-partial DOS covers the rest.
+- A 0.5/0.5 mode is genuinely ambiguous between "half the oxygens rocking, half
+  stretching" and "every oxygen at 45°". The per-mode table narrows this; only
+  looking at the eigenvector settles it.
+- Displacements are `u = e/√m`, **not** the eigenvectors. The eigenvectors of a
+  mass-weighted matrix are not displacements, and using them directly would
+  misweight oxygen against silicon throughout.
+
+A **linear** bridge (180°) has no plane: `r̂₁+r̂₂` and `r̂₁×r̂₂` both vanish and
+bend/rock become physically degenerate. Ideal β-cristobalite is exactly this, so
+the script substitutes an arbitrary perpendicular pair and reports how many
+bridges are within 5° of linear. Their *sum* (transverse motion) is still
+meaningful; the split between bend and rock is not. Stretch is unaffected.
+
+Alongside the decomposition you also get:
+
+- **Participation ratio**, `PR(m) = 1/(N Σᵢ|eᵢ|⁴)`, from `1/N` (all motion on one
+  atom) to `1` (every atom moving). In a glass this is half the physics — it is
+  how propagons, diffusons and locons are separated, and how the boson-peak
+  region is identified.
+- **Reduced DOS** `g(ν)/ν²` as a CSV column and plot panel. Debye predicts
+  `g ~ ν²`, so this is flat for a crystal and shows a peak in a glass — the boson
+  peak.
+- A **coordination census**: how many oxygens are 1-, 2-, 3-coordinated, and the
+  mean Si–O–Si angle. In a quenched glass some oxygens are non-bridging, and the
+  census says how much of the structure the decomposition actually covers. Worth
+  reading as a glass-quality check in its own right.
+
+Extra outputs when this is on:
+
+- `<date>_vdos_dynmat_modes.csv` — one row per mode: frequency in all four units,
+  participation ratio, `frac_stretch/bend/rock`, and per-element fractions. This
+  is what makes "which modes are in this peak" answerable.
+- `<date>_vdos_dynmat_character.png` — three panels: character-resolved DOS,
+  participation ratio vs frequency, and the reduced DOS.
+
+It needs `dynmat_ref.lammpstrj`, the coordinates LAMMPS writes immediately after
+`minimize`. The last frame of `dump.lammpstrj` will not do: it predates the
+minimization, and the relaxation rotates exactly the bond directions this
+analysis projects onto.
+
+### Reading the diagnostics
+
+Three zero modes are the acoustic translations and are expected. The script snaps
+modes within one bin width of zero to exactly zero (finite-difference noise
+scatters them across zero, and without this some fall out of range and quietly
+cost the spectrum weight), then reports anything still negative:
+
+```
+  Lowest 6 signed frequencies (meV): 0.0000, 0.0000, 0.0000, 18.5958, 32.1654, 43.4362
+  Modes snapped to zero (|nu| < 1 meV, one bin width): 3  (3 acoustic translations are expected)
+  Imaginary modes: 0
+```
+
+Imaginary modes beyond the acoustic ones mean the minimization did not reach a
+true minimum. Tighten `DYNMAT_MIN_FTOL` or reduce `DYNMAT_DISPLACEMENT` before
+trusting the spectrum. Two other checks worth doing once on a new system: the
+reported `max|D - D.T| / max|D|` should be small, and the spectrum should be
+stable across `DYNMAT_DISPLACEMENT` of 1e-5 to 1e-3 (too small is numerical
+noise, too large samples anharmonicity).

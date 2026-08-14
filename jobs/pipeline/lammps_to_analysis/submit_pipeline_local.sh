@@ -124,6 +124,42 @@ Optional:
                                     correlation window used for the diffusion-coefficient
                                     linear fit, e.g. 0.5
 
+    Dynamical-matrix VDOS. --run-vdos-dynmat 1 spans both stages: it sets
+    LAMMPS's RUN_DYNMAT=1, appending a minimization + dynamical_matrix block to
+    the end of in.input (acting on the final MD configuration), then runs
+    vdos_dynmat.py on the resulting matrix. The --dynmat-* flags reach in.input
+    as -var; the --vdos-dynmat-* flags drive the .py. Needs a --lmp-bin built
+    with the PHONON package.
+
+    Cost: the finite-difference loop is 6N force evaluations and the matrix is
+    (3N)^2 — at N=5184 that is 31104 force evaluations and ~1.9 GB. Local runs
+    want a much smaller cell than the cluster ones.
+
+    --run-vdos-dynmat {0|1}          enable both halves (default 0)
+    --dynmat-min-style STR           min_style for the pre-dynmat minimization (default cg)
+    --dynmat-min-etol FLOAT          minimize etol    (default 1.0e-12)
+    --dynmat-min-ftol FLOAT          minimize ftol    (default 1.0e-12) — residual forces
+                                     become spurious imaginary modes
+    --dynmat-min-maxiter INT         minimize maxiter (default 100000)
+    --dynmat-min-maxeval INT         minimize maxeval (default 1000000)
+    --dynmat-displacement FLOAT      finite-difference displacement, Angstrom (default 1e-4)
+    --dynmat-file NAME               matrix filename, written by LAMMPS and read by
+                                     vdos_dynmat.py (default dynmat.dat)
+    --dynmat-binary {yes|no}         raw float64 instead of text (default no)
+    --vdos-dynmat-max-frequency FLOAT  REQUIRED with --run-vdos-dynmat 1. DOS grid upper
+                                     limit, in --vdos-dynmat-xunit's unit. No default:
+                                     too low silently truncates
+    --vdos-dynmat-xunit STR          meV | THz | cm-1 | eV (default meV)
+    --vdos-dynmat-bins INT           frequency grid points (default 500)
+    --vdos-dynmat-smearing FLOAT     Gaussian FWHM in xunit; 0 = histogram (default 0)
+    --vdos-dynmat-matrix-style STR   regular | eskm (default regular) — must match the
+                                     dynamical_matrix style in the .input file
+    --vdos-dynmat-normalization STR  phonon (default) or unit_area
+    --vdos-dynmat-partial {yes|no}   per-element partial DOS (default yes); 'no' halves
+                                     memory and runtime
+    --vdos-dynmat-asr STR            none (default) or simple
+    --vdos-dynmat-output NAME        output basename (default vdos_dynmat)
+
   --ntasks N                    MPI ranks for `mpirun -np` (default: 4)
   --analysis-cpus-per-task N    Sets OMP_NUM_THREADS for dsf.py/rdf_freud.py/
                                 bad_freud.py and VDOS_THREADS for vdos.py (default: 4)
@@ -198,6 +234,7 @@ RUN_RDF="1"
 RUN_BAD="1"
 RUN_VDOS="1"
 RUN_MSD="1"
+RUN_VDOS_DYNMAT="0"
 NTASKS=""
 ANALYSIS_CPUS_PER_TASK=""
 
@@ -232,6 +269,28 @@ MSD_STRIDE=""
 MSD_CORR_LENGTH=""
 MSD_CORR_INTERVAL=""
 MSD_FIT_FRACTION=""
+DYNMAT_MIN_STYLE=""
+DYNMAT_MIN_ETOL=""
+DYNMAT_MIN_FTOL=""
+DYNMAT_MIN_MAXITER=""
+DYNMAT_MIN_MAXEVAL=""
+DYNMAT_DISPLACEMENT=""
+DYNMAT_FILE=""
+DYNMAT_BINARY=""
+VDOS_DYNMAT_MAX_FREQUENCY=""
+VDOS_DYNMAT_XUNIT=""
+VDOS_DYNMAT_BINS=""
+VDOS_DYNMAT_SMEARING=""
+VDOS_DYNMAT_MATRIX_STYLE=""
+VDOS_DYNMAT_NORMALIZATION=""
+VDOS_DYNMAT_PARTIAL=""
+VDOS_DYNMAT_ASR=""
+VDOS_DYNMAT_OUTPUT=""
+VDOS_DYNMAT_CHARACTER=""
+DYNMAT_REF_TRAJ=""
+VDOS_DYNMAT_BRIDGE_ELEMENT=""
+VDOS_DYNMAT_NEIGHBOR_ELEMENT=""
+VDOS_DYNMAT_BOND_CUTOFF=""
 
 # VDOS_DT used to carry the dt for both scripts; it is now DYNAMICS_DT. Because
 # submit_pipeline.conf is gitignored it does not travel with a pull, so a conf
@@ -292,6 +351,29 @@ while [[ $# -gt 0 ]]; do
     --msd-corr-length) MSD_CORR_LENGTH="$2"; shift 2 ;;
     --msd-corr-interval) MSD_CORR_INTERVAL="$2"; shift 2 ;;
     --msd-fit-fraction) MSD_FIT_FRACTION="$2"; shift 2 ;;
+    --run-vdos-dynmat) RUN_VDOS_DYNMAT="$2"; shift 2 ;;
+    --dynmat-min-style) DYNMAT_MIN_STYLE="$2"; shift 2 ;;
+    --dynmat-min-etol) DYNMAT_MIN_ETOL="$2"; shift 2 ;;
+    --dynmat-min-ftol) DYNMAT_MIN_FTOL="$2"; shift 2 ;;
+    --dynmat-min-maxiter) DYNMAT_MIN_MAXITER="$2"; shift 2 ;;
+    --dynmat-min-maxeval) DYNMAT_MIN_MAXEVAL="$2"; shift 2 ;;
+    --dynmat-displacement) DYNMAT_DISPLACEMENT="$2"; shift 2 ;;
+    --dynmat-file) DYNMAT_FILE="$2"; shift 2 ;;
+    --dynmat-binary) DYNMAT_BINARY="$2"; shift 2 ;;
+    --vdos-dynmat-max-frequency) VDOS_DYNMAT_MAX_FREQUENCY="$2"; shift 2 ;;
+    --vdos-dynmat-xunit) VDOS_DYNMAT_XUNIT="$2"; shift 2 ;;
+    --vdos-dynmat-bins) VDOS_DYNMAT_BINS="$2"; shift 2 ;;
+    --vdos-dynmat-smearing) VDOS_DYNMAT_SMEARING="$2"; shift 2 ;;
+    --vdos-dynmat-matrix-style) VDOS_DYNMAT_MATRIX_STYLE="$2"; shift 2 ;;
+    --vdos-dynmat-normalization) VDOS_DYNMAT_NORMALIZATION="$2"; shift 2 ;;
+    --vdos-dynmat-partial) VDOS_DYNMAT_PARTIAL="$2"; shift 2 ;;
+    --vdos-dynmat-asr) VDOS_DYNMAT_ASR="$2"; shift 2 ;;
+    --vdos-dynmat-output) VDOS_DYNMAT_OUTPUT="$2"; shift 2 ;;
+    --vdos-dynmat-character) VDOS_DYNMAT_CHARACTER="$2"; shift 2 ;;
+    --dynmat-ref-traj) DYNMAT_REF_TRAJ="$2"; shift 2 ;;
+    --vdos-dynmat-bridge-element) VDOS_DYNMAT_BRIDGE_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-neighbor-element) VDOS_DYNMAT_NEIGHBOR_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-bond-cutoff) VDOS_DYNMAT_BOND_CUTOFF="$2"; shift 2 ;;
     --dynamics-dt) DYNAMICS_DT="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -335,6 +417,7 @@ check_zero_or_one "$RUN_RDF" --run-rdf
 check_zero_or_one "$RUN_BAD" --run-bad
 check_zero_or_one "$RUN_VDOS" --run-vdos
 check_zero_or_one "$RUN_MSD" --run-msd
+check_zero_or_one "$RUN_VDOS_DYNMAT" --run-vdos-dynmat
 
 # vdos.py and msd.py refuse to guess the parameters that determine their
 # numbers. Catch a missing one here, before anything is submitted or run,
@@ -350,6 +433,12 @@ check_required_analysis_params() {
     [[ -n "$MSD_CORR_LENGTH" ]]   || missing+=("  --msd-corr-length / MSD_CORR_LENGTH             fs; max time lag")
     [[ -n "$MSD_CORR_INTERVAL" ]] || missing+=("  --msd-corr-interval / MSD_CORR_INTERVAL         fs; spacing between reference frames")
     [[ -n "$MSD_FIT_FRACTION" ]]  || missing+=("  --msd-fit-fraction / MSD_FIT_FRACTION           tail fraction used for the D fit")
+  fi
+  # Checked here rather than in stage 2 for the same reason as the others, but it
+  # matters more: the dynamical-matrix run is the expensive part of stage 1, and
+  # discovering a missing grid limit afterwards would waste all of it.
+  if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
+    [[ -n "$VDOS_DYNMAT_MAX_FREQUENCY" ]] || missing+=("  --vdos-dynmat-max-frequency / VDOS_DYNMAT_MAX_FREQUENCY  upper limit of the DOS grid, in VDOS_DYNMAT_XUNIT")
   fi
   if [[ "$RUN_VDOS" == "1" || "$RUN_MSD" == "1" ]]; then
     [[ -n "$DYNAMICS_DT" ]] || missing+=("  --dynamics-dt / DYNAMICS_DT                     fs between dynamics.lammpstrj frames")
@@ -413,9 +502,18 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/bad_freud.py" \
    "$ANALYSIS_TEMPLATE_DIR/vdos.py" \
    "$ANALYSIS_TEMPLATE_DIR/msd.py" \
+   "$ANALYSIS_TEMPLATE_DIR/vdos_dynmat.py" \
    "$STAGE2_DIR/"
 ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
 ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
+# The dynamical matrix is consumed read-only like the trajectories. Nothing extra
+# is linked for the atom->element mapping: vdos_dynmat.py takes that from the
+# first frame of $DUMP_FILE, whose atom order is the matrix's row order.
+if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
+  ln -s "$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}" "$STAGE2_DIR/${DYNMAT_FILE:-dynmat.dat}"
+  _ref="${DYNMAT_REF_TRAJ:-dynmat_ref.lammpstrj}"
+  ln -s "$STAGE1_DIR/run/$_ref" "$STAGE2_DIR/$_ref"
+fi
 
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
@@ -423,6 +521,7 @@ enabled_scripts=""
 [[ "$RUN_BAD" == "1" ]] && enabled_scripts+="bad_freud.py "
 [[ "$RUN_VDOS" == "1" ]] && enabled_scripts+="vdos.py "
 [[ "$RUN_MSD" == "1" ]] && enabled_scripts+="msd.py "
+[[ "$RUN_VDOS_DYNMAT" == "1" ]] && enabled_scripts+="vdos_dynmat.py "
 enabled_scripts="${enabled_scripts% }"
 
 ############################
@@ -439,7 +538,29 @@ echo "Running LAMMPS locally in $STAGE1_DIR/run ..."
   done
   shopt -u nullglob
 
-  mpirun -np "${NTASKS:-4}" "$LMP_BIN" -log log.lammps -in in.input
+  # Same -var forwarding as jobs/slurm/lammps_submit.slurm: only names that are
+  # actually set are passed, so anything omitted keeps the "variable NAME index
+  # <default>" value in in.input. Empty array when the dynmat block is off, which
+  # makes this line identical to what it was.
+  #
+  # One flag drives both stages: RUN_VDOS_DYNMAT reaches LAMMPS under the name its
+  # input scripts use, RUN_DYNMAT, and gates vdos_dynmat.py in stage 2 below.
+  RUN_DYNMAT="$RUN_VDOS_DYNMAT"
+  DYNMAT_REF_FILE="$DYNMAT_REF_TRAJ"
+  lmp_vars=()
+  for _v in RUN_DYNMAT DYNMAT_MIN_STYLE DYNMAT_MIN_ETOL DYNMAT_MIN_FTOL \
+            DYNMAT_MIN_MAXITER DYNMAT_MIN_MAXEVAL DYNMAT_DISPLACEMENT \
+            DYNMAT_FILE DYNMAT_REF_FILE DYNMAT_BINARY; do
+    if [[ -n "${!_v:-}" ]]; then
+      lmp_vars+=(-var "$_v" "${!_v}")
+      echo "  -var $_v ${!_v}"
+    fi
+  done
+
+  mpirun -np "${NTASKS:-4}" "$LMP_BIN" \
+    -log log.lammps \
+    "${lmp_vars[@]+"${lmp_vars[@]}"}" \
+    -in in.input
 )
 echo "LAMMPS run finished."
 
@@ -454,7 +575,7 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   activate_analysis_env "$VENV"
   export OMP_NUM_THREADS="${ANALYSIS_CPUS_PER_TASK:-4}"
   export VDOS_THREADS="${ANALYSIS_CPUS_PER_TASK:-4}"
-  export TRAJ="$DUMP_FILE" DYNAMICS_TRAJ="$DYNAMICS_DUMP_FILE" RUN_DSF RUN_RDF RUN_BAD RUN_VDOS RUN_MSD
+  export TRAJ="$DUMP_FILE" DYNAMICS_TRAJ="$DYNAMICS_DUMP_FILE" RUN_DSF RUN_RDF RUN_BAD RUN_VDOS RUN_MSD RUN_VDOS_DYNMAT
   [[ -n "$RDF_R_MAX" ]]           && export R_MAX="$RDF_R_MAX"
   [[ -n "$RDF_BINS_VAL" ]]        && export RDF_BINS="$RDF_BINS_VAL"
   [[ -n "$RDF_NORMALIZATION_VAL" ]] && export RDF_NORMALIZATION="$RDF_NORMALIZATION_VAL"
@@ -490,12 +611,32 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$MSD_CORR_LENGTH" ]]       && export MSD_CORR_LENGTH="$MSD_CORR_LENGTH"
   [[ -n "$MSD_CORR_INTERVAL" ]]     && export MSD_CORR_INTERVAL="$MSD_CORR_INTERVAL"
   [[ -n "$MSD_FIT_FRACTION" ]]      && export MSD_FIT_FRACTION="$MSD_FIT_FRACTION"
+  # vdos_dynmat.py. DYNMAT_FILE/DYNMAT_BINARY are the same values stage 1 was
+  # given above, so the writer and the reader cannot disagree about the filename
+  # or the text/binary format.
+  [[ -n "$DYNMAT_FILE" ]]               && export DYNMAT_FILE="$DYNMAT_FILE"
+  [[ -n "$DYNMAT_BINARY" ]]             && export DYNMAT_BINARY="$DYNMAT_BINARY"
+  [[ -n "$VDOS_DYNMAT_MAX_FREQUENCY" ]] && export VDOS_DYNMAT_MAX_FREQUENCY="$VDOS_DYNMAT_MAX_FREQUENCY"
+  [[ -n "$VDOS_DYNMAT_XUNIT" ]]         && export VDOS_DYNMAT_XUNIT="$VDOS_DYNMAT_XUNIT"
+  [[ -n "$VDOS_DYNMAT_BINS" ]]          && export VDOS_DYNMAT_BINS="$VDOS_DYNMAT_BINS"
+  [[ -n "$VDOS_DYNMAT_SMEARING" ]]      && export VDOS_DYNMAT_SMEARING="$VDOS_DYNMAT_SMEARING"
+  [[ -n "$VDOS_DYNMAT_MATRIX_STYLE" ]]  && export VDOS_DYNMAT_MATRIX_STYLE="$VDOS_DYNMAT_MATRIX_STYLE"
+  [[ -n "$VDOS_DYNMAT_NORMALIZATION" ]] && export VDOS_DYNMAT_NORMALIZATION="$VDOS_DYNMAT_NORMALIZATION"
+  [[ -n "$VDOS_DYNMAT_PARTIAL" ]]       && export VDOS_DYNMAT_PARTIAL="$VDOS_DYNMAT_PARTIAL"
+  [[ -n "$VDOS_DYNMAT_ASR" ]]           && export VDOS_DYNMAT_ASR="$VDOS_DYNMAT_ASR"
+  [[ -n "$VDOS_DYNMAT_OUTPUT" ]]        && export VDOS_DYNMAT_OUTPUT="$VDOS_DYNMAT_OUTPUT"
+  [[ -n "$VDOS_DYNMAT_CHARACTER" ]]     && export VDOS_DYNMAT_CHARACTER="$VDOS_DYNMAT_CHARACTER"
+  [[ -n "$DYNMAT_REF_TRAJ" ]]           && export DYNMAT_REF_TRAJ="$DYNMAT_REF_TRAJ"
+  [[ -n "$VDOS_DYNMAT_BRIDGE_ELEMENT" ]]   && export VDOS_DYNMAT_BRIDGE_ELEMENT="$VDOS_DYNMAT_BRIDGE_ELEMENT"
+  [[ -n "$VDOS_DYNMAT_NEIGHBOR_ELEMENT" ]] && export VDOS_DYNMAT_NEIGHBOR_ELEMENT="$VDOS_DYNMAT_NEIGHBOR_ELEMENT"
+  [[ -n "$VDOS_DYNMAT_BOND_CUTOFF" ]]   && export VDOS_DYNMAT_BOND_CUTOFF="$VDOS_DYNMAT_BOND_CUTOFF"
 
   if [[ "$RUN_DSF" == "1" ]]; then echo "--- dsf.py ---"; python dsf.py; fi
   if [[ "$RUN_RDF" == "1" ]]; then echo "--- rdf_freud.py ---"; python rdf_freud.py; fi
   if [[ "$RUN_BAD" == "1" ]]; then echo "--- bad_freud.py ---"; python bad_freud.py; fi
   if [[ "$RUN_VDOS" == "1" ]]; then echo "--- vdos.py ---"; python vdos.py; fi
   if [[ "$RUN_MSD" == "1" ]]; then echo "--- msd.py ---"; python msd.py; fi
+  if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then echo "--- vdos_dynmat.py ---"; python vdos_dynmat.py; fi
 )
 echo "Distribution analysis finished."
 
@@ -508,7 +649,7 @@ Pipeline completed locally:
 
 $(if [[ -n "$enabled_scripts" ]]; then
   echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-* flags is using each script's own default —"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-*/--vdos-dynmat-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY

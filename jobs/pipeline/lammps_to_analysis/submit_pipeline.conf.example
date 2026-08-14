@@ -29,6 +29,13 @@ RUN_RDF="1"
 RUN_BAD="1"
 RUN_VDOS="0"
 RUN_MSD="0"
+RUN_VDOS_DYNMAT="0"
+
+# LAMMPS executable. Empty = the default in jobs/slurm/lammps_submit.slurm,
+# which is .../lmp_mpi_phonon_2019 — the phonon build, since dynamical_matrix
+# needs the PHONON package. Point this at .../lmp_mpi_shock_2019 to go back to
+# the previous binary.
+LMP_BIN=""
 
 # trajectory creation slurm parameters
 NODES="1"
@@ -98,3 +105,60 @@ MSD_STRIDE=""
 MSD_CORR_LENGTH="5000"               # REQUIRED when RUN_MSD=1 — max time lag
 MSD_CORR_INTERVAL="500"              # REQUIRED when RUN_MSD=1 — spacing between origins
 MSD_FIT_FRACTION="0.4"               # REQUIRED when RUN_MSD=1 — tail fraction for the D fit
+
+# dynamical-matrix VDOS parameters (RUN_VDOS_DYNMAT=1)
+#
+# This is the one setting that spans both stages: it appends a minimization +
+# dynamical_matrix block to the end of in.input, acting on the configuration the
+# MD run finished with, and then diagonalizes the result in vdos_dynmat.py. The
+# DYNMAT_* keys drive LAMMPS (they reach in.input as -var); the VDOS_DYNMAT_*
+# keys drive the .py. Leave any empty to keep the default written into the
+# .input file / the script's CONFIGURATION block.
+#
+# Cost before you enable it: 6N force evaluations and a (3N)^2 matrix. At
+# replicate 6 6 6 (N=5184) that is 31104 force evaluations and a 15552x15552
+# matrix — ~1.9 GB in memory, ~2.9 GB as text. Budget TIME for the trajectory
+# job accordingly, and consider DYNMAT_BINARY="yes".
+DYNMAT_MIN_STYLE=""                  # min_style, default cg
+DYNMAT_MIN_ETOL=""                   # default 1.0e-12
+DYNMAT_MIN_FTOL=""                   # default 1.0e-12 — the one that matters; residual
+                                     # forces become spurious imaginary modes
+DYNMAT_MIN_MAXITER=""                # default 100000
+DYNMAT_MIN_MAXEVAL=""                # default 1000000
+DYNMAT_DISPLACEMENT=""               # finite-difference step in Angstrom, default 0.0001
+DYNMAT_FILE=""                       # matrix filename, default dynmat.dat. One value
+                                     # reaches both stages, so the writer and the reader
+                                     # cannot disagree
+DYNMAT_BINARY=""                     # yes = raw float64, no (default) = text
+VDOS_DYNMAT_MAX_FREQUENCY="200"      # REQUIRED when RUN_VDOS_DYNMAT=1 — DOS grid upper
+                                     # limit, in VDOS_DYNMAT_XUNIT. 200 meV = 1613 cm^-1,
+                                     # which covers a-SiO2 (stretching band tops out near
+                                     # 1200 cm^-1). Water needs ~500 meV for the O-H stretch
+VDOS_DYNMAT_XUNIT=""                 # meV (default) | THz | cm-1 | eV. The CSV always
+                                     # carries all four; this sets the plot axis and the
+                                     # unit MAX_FREQUENCY/SMEARING are read in
+VDOS_DYNMAT_BINS=""                  # frequency grid points, default 500
+VDOS_DYNMAT_SMEARING=""              # Gaussian FWHM in XUNIT; 0 (default) = histogram
+VDOS_DYNMAT_MATRIX_STYLE=""          # regular (default) | eskm — must match the
+                                     # dynamical_matrix style in the .input file
+VDOS_DYNMAT_NORMALIZATION=""         # phonon (default; integral = 3 per atom) | unit_area
+VDOS_DYNMAT_PARTIAL=""               # yes (default) | no — 'no' skips the per-element
+                                     # curves and halves memory and runtime
+VDOS_DYNMAT_ASR=""                   # none (default) | simple — acoustic sum rule
+VDOS_DYNMAT_OUTPUT=""                # output basename, default vdos_dynmat
+
+# Mode-character analysis: what kind of motion each band is. Builds a local
+# orthonormal frame at every bridging atom (for a-SiO2, an O with exactly two Si
+# neighbours) and splits each mode's motion into stretching / bending / rocking,
+# the standard band assignment for silica glass. Also emits the participation
+# ratio (extended vs localized modes — the boson-peak diagnostic) and the
+# reduced DOS g(nu)/nu^2. Adds <date>_vdos_dynmat_modes.csv, one row per mode.
+#
+# Needs the coordinates LAMMPS writes right after `minimize`, so a matrix from a
+# run predating that write_dump line cannot be analysed this way.
+VDOS_DYNMAT_CHARACTER=""             # yes | no (default no)
+DYNMAT_REF_TRAJ=""                   # minimized coordinates, default dynmat_ref.lammpstrj.
+                                     # One value reaches both stages, like DYNMAT_FILE
+VDOS_DYNMAT_BRIDGE_ELEMENT=""        # the bridging atom, default O
+VDOS_DYNMAT_NEIGHBOR_ELEMENT=""      # its two neighbours, default Si
+VDOS_DYNMAT_BOND_CUTOFF=""           # bridge-neighbour max distance in A, default 2.2
