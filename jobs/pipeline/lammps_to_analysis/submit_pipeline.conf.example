@@ -14,15 +14,100 @@
 # variable below for that one invocation. Run submit_pipeline.sh --help for
 # what each variable/flag controls.
 #
-# This file is sourced as bash, so $REPO_ROOT (set by submit_pipeline.sh
-# before sourcing this file) and normal bash quoting rules are available.
+# This file is sourced as bash, so normal bash quoting rules apply and two
+# variables submit_pipeline.sh sets before sourcing it are available:
+#
+#   $REPO_ROOT  the util checkout (default $HOME/util)
+#   $RUN_DIR    the LAMMPS run directory the pipeline was invoked from (the cwd).
+#               Writing a value as "$RUN_DIR/..." ties it to whichever run you
+#               are submitting instead of to one hardcoded run — the input script
+#               and the overwrite log below both work that way, so this file
+#               needs no editing when you move to run 0169.
+#   $RUN_ID     that directory's basename (e.g. 0168). Also the prefix of the
+#               stage-2 output directory, <run_id>_distribution_analysis.
+#
+# They describe where you ran the script, so they are fixed before any flag is
+# parsed. A third, $PARENT_DIR, is defined by this file rather than by the
+# script — see the general input parameters below.
 
+# =============================================================================
+# pipeline behaviour — what RUNS, as opposed to what it computes
+# =============================================================================
+# Each of these has a submit_pipeline.sh flag of the same name (--skip-trajectory,
+# --interactive, --force REASON, --clean), and the flag wins for that invocation.
+# They are per-run decisions far more often than they are settings, so the
+# resting state for all five is the value shown here. Leaving any of them out of
+# this file is fine — the script falls back to exactly these defaults.
+#
+#   SKIP_TRAJECTORY  1 = skip stage 1 (the LAMMPS run) and analyse the trajectory
+#                    already sitting in run/. This is the normal way to add a
+#                    calculation to a finished run. Aborts up front if the dump
+#                    files it expects are missing.
+#   INTERACTIVE      1 = run both stages in the foreground rather than through
+#                    sbatch. Needs an allocation you already hold (salloc); it
+#                    does not request one.
+#   FORCE            1 = overwrite stage 1's input_files/ and run/, AND redo
+#                    stage-2 calculations whose output is already in the analysis
+#                    directory. Requires FORCE_REASON. Setting this to 1 here
+#                    disarms the guard on every run — prefer the flag, which
+#                    disarms it once.
+#   FORCE_REASON     Why you are overwriting. Logged with a timestamp and the
+#                    affected paths to LOG_FILE below. FORCE=1 with an empty
+#                    reason aborts rather than guessing.
+#   CLEAN            1 = delete the whole <run_id>_distribution_analysis/ before
+#                    stage 2. Off by default: an existing analysis directory is
+#                    ADDED TO, so a run that computes only vdos leaves an earlier
+#                    rdf in place, and only a REPEATED calculation needs FORCE.
+SKIP_TRAJECTORY="0"
+INTERACTIVE="0"
+FORCE="0"
+FORCE_REASON=""
+CLEAN="0"
+
+# =============================================================================
+# pipeline paths and trajectory filenames
+# =============================================================================
+# Change these only if your in.input writes its dumps under other names, or you
+# keep the slurm template somewhere else. $REPO_ROOT is available here.
+#
+#   LAMMPS_TEMPLATE     sbatch template copied in as stage 1's job script
+#   DUMP_FILE           structural trajectory, read by rdf_freud.py/bad_freud.py
+#   DYNAMICS_DUMP_FILE  dynamics trajectory, read by dsf.py/vdos.py/msd.py
+#   LOG_FILE            append-only record of every FORCE overwrite and CLEAN
+#                       deletion, with timestamps and the exact paths. Kept in
+#                       the run directory, next to the data it describes, so the
+#                       record of what was overwritten travels with the run.
+LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_submit.slurm"
+DUMP_FILE="dump.lammpstrj"
+DYNAMICS_DUMP_FILE="dynamics.lammpstrj"
+LOG_FILE="$RUN_DIR/overwrite.log"
+
+# =============================================================================
 # general input parameters
-INPUT_SCRIPT="/scratch1/lkyamamo/test-runs/potential-verify/runs/0168/OH-therm.input"
-STARTING_STRUCTURE="/home1/lkyamamo/util/starting-structures/ICE_CUBIC.data"
-POTENTIAL_FILE="/scratch1/lkyamamo/test-runs/potential-verify/potentials/20260723_OH.vashishta"
+# =============================================================================
+# PARENT_DIR is the campaign this run belongs to — one directory holding the
+# potentials being tested, the runs that use them, and the analysis of those
+# runs. It is not read by submit_pipeline.sh; it exists so the two values under
+# it are written once, here, and every run in the campaign inherits them:
+#
+#   $PARENT_DIR/potentials/<name>   the potential file
+#   $PARENT_DIR/analysis            where <run_id>_distribution_analysis/ is
+#                                   created (the script mkdir -p's it)
+#   $PARENT_DIR/runs/<run_id>       the run directories, i.e. where you cd to
+#                                   before invoking the pipeline — which is what
+#                                   the script hands back as $RUN_DIR
+#
+# Point PARENT_DIR at a new campaign and the potential and analysis locations
+# follow; nothing else in this file has to change. INPUT_SCRIPT is written
+# against $RUN_DIR instead, because the .input belongs to the individual run
+# rather than to the campaign.
+PARENT_DIR="/scratch1/lkyamamo/test-runs/potential-verify"
+
+INPUT_SCRIPT="$RUN_DIR/OH-therm.input"
+STARTING_STRUCTURE="$REPO_ROOT/starting-structures/ICE_CUBIC.data"
+POTENTIAL_FILE="$PARENT_DIR/potentials/20260723_OH.vashishta"
 POTENTIAL_LINK_NAME="OH.usc"
-ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/test-runs/potential-verify/analysis"
+ANALYSIS_PARENT_DIR="$PARENT_DIR/analysis"
 ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
 RUN_DSF="0"
 RUN_RDF="1"

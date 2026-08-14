@@ -222,13 +222,20 @@ Optional:
                                   and stage 2 is submitted without a --dependency
                                   (nothing to wait on).
 
-  --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
-                                  existing <run_id>_distribution_analysis/ (stage 2)
-                                  instead of refusing to run. REASON is required (a
-                                  short explanation of why you're overwriting) and is
-                                  logged, with a timestamp and the exact path removed,
-                                  to both stderr and
-                                  jobs/pipeline/lammps_to_analysis/overwrite.log.
+  --force REASON                  Overwrite existing input_files/run/ (stage 1), or redo
+                                  a stage-2 calculation whose output is already in
+                                  <run_id>_distribution_analysis/, instead of refusing to
+                                  run. REASON is required (a short explanation of why
+                                  you're overwriting) and is logged, with a timestamp and
+                                  the exact paths involved, to both stderr and
+                                  overwrite.log in the run directory (LOG_FILE in
+                                  submit_pipeline.conf).
+
+  --clean                         Delete the whole <run_id>_distribution_analysis/
+                                  directory before stage 2, rather than adding to it.
+                                  Off by default. The deletion is logged to
+                                  overwrite.log like --force; pass --force REASON
+                                  alongside it to record why.
 
   --interactive                   Run both stages in the foreground via plain
                                   bash instead of submitting them with sbatch.
@@ -244,27 +251,80 @@ Optional:
 
   -h, --help                    Show this help
 
+RE-RUNNING STAGE 2
+An existing <run_id>_distribution_analysis/ is added to, never replaced. The
+usual way to add a calculation to a finished run is:
+
+  submit_pipeline.sh --skip-trajectory --run-rdf 0 --run-bad 0 --run-vdos 1
+
+which leaves the earlier rdf/bad output untouched and writes only the vdos
+files. No --force is needed, because nothing existing is at risk. --force is
+needed only to REDO a calculation whose output is already in the directory,
+and --clean only to throw the directory away and start over. Outputs are
+date-stamped (YYYYMMDD_rdfs.csv), so a forced redo on a later date lands
+beside the old copy instead of replacing it; a redo on the same date replaces
+it.
+
 All terminal output from this script (not the SLURM jobs themselves) is
 also appended to submit_pipeline.log in the run directory (cwd) each time
 it's invoked.
 EOF
 }
 
-INTERACTIVE="0"
-SKIP_TRAJECTORY="0"
+# The values that cannot live in submit_pipeline.conf, because the conf is
+# sourced with them already set and writes its own paths in terms of them.
+# Everything else that used to sit here is a conf key now — see the "pipeline
+# behaviour" and "pipeline paths" blocks in submit_pipeline.conf.example.
 REPO_ROOT="$HOME/util"
-LAMMPS_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_submit.slurm"
-DUMP_FILE="dump.lammpstrj"
-DYNAMICS_DUMP_FILE="dynamics.lammpstrj"
-FORCE="0"
-FORCE_REASON=""
-LOG_FILE="$REPO_ROOT/jobs/pipeline/lammps_to_analysis/overwrite.log"
+# The run directory. This script is run from inside the LAMMPS run directory and
+# its basename is the run id, so both are known before anything is read; they are
+# set here, ahead of the conf, so conf values can be written relative to the run
+# being submitted (e.g. INPUT_SCRIPT="$RUN_DIR/OH-therm.input"). STAGE1_DIR is
+# the same path under the name the two-stage code below uses throughout.
+RUN_DIR="$(pwd)"
+RUN_ID="$(basename "$RUN_DIR")"
+STAGE1_DIR="$RUN_DIR"
 
 log_overwrite() {
   local msg
   msg="[$(date "+%Y-%m-%dT%H:%M:%S%z")] $1"
   echo "WARNING: $msg" >&2
   echo "$msg" >> "$LOG_FILE"
+}
+
+# The output files each calculation writes, WITHOUT the YYYYMMDD_ prefix every
+# script prepends (see _dated() in each .py). Used to tell "this directory
+# already holds an rdf" from "this directory holds only a vdos", so adding a
+# calculation to an existing analysis directory needs no --force but redoing
+# one does. Keep in sync with the OUTPUT_* constants in the .py files.
+outputs_for() {
+  case "$1" in
+    dsf)  echo "sq.csv sq.png dsf.csv dsf.png" ;;
+    rdf)  echo "rdfs.csv rdfs.png nrs.csv nrs.png" ;;
+    bad)  echo "bads.csv bads.png" ;;
+    vdos) echo "vdos.csv vdos.png" ;;
+    msd)  echo "msd.csv msd.png" ;;
+    vdos_dynmat)
+      local b="${VDOS_DYNMAT_OUTPUT:-vdos_dynmat}"
+      echo "$b.csv $b.png ${b}_modes.csv ${b}_character.png" ;;
+  esac
+}
+
+# Input links in a reused analysis directory are usually already there from the
+# earlier run. Refresh a symlink (its target can legitimately change), and
+# refuse to touch a real file — a trajectory someone copied in by hand is data,
+# not a link this script owns.
+link_input() {
+  local target="$1" linkname="$2"
+  if [[ -L "$linkname" ]]; then
+    ln -sfn "$target" "$linkname"
+  elif [[ -e "$linkname" ]]; then
+    echo "Error: $linkname already exists and is not a symlink — refusing to replace it." >&2
+    echo "Move it aside, or rebuild the directory from scratch with --clean." >&2
+    exit 1
+  else
+    ln -s "$target" "$linkname"
+  fi
 }
 
 # All parameter defaults (general input, trajectory-creation slurm, analysis
@@ -281,6 +341,20 @@ fi
 # Pre-declare the per-script analysis keys as empty so that a conf predating
 # any of them still works under `set -u` (an unset key would otherwise abort
 # with "unbound variable"). The conf overrides whichever of these it sets.
+#
+# The behaviour switches and pipeline paths below are the same idea, but their
+# fallbacks are real values rather than empty: they used to be assigned at the
+# top of this script and are conf keys now, so these lines are what a conf
+# written before they moved falls back to.
+INTERACTIVE="${INTERACTIVE:-0}"
+SKIP_TRAJECTORY="${SKIP_TRAJECTORY:-0}"
+FORCE="${FORCE:-0}"
+FORCE_REASON="${FORCE_REASON:-}"
+CLEAN="${CLEAN:-0}"
+LAMMPS_TEMPLATE="${LAMMPS_TEMPLATE:-$REPO_ROOT/jobs/slurm/lammps_submit.slurm}"
+DUMP_FILE="${DUMP_FILE:-dump.lammpstrj}"
+DYNAMICS_DUMP_FILE="${DYNAMICS_DUMP_FILE:-dynamics.lammpstrj}"
+LOG_FILE="${LOG_FILE:-$RUN_DIR/overwrite.log}"
 DYNAMICS_DT="${DYNAMICS_DT:-}"
 RDF_R_MAX="${RDF_R_MAX:-}"
 RDF_BINS_VAL="${RDF_BINS_VAL:-}"
@@ -426,6 +500,7 @@ while [[ $# -gt 0 ]]; do
     --vdos-dynmat-neighbor-element) VDOS_DYNMAT_NEIGHBOR_ELEMENT="$2"; shift 2 ;;
     --vdos-dynmat-bond-cutoff) VDOS_DYNMAT_BOND_CUTOFF="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
+    --clean) CLEAN="1"; shift 1 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
     --skip-trajectory) SKIP_TRAJECTORY="1"; shift 1 ;;
     -h|--help) usage; exit 0 ;;
@@ -433,8 +508,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-STAGE1_DIR="$(pwd)"
-RUN_ID="$(basename "$STAGE1_DIR")"
 PIPELINE_LOG="$STAGE1_DIR/submit_pipeline.log"
 exec > >(tee -a "$PIPELINE_LOG") 2>&1
 echo "=== submit_pipeline.sh started $(date "+%Y-%m-%dT%H:%M:%S%z") — run id: $RUN_ID ==="
@@ -572,13 +645,43 @@ mkdir -p "$ANALYSIS_PARENT_DIR"
 ANALYSIS_PARENT_DIR="$(cd "$ANALYSIS_PARENT_DIR" && pwd)"
 STAGE2_DIR="$ANALYSIS_PARENT_DIR/${RUN_ID}_distribution_analysis"
 
+# An existing analysis directory is ADDED TO, not replaced: the RUN_* flags pick
+# which calculations run, and a run that only asks for rdf must not destroy the
+# vdos output sitting next to it. Only --clean removes the directory, and only
+# a calculation whose own output is already there needs --force.
+if [[ -e "$STAGE2_DIR" && "$CLEAN" == "1" ]]; then
+  log_overwrite "--clean${FORCE_REASON:+ ($FORCE_REASON)}: removing existing $STAGE2_DIR"
+  rm -rf "$STAGE2_DIR"
+fi
+
 if [[ -e "$STAGE2_DIR" ]]; then
-  if [[ "$FORCE" == "1" ]]; then
-    log_overwrite "--force ($FORCE_REASON): removing existing $STAGE2_DIR"
-    rm -rf "$STAGE2_DIR"
-  else
-    echo "Error: $STAGE2_DIR already exists — refusing to overwrite (use --force to override)." >&2
-    exit 1
+  echo "Adding to existing analysis directory $STAGE2_DIR (use --clean to rebuild it from scratch)."
+  existing_outputs=()
+  for calc in dsf rdf bad vdos msd vdos_dynmat; do
+    run_var="RUN_$(echo "$calc" | tr '[:lower:]' '[:upper:]')"
+    [[ "${!run_var}" == "1" ]] || continue
+    for name in $(outputs_for "$calc"); do
+      # The scripts date-stamp every output, so an earlier run's files are found
+      # by a leading-date glob rather than by exact name.
+      for f in "$STAGE2_DIR"/[0-9]*_"$name"; do
+        [[ -e "$f" ]] && existing_outputs+=("$(basename "$f")")
+      done
+    done
+  done
+
+  if [[ ${#existing_outputs[@]} -gt 0 ]]; then
+    if [[ "$FORCE" == "1" ]]; then
+      log_overwrite "--force ($FORCE_REASON): re-running calculations whose output already exists in $STAGE2_DIR: ${existing_outputs[*]}"
+    else
+      echo "Error: $STAGE2_DIR already holds output for calculations this run would redo:" >&2
+      printf '  %s\n' "${existing_outputs[@]}" >&2
+      echo "Nothing else in that directory is at stake — only the calculations above are repeats." >&2
+      echo "Options: --force REASON to redo them (a run on the same date overwrites the files" >&2
+      echo "listed above; a run on a later date writes new YYYYMMDD_ copies alongside them);" >&2
+      echo "--run-<name> 0 to drop the repeats and add only what is missing; or --clean to" >&2
+      echo "delete the whole analysis directory and start over." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -592,18 +695,18 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/vdos_dynmat.py" \
    "$ANALYSIS_TEMPLATE_DIR/distribution_submit.slurm" \
    "$STAGE2_DIR/"
-ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
-ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
+link_input "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
+link_input "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 # The dynamical matrix, like the trajectories, is consumed read-only. No second
 # link is needed for the atom->element mapping: vdos_dynmat.py takes that from
 # the first frame of $DUMP_FILE above, which lists the same atoms in the same
 # ID order the matrix rows use.
 if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
-  ln -s "$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}" "$STAGE2_DIR/${DYNMAT_FILE:-dynmat.dat}"
+  link_input "$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}" "$STAGE2_DIR/${DYNMAT_FILE:-dynmat.dat}"
   # The minimized geometry, needed only by the mode-character analysis. Linked
   # unconditionally so turning VDOS_DYNMAT_CHARACTER on later needs no re-run.
   _ref="${DYNMAT_REF_TRAJ:-dynmat_ref.lammpstrj}"
-  ln -s "$STAGE1_DIR/run/$_ref" "$STAGE2_DIR/$_ref"
+  link_input "$STAGE1_DIR/run/$_ref" "$STAGE2_DIR/$_ref"
 fi
 
 # None of these values may contain a comma — sbatch --export is
@@ -766,6 +869,11 @@ else
   [[ -n "$ANALYSIS_CONSTRAINT" ]] && analysis_sbatch_args+=(--constraint="$ANALYSIS_CONSTRAINT")
   [[ -n "$ANALYSIS_NODELIST" ]]   && analysis_sbatch_args+=(--nodelist="$ANALYSIS_NODELIST")
   [[ -n "$ANALYSIS_CPUS_PER_TASK" ]] && analysis_sbatch_args+=(--cpus-per-task="$ANALYSIS_CPUS_PER_TASK")
+  # distribution_submit.slurm writes to the fixed filename STREAM_OUTPUT, which
+  # sbatch truncates by default. Now that a second run can land in a directory an
+  # earlier one already used, append instead — otherwise adding a calculation
+  # keeps every earlier CSV but silently destroys the log explaining them.
+  analysis_sbatch_args+=(--open-mode=append)
 
   dependency_args=()
   [[ -n "$JOBID1" ]] && dependency_args+=(--dependency=afterok:"$JOBID1")
