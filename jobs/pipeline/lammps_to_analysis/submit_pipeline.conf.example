@@ -65,6 +65,60 @@ ANALYSIS_NODELIST=""
 # Each block states how to CHOOSE its values, not just what they mean. Worked
 # examples assume the reference system used throughout: liquid water /
 # hydroxylated silica, ~5000 atoms, cubic cell L = 43 A, MD timestep 0.5 fs.
+#
+# SAMPLING: is it converged?
+# --------------------------
+# Every analysis reports, at the end of its run, the number of independent
+# contributions M behind its noisiest output, and the relative error that
+# implies:
+#     relative error ~ 1/sqrt(M)
+#     M = 1e2   10%    exploratory only
+#     M = 1e3    3%    PASS MARK - peak positions, coordination numbers
+#     M = 1e4    1%    publication / comparison against measured data
+#     M = 1e6  0.1%    past the point of diminishing returns
+# M is (contributors per configuration) x (independent configurations), so it is
+# size-invariant: double the atom count and you can halve the frames. Raise it by
+# adding frames or atoms - both enter linearly. Each run names its LIMITING
+# partial or species, which is normally the rarest one and is invisible in any
+# aggregate.
+#
+# Two ways M lies, pointing to opposite advice:
+#   vdos.py/msd.py  Overlapping VACF windows are not independent. With
+#                   CORR_LENGTH=2000 and CORR_INTERVAL=100 consecutive origins
+#                   share 95% of the same data. Independent windows are capped at
+#                   span/CORR_LENGTH - a ceiling shrinking CORR_INTERVAL cannot
+#                   raise, though it does keep costing runtime. Both scripts print
+#                   M_raw and M_indep so the gap is visible.
+#   rdf/bad/dsf     Closely spaced frames are correlated, but the many pairs
+#                   within ONE frame are not, which is why g(r) converges fast.
+#                   Prefer fewer, well-separated frames over many adjacent ones.
+#
+# COST: will it finish?
+# ---------------------
+# Measured on a 12-core mac (134784-atom frame for rdf, 5184 atoms x 10 frames
+# for bad/dsf). Publish-worthy exponents, not textbook ones:
+#     rdf_freud.py  ~ frames x N x R_MAX^3   8.2x per R_MAX doubling (8->16 A)
+#     bad_freud.py  ~ R_CUTOFF^6 (!)         4->6 A measured 16x. Coordination
+#                                            grows as R^3 and triplets as its
+#                                            square, so a "safe" generous cutoff
+#                                            is quadratically worse than it looks
+#     dsf.py        ~ frames x N x Q_MAX^3   Q_MAX=20 costs ~10 min on only
+#                                            5184 atoms x 10 frames - by far the
+#                                            most expensive default here; drop to
+#                                            12 while iterating (4.6x cheaper)
+#     vdos/msd      ~ n_refs x CORR_LENGTH x N, linear in 1/CORR_INTERVAL
+#     vdos_dynmat   ~ (3N)^3 time, (3N)^2 memory
+#
+# THREADS: how many are worth asking for?
+# ---------------------------------------
+# Not all backends read OMP_NUM_THREADS - freud and numba ignore it, so the
+# scripts and runners now set freud.parallel.set_num_threads() and
+# NUMBA_NUM_THREADS explicitly. Measured for rdf_freud.py (134784 atoms,
+# R_MAX=6), wall / core-seconds:
+#     1 thread  1.50 s / 1.5      4 threads  0.55 s / 2.2   <- sweet spot
+#     2 threads 1.17 s / 2.3      8 threads  0.51 s / 4.1
+# 8 threads costs roughly twice the CPU for 8% more speed. freud's neighbour
+# search simply does not scale past ~4; asking for 64 cores wastes the allocation.
 
 # -----------------------------------------------------------------------------
 # rdf_freud.py — g(r) and coordination numbers. Reads dump.lammpstrj.

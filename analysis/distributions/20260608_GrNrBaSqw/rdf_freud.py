@@ -103,10 +103,23 @@ Wrapped coordinates (x y z) and a constant atom count are assumed.
 
 import itertools
 import os
+import time
 from datetime import date
 
 import numpy as np
 import freud
+
+# freud uses TBB and does NOT read OMP_NUM_THREADS — left alone it takes every
+# core on the node, which oversubscribes a shared node and ignores whatever the
+# pipeline asked for. 0 is freud's own "all cores" default, so an unset variable
+# behaves exactly as before.
+#
+# Measured on a 134784-atom frame at R_MAX=8 (6 partials): 1 thread 3.95 s,
+# 2 -> 1.23x, 4 -> 1.46x, 8 -> 1.51x, all 12 -> 1.55x. freud's neighbour search
+# parallelizes poorly on this workload, so ~4 threads captures 94% of the
+# available speedup and asking for more is waste. The limit is freud itself, not
+# this script's serial parsing, which is only ~2.6% of the run at that setting.
+freud.parallel.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "0")))
 from scipy.ndimage import gaussian_filter1d
 import matplotlib
 matplotlib.use('Agg')
@@ -273,7 +286,13 @@ def compute_rdf(frames, get_a, get_b, self_pair=False):
     QUERY point, and pos_a is passed as the system, so mean_nr is A around each
     B.  build_coordination() names it accordingly and adds the reverse.
 
-    Returns: r, mean_g, mean_nr
+    bin_counts is freud's raw pair-count histogram accumulated over every frame,
+    i.e. the number of A-B pairs actually observed in each bin.  That is the
+    sampling number M for this partial: the relative statistical error of g(r)
+    in a bin is ~1/sqrt(M), so it is what says whether the curve is converged.
+    It is a measurement, not a model — nothing here estimates it.
+
+    Returns: r, mean_g, mean_nr, bin_counts
     """
     rdf   = freud.density.RDF(bins=BINS, r_max=R_MAX)
     first = True
@@ -294,9 +313,79 @@ def compute_rdf(frames, get_a, get_b, self_pair=False):
 
     if first:
         empty = np.zeros(BINS)
-        return rdf.bin_centers, empty, empty
+        return rdf.bin_centers, empty, empty, empty
 
-    return rdf.bin_centers, rdf.rdf, rdf.n_r
+    return rdf.bin_centers, rdf.rdf, rdf.n_r, np.asarray(rdf.bin_counts)
+
+
+# =============================================================================
+# Sampling and cost reporting — see "How much data is enough" in the README
+# =============================================================================
+
+# Relative statistical error of a binned average is ~1/sqrt(M), where M is the
+# number of independent contributions to that bin.  The ladder:
+#     M = 1e2   10%    exploratory only
+#     M = 1e3    3%    pass mark: peak positions, coordination numbers
+#     M = 1e4    1%    publication / comparison against measured data
+#     M = 1e6  0.1%    past the point of diminishing returns
+SAMPLING_TARGET = 1e3
+
+
+def sampling_verdict(m):
+    """(relative error, verdict) for a sampling number M."""
+    if m <= 0:
+        return float('inf'), 'EMPTY'
+    error = 1.0 / np.sqrt(m)
+    return error, ('ok' if m >= SAMPLING_TARGET else 'LOW')
+
+
+def report_sampling(rows, note=''):
+    """
+    Print achieved sampling per row and name the limiting one.
+
+    rows is [(label, where, M)].  Every partial is listed rather than an
+    aggregate, because the minority species is normally what limits the result
+    and an aggregate hides it entirely.
+    """
+    print(f"\nSampling achieved (relative error ~ 1/sqrt(M), target M >= {SAMPLING_TARGET:.0e}):")
+    width = max((len(r[0]) for r in rows), default=8)
+    worst = None
+    for label, where, m in rows:
+        error, verdict = sampling_verdict(m)
+        print(f"  {label.ljust(width)}  {where:<22}  M = {m:9.3g}  {100*error:6.2f}%  {verdict}")
+        if worst is None or m < worst[2]:
+            worst = (label, where, m)
+    if worst is not None:
+        error, verdict = sampling_verdict(worst[2])
+        print(f"  limiting: {worst[0]} at {100*error:.2f}% ({verdict})")
+        if verdict == 'LOW':
+            print(f"  -> below the {SAMPLING_TARGET:.0e} pass mark; add frames or atoms"
+                  f" (M scales linearly in both)")
+    if note:
+        print(f"  {note}")
+
+
+def report_cost(t_serial, t_parallel, threads, m_limiting, scaling=''):
+    """
+    Print wall time, the threads actually in use, and core-seconds.
+
+    Three numbers because one is not enough: wall is what you wait for, threads
+    is what you got (not what you asked for — freud and numba ignore
+    OMP_NUM_THREADS), and core-seconds is the portable figure that survives
+    comparison across machines and allocations.
+    """
+    wall = t_serial + t_parallel
+    core_seconds = wall * max(threads, 1)
+    serial_fraction = t_serial / wall if wall > 0 else 0.0
+    print(f"\nCost: wall {wall:.2f} s   threads {threads} (freud TBB, reported)   "
+          f"core-seconds {core_seconds:.1f}")
+    print(f"      parse {t_serial:.2f} s serial ({100*serial_fraction:.1f}%) + "
+          f"compute {t_parallel:.2f} s")
+    if m_limiting > 0 and wall > 0:
+        print(f"      efficiency {m_limiting/wall:.3g} samples/wall-s, "
+              f"{m_limiting/core_seconds:.3g} samples/core-s (limiting partial)")
+    if scaling:
+        print(f"      {scaling}")
 
 
 def build_pair_getters(elements):
@@ -611,7 +700,9 @@ if __name__ == '__main__':
     print(f"RDF_FUNCTIONS:     {functions}")
 
     print(f"Reading trajectory: {DUMP_FILE}")
+    _t_parse_start = time.time()
     frames = read_lammps_dump(DUMP_FILE)
+    t_parse = time.time() - _t_parse_start
 
     atom_counts = [len(f['positions']) for f in frames]
     print(f"Frames read:  {len(frames)}")
@@ -639,11 +730,24 @@ if __name__ == '__main__':
     pairs = build_pair_getters(elements)
     gr_results = {}
     nr_raw     = {}
+    sampling   = []
+    _t_compute_start = time.time()
     for name, (get_a, get_b, is_self) in pairs.items():
         print(f"Computing RDF: {name}...")
-        r, g, nr = compute_rdf(frames, get_a, get_b, self_pair=is_self)
+        r, g, nr, counts = compute_rdf(frames, get_a, get_b, self_pair=is_self)
         gr_results[name] = (r, g)
         nr_raw[name]     = (r, nr)
+
+        # M at the first peak: the bin people actually read numbers off. The
+        # 0.5 A floor skips the empty excluded-volume bins, whose g(r) = 0
+        # would otherwise win the argmax on a noisy curve.
+        physical = r > 0.5
+        if physical.any() and counts.sum() > 0:
+            peak = np.flatnonzero(physical)[np.argmax(g[physical])]
+            sampling.append((name, f"first peak {r[peak]:.2f} Å", float(counts[peak])))
+        else:
+            sampling.append((name, "no pairs found", 0.0))
+    t_compute = time.time() - _t_compute_start
 
     nr_results = build_coordination(nr_raw, concentrations)
 
@@ -654,6 +758,15 @@ if __name__ == '__main__':
     broaden(conventions, meta, RDF_RESOLUTION_SIGMA, r_grid[1] - r_grid[0])
     print_convention_table(meta)
     gr_results.update(conventions)
+
+    report_sampling(sampling)
+    report_cost(
+        t_parse, t_compute,
+        threads=freud.parallel.get_num_threads() or os.cpu_count(),
+        m_limiting=min((m for _, _, m in sampling), default=0.0),
+        scaling=(f"cost ~ frames x N x R_MAX^3 (measured 8.2x per R_MAX doubling at 8->16 Å); "
+                 f"R_MAX={R_MAX} here"),
+    )
 
     if OUTPUT_CSV is not None:
         save_csv(gr_results, OUTPUT_CSV)

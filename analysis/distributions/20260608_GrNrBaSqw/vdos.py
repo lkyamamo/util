@@ -700,6 +700,61 @@ def print_weighting_table(weights_by_key, normalization):
           "  diffusing species.")
 
 
+# =============================================================================
+# Sampling reporting — see "How much data is enough" in the README
+# =============================================================================
+
+# Relative statistical error of an averaged quantity is ~1/sqrt(M), where M is
+# the number of INDEPENDENT contributions.  Ladder: 1e2 = 10%, 1e3 = 3% (the
+# pass mark), 1e4 = 1%, 1e6 = 0.1%.
+SAMPLING_TARGET = 1e3
+
+
+def _verdict(m):
+    if m <= 0:
+        return float('inf'), 'EMPTY'
+    return 1.0 / np.sqrt(m), ('ok' if m >= SAMPLING_TARGET else 'LOW')
+
+
+def report_sampling_origins(counts, n_origins, n_independent, span_fs, corr_length_fs):
+    """
+    M = atoms of that species x time origins — the atoms x samples product.
+
+    Two numbers per species, because they answer different questions.  M_raw
+    counts every origin; M_indep counts only origins far enough apart to be
+    statistically independent.  Overlapping windows are the severe case in this
+    pipeline: with CORR_LENGTH=2000 fs and CORR_INTERVAL=100 fs consecutive
+    origins share 95% of the same trajectory, so averaging them does NOT buy
+    sqrt(n_origins).  The number of genuinely independent windows is capped at
+    span/CORR_LENGTH, a ceiling set by trajectory length that shrinking
+    CORR_INTERVAL cannot raise — past it you pay linearly in runtime for
+    nothing.  To actually reduce noise, lengthen the trajectory or add atoms.
+    """
+    print(f"\nSampling achieved (relative error ~ 1/sqrt(M), target M >= {SAMPLING_TARGET:.0e}):")
+    print(f"  {n_origins} time origins over {span_fs/1000:.1f} ps; only "
+          f"{n_independent} are independent (span / CORR_LENGTH = "
+          f"{span_fs/1000:.1f} / {corr_length_fs/1000:.1f} ps)")
+    width = max((len(el) for el in counts), default=4)
+    worst = None
+    for el in sorted(counts):
+        m_raw = counts[el] * n_origins
+        m_ind = counts[el] * n_independent
+        err_raw, _ = _verdict(m_raw)
+        err_ind, verdict = _verdict(m_ind)
+        print(f"  {el.ljust(width)}  {counts[el]:6d} atoms   "
+              f"M_raw = {m_raw:9.3g} ({100*err_raw:5.2f}%)   "
+              f"M_indep = {m_ind:9.3g} ({100*err_ind:5.2f}%)  {verdict}")
+        if worst is None or m_ind < worst[1]:
+            worst = (el, m_ind)
+    if worst is not None:
+        err, verdict = _verdict(worst[1])
+        print(f"  limiting: {worst[0]} at {100*err:.2f}% on independent windows ({verdict})")
+        if n_origins > n_independent:
+            factor = np.sqrt(n_origins / max(n_independent, 1))
+            print(f"  -> M_raw overstates precision by {factor:.1f}x here; "
+                  f"CORR_INTERVAL below span/CORR_LENGTH costs runtime and buys nothing")
+
+
 def combine_results(raw_curves, elements, freq, normalization, prenormalize_partials,
                     weightings):
     """
@@ -844,6 +899,10 @@ if __name__ == '__main__':
             prenormalize_partials=False, weightings=weightings)
         freq_by_unit = _freq_all_units(freq_eV)
         print(f"  VACF reference frames used: {n_refs}")
+        _span_fs = n_frames_read * TIME_UNIT
+        _n_indep = max(1, int(_span_fs // CORR_LENGTH))
+        _counts  = {el: int((elements == el).sum()) for el in unique_els}
+        report_sampling_origins(_counts, n_refs, _n_indep, _span_fs, CORR_LENGTH)
     else:  # 'fft_periodogram'
         freq_THz, power, n_segments = compute_power_spectrum(
             velocities, TIME_UNIT, window=WINDOW,

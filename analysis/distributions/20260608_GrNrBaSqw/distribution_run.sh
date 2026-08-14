@@ -39,6 +39,16 @@ RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 
 N_THREADS=${1:-$(nproc)}
 export OMP_NUM_THREADS=$N_THREADS
+export NUMBA_NUM_THREADS=${OMP_NUM_THREADS}   # numba ignores OMP_NUM_THREADS
+# Thread control differs per backend, and OMP_NUM_THREADS alone does NOT reach
+# all of them:
+#   freud/TBB (rdf_freud.py, bad_freud.py) ignores OMP_NUM_THREADS entirely and
+#     would take every core; those scripts now call freud.parallel.set_num_threads()
+#     with this value. Measured: freud's RDF scales poorly (1.55x on 12 threads),
+#     so ~4 threads captures most of the gain and more is waste.
+#   numba (dsf.py via dynasor) reads NUMBA_NUM_THREADS, exported below.
+#   OpenBLAS/MKL (vdos.py, msd.py, vdos_dynmat.py) does read OMP_NUM_THREADS.
+#   scipy.fft (vdos.py fft_periodogram) reads VDOS_THREADS, set below.
 # vdos.py's fft_periodogram method reads VDOS_THREADS directly (scipy.fft
 # workers); its default vacf_cosine_transform method instead benefits from
 # OMP_NUM_THREADS above via numpy's underlying BLAS matmul.

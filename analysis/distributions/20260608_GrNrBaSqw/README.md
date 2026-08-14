@@ -359,6 +359,100 @@ pip install scipy     # optional: multi-threaded FFT for vdos.py's fft_periodogr
 
 ---
 
+## How much data is enough, and what it costs
+
+Every parameter table above is about **resolution**. This section is about **statistics and runtime** — a
+run can be perfectly configured for resolution and still return noise, or be converged and take a week.
+
+### Sampling number M
+
+Each script prints, at the end of its run, the number of independent contributions behind its noisiest
+output and the error that implies:
+
+```
+Sampling achieved (relative error ~ 1/sqrt(M), target M >= 1e+03):
+  H-H    first peak 1.63 Å       M =  4.82e+03    1.44%  ok
+  H-Si   first peak 2.26 Å       M =        67   12.22%  LOW
+  limiting: H-Si at 12.22% (LOW)
+```
+
+| M | error | verdict |
+|---|---|---|
+| 10² | 10% | exploratory only |
+| 10³ | 3% | **pass mark** — peak positions, coordination numbers |
+| 10⁴ | 1% | publication / comparison against measured data |
+| 10⁶ | 0.1% | diminishing returns |
+
+`M = (contributors per configuration) × (independent configurations)`, which is **size-invariant**: double
+the atoms and you can halve the frames. Both enter linearly, so either raises M.
+
+| script | M is | contributors |
+|---|---|---|
+| `rdf_freud.py` | pair counts in the first-peak bin (freud's `bin_counts`, exact) | `N_A·N_B/V·4πr²Δr` per frame |
+| `bad_freud.py` | triplet counts per angle bin | triplets per frame |
+| `dsf.py` | q-vectors in the bin × frames | shell multiplicity at that \|q\| |
+| `vdos.py`, `msd.py` | `N_atoms(species) × N_origins` | atoms of that species |
+
+Every partial and species is listed, and the **limiting** one named — it is normally the rarest, and an
+aggregate would hide it. The example above is real: one 134,784-atom frame gives H-H 1.4% but H-Si only
+12%, because Si is 6% of the cell.
+
+### Two ways M lies
+
+**Overlapping VACF windows (`vdos.py`, `msd.py`) — severe.** With `CORR_LENGTH=2000 fs` and
+`CORR_INTERVAL=100 fs`, consecutive origins share 95% of the same trajectory, so averaging them does not
+buy √n. Independent windows are capped at `span/CORR_LENGTH` — a ceiling set by trajectory length that
+shrinking `CORR_INTERVAL` **cannot raise, though it keeps costing runtime**. Both scripts print `M_raw` and
+`M_indep`:
+
+```
+31 time origins over 4.0 ps; only 4 are independent (span / CORR_LENGTH = 4.0 / 1.0 ps)
+Si      16 atoms   M_raw = 496 (4.49%)   M_indep = 64 (12.50%)  LOW
+-> M_raw overstates precision by 2.8x here
+```
+
+To genuinely reduce noise: lengthen the trajectory or add atoms.
+
+**Correlated frames (`rdf_freud.py`, `bad_freud.py`, `dsf.py`) — mild, opposite advice.** Adjacent frames
+hold nearly the same positions, but the many pairs *within* one frame are independent — which is why g(r)
+converges so fast that a single 5000-atom frame already gives ~10⁵ pairs. So prefer **fewer, well-separated
+frames over many adjacent ones**.
+
+### Cost
+
+Measured on a 12-core mac; exponents are what came out, not textbook values.
+
+| script | cost | measured |
+|---|---|---|
+| `rdf_freud.py` | `frames · N · R_MAX³` | **8.2× per `R_MAX` doubling** (8→16 Å) |
+| `bad_freud.py` | `R_CUTOFF⁶` | **16× from 4→6 Å** — coordination ∝ R³, triplets ∝ its square |
+| `dsf.py` | `frames · N · Q_MAX³` | `Q_MAX=20` costs **~10 min on 5184 atoms × 10 frames** |
+| `vdos.py`, `msd.py` | `n_refs · CORR_LENGTH · N` | linear in `1/CORR_INTERVAL` |
+| `vdos_dynmat.py` | `(3N)³` time, `(3N)²` memory | 8× time and 4× memory per doubling of N |
+
+`bad_freud.py`'s R⁶ is the trap: a cutoff set generously "to be safe" is quadratically worse than it looks.
+`dsf.py`'s `Q_MAX=20` default is the single most expensive setting in the pipeline — drop it to 12 while
+iterating for a 4.6× saving.
+
+### Threads: how many are worth asking for
+
+**Not every backend reads `OMP_NUM_THREADS`.** freud (`rdf_freud.py`, `bad_freud.py`) and numba (`dsf.py`
+via dynasor) ignore it; the scripts now call `freud.parallel.set_num_threads()` and the runners export
+`NUMBA_NUM_THREADS`. Measured for `rdf_freud.py` on 134,784 atoms at `R_MAX=6`:
+
+| threads | wall | core-seconds |
+|---|---|---|
+| 1 | 1.50 s | 1.5 |
+| 2 | 1.17 s | 2.3 |
+| **4** | **0.55 s** | **2.2** |
+| 8 | 0.51 s | 4.1 |
+
+freud's neighbour search does not scale past ~4 threads: 8 costs roughly twice the CPU for 8% more speed.
+Each run prints wall time, the threads each backend **actually reports** (not what you asked for), and
+core-seconds, so this is checkable on your own hardware.
+
+---
+
 ## Dump Format Requirements
 
 | Script | Element column | Coordinate columns | Notes |
