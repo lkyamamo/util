@@ -14,7 +14,7 @@ scripts — trajectory input" below.
 
 | Script | What it computes | Output files |
 |---|---|---|
-| `rdf_freud.py` | Radial distribution function g(r) and coordination number n(r) for all element pairs | `rdfs.csv`, `rdfs.png`, `nrs.csv`, `nrs.png` |
+| `rdf_freud.py` | Radial distribution function g(r), coordination number n(r), and selectable neutron correlation functions for all element pairs | `rdfs.csv`, `rdfs.png`, `nrs.csv`, `nrs.png` |
 | `bad_freud.py` | Bond angle distribution P(θ) for all A-B-C triplets | `bads.csv`, `bads.png` |
 | `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `sq.png`, `dsf.csv`, `dsf.png` |
 | `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `vdos.png` |
@@ -90,18 +90,62 @@ both dumps from the same production run, at independent frequencies
 
 | Variable | What it controls | Notes |
 |---|---|---|
-| `DUMP_FILE` | Trajectory path | |
-| `R_MAX` | Max r in Å for g(r) | Must be < half the shortest box dimension |
-| `COL_ELEMENT` | Column index of element symbol in `ITEM: ATOMS` | 0-indexed; default layout: `id element x y z` → set to `1` |
-| `COL_X`, `COL_Y`, `COL_Z` | Column indices of x, y, z coordinates | Default: `2, 3, 4` |
+| `DUMP_FILE` | Trajectory path | `$TRAJ` |
+| `R_MAX` | Max r in Å for g(r) | `$R_MAX`; must be < half the shortest box dimension |
+
+Column positions are read from the `ITEM: ATOMS` header line, so there is nothing to set by hand.
+Wrapped coordinates (`x y z`) and a constant atom count are assumed; a triclinic dump aborts with an
+explanation rather than being silently mis-wrapped.
 
 Optional:
 
 | Variable | What it controls | Default |
 |---|---|---|
-| `BINS` | Number of r-bins | `200` |
+| `RDF_BINS` | Number of r-bins | `2000` |
+| `RDF_NORMALIZATION` | Pair-weight convention(s): `unity`, `FZ`, `absolute` | `"FZ;absolute;unity"` |
+| `RDF_FUNCTIONS` | Correlation function(s): `g`, `h`, `D`, `T` | `"g;h;D"` |
+| `RDF_RESOLUTION_SIGMA` | Gaussian resolution broadening in Å, written as `*_broadened` twins; `0` disables | `0.1` |
 | `OUTPUT_CSV` | g(r) CSV path; `None` to skip | `"rdfs.csv"` |
 | `OUTPUT_NR_CSV` | n(r) CSV path; `None` to skip | `"nrs.csv"` |
+
+The two list-valued keys are **semicolon-separated**, not comma-separated: `submit_pipeline.sh` passes
+settings through `sbatch --export`, which is itself comma-delimited and silently truncates a value at the
+first embedded comma — so a comma-separated list would reach the cluster as its first entry alone, with no
+error. `bad_freud.py` takes `ELEMENTS="Si;O;H"` for the same reason. A comma in either key is rejected with
+the corrected string in the message.
+
+Every key is `RDF_`-prefixed, env key and Python constant alike, so the analysis it configures is explicit:
+`NORMALIZATION` on its own does not say which distribution it belongs to, and `vdos.py` has its own
+unrelated `VDOS_NORMALIZATION` (`phonon` | `unit_area`) in the same shared environment.
+
+**Conventions.** `RDF_NORMALIZATION` × `RDF_FUNCTIONS` is emitted as a cross product, one column per combination
+named `<function>_<normalization>`. The script prints every column's defining equation, weight sum Σw, and
+asymptotic limits at startup; check a printed limit against the curve rather than trusting the symbol
+(Keen, *J. Appl. Cryst.* **34**, 172 (2001) tabulates why this matters). Columns written before this
+became configurable map as `total → g_unity`, `neutron → g_FZ`, `t → T_FZ`.
+
+*Normalization* — how much each partial contributes, via the pair weight `w_AB` (`f = 2 − δ_AB`):
+
+| key | `w_AB` | Σw | units | what it is |
+|---|---|---|---|---|
+| `unity` | `f c_A c_B` | 1 | — | Every element scatters identically (b = 1) — the name refers to the scattering lengths, not to Σw, since FZ also sums to 1. Not measurable; it's the composition-averaged structure and the b-free baseline the neutron curves depart from. Formerly `total`. |
+| `FZ` | `f c_A c_B b_A b_B / ⟨b⟩²` | 1 | — | Faber–Ziman. Tends to 1 at large r like a partial does, and being dimensionless it superimposes across compositions — at the cost of dividing by a nearly-cancelling sum. |
+| `absolute` | `f c_A c_B b_A b_B / 100` | ⟨b⟩²/100 | barn/sr/atom | No division: the weighted sum in the units a measured differential cross-section carries. The scale is physical, so the excluded-volume plateau lands at −Σw. Stays well conditioned as ⟨b⟩ → 0, so use it for light water (⟨b⟩² = 0.0031 barn) or a null mixture (⟨b⟩ = 0), where FZ is useless. |
+
+*Function* — what gets built from those weights and the partials `g_AB`:
+
+| key | definition | what it is |
+|---|---|---|
+| `g` | `Σ w g_AB` | Weighted pair distribution; baseline at Σw. |
+| `h` | `Σ w [g_AB − 1]` | Total correlation function: baseline subtracted first, so peaks sit on zero and the excluded-volume region reads −Σw. **`h_absolute` is Soper's eq. (20)**, the neutron G_n(r). |
+| `D` | `4πrρ Σ w [g_AB − 1]` | Differential correlation function. The 4πr factor offsets the decay of peak amplitude with distance, keeping far-field oscillations legible; oscillates about 0. **`D_FZ` is the PDF community's G(r)**. |
+| `T` | `4πrρ Σ w g_AB` | Total radial distribution function — `D` keeping the bulk baseline, so it climbs as 4πrρΣw. Area under a peak is a coordination number. Not in the default `RDF_FUNCTIONS`. |
+
+**Two things worth knowing.** `'H'` in `NEUTRON_SCATTERING_LENGTHS` is *deuterium* (b = 6.671 fm), since
+LAMMPS labels both isotopes `H`; every neutron column is therefore for a deuterated sample, and the script
+says so at startup. And `n(r)` columns are named by direction — `O_around_Si` ≈ 4 for silica,
+`Si_around_O` its reciprocal — because freud counts system points around query points, which makes a bare
+`Si-O` label ambiguous.
 
 ---
 
@@ -240,7 +284,7 @@ pip install scipy     # optional: multi-threaded FFT for vdos.py's fft_periodogr
 
 | Script | Element column | Coordinate columns | Notes |
 |---|---|---|---|
-| `rdf_freud.py` | `element` (symbol) or any string | `x y z` (real, Å) | Column indices set manually via `COL_*` |
+| `rdf_freud.py` | `element` (symbol) — **required** | `x y z` (wrapped, real, Å) | Column layout auto-detected from `ITEM: ATOMS` header; orthogonal box and constant atom count required |
 | `bad_freud.py` | `element` (symbol) or any string | `x y z` (real, Å) | Column indices set manually via `COL_*` |
 | `dsf.py` | `element` (symbol) — **required** | `x y z` or `xs ys zs` or `xu yu zu` | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
 | `vdos.py` | `element` (symbol) — **required** | `vx vy vz` (velocities) — **required**; positions not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |

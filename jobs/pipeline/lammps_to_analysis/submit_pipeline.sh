@@ -53,6 +53,14 @@ Optional:
   to leave the script's built-in default in effect:
     --rdf-r-max FLOAT            rdf_freud.py R_MAX (Å), e.g. 20.0
     --rdf-bins INT                rdf_freud.py BINS, e.g. 2000
+    --rdf-normalization STR       rdf_freud.py RDF_NORMALIZATION, SEMICOLON-separated
+                                    pair-weight conventions from 'unity', 'FZ',
+                                    'absolute', e.g. "FZ;absolute;unity"
+    --rdf-functions STR           rdf_freud.py RDF_FUNCTIONS, SEMICOLON-separated
+                                    correlation functions from 'g', 'h', 'D', 'T',
+                                    e.g. "g;h;D" (h with absolute is Soper's G_n(r))
+    --rdf-resolution-sigma FLOAT  rdf_freud.py RDF_RESOLUTION_SIGMA (Å), Gaussian
+                                    resolution broadening; 0 disables, default 0.1
     --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
     --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
                                     entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
@@ -202,6 +210,11 @@ fi
 # any of them still works under `set -u` (an unset key would otherwise abort
 # with "unbound variable"). The conf overrides whichever of these it sets.
 DYNAMICS_DT="${DYNAMICS_DT:-}"
+RDF_R_MAX="${RDF_R_MAX:-}"
+RDF_BINS_VAL="${RDF_BINS_VAL:-}"
+RDF_NORMALIZATION_VAL="${RDF_NORMALIZATION_VAL:-}"
+RDF_FUNCTIONS_VAL="${RDF_FUNCTIONS_VAL:-}"
+RDF_RESOLUTION_SIGMA_VAL="${RDF_RESOLUTION_SIGMA_VAL:-}"
 VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
 VDOS_STRIDE="${VDOS_STRIDE:-}"
 VDOS_CORR_LENGTH="${VDOS_CORR_LENGTH:-}"
@@ -258,6 +271,9 @@ while [[ $# -gt 0 ]]; do
     --analysis-cpus-per-task) ANALYSIS_CPUS_PER_TASK="$2"; shift 2 ;;
     --rdf-r-max) RDF_R_MAX="$2"; shift 2 ;;
     --rdf-bins) RDF_BINS_VAL="$2"; shift 2 ;;
+    --rdf-normalization) RDF_NORMALIZATION_VAL="$2"; shift 2 ;;
+    --rdf-functions) RDF_FUNCTIONS_VAL="$2"; shift 2 ;;
+    --rdf-resolution-sigma) RDF_RESOLUTION_SIGMA_VAL="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
     --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
@@ -444,6 +460,11 @@ ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_DSF,RUN_RDF=$RUN_RDF,RUN_BAD=$RUN_BAD,RUN_VDOS=$RUN_VDOS,RUN_MSD=$RUN_MSD"
 [[ -n "$RDF_R_MAX" ]]           && export_vars+=",R_MAX=$RDF_R_MAX"
 [[ -n "$RDF_BINS_VAL" ]]        && export_vars+=",RDF_BINS=$RDF_BINS_VAL"
+# rdf_freud.py accepts ; as well as , for these two, since a comma here
+# would be eaten by --export above.
+[[ -n "$RDF_NORMALIZATION_VAL" ]] && export_vars+=",RDF_NORMALIZATION=$RDF_NORMALIZATION_VAL"
+[[ -n "$RDF_FUNCTIONS_VAL" ]]   && export_vars+=",RDF_FUNCTIONS=$RDF_FUNCTIONS_VAL"
+[[ -n "$RDF_RESOLUTION_SIGMA_VAL" ]] && export_vars+=",RDF_RESOLUTION_SIGMA=$RDF_RESOLUTION_SIGMA_VAL"
 [[ -n "$BAD_ELEMENTS" ]]        && export_vars+=",ELEMENTS=$BAD_ELEMENTS"
 [[ -n "$BAD_R_CUTOFF" ]]        && export_vars+=",R_CUTOFF=$BAD_R_CUTOFF"
 [[ -n "$BAD_R_MINCUT" ]]        && export_vars+=",R_MINCUT=$BAD_R_MINCUT"

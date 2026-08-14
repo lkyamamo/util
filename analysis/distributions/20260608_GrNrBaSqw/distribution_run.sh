@@ -68,6 +68,13 @@ DT="${DT:-}"                            # fs between dumped frames
 N_FRAMES="${N_FRAMES:-}"                # max frames to read; 0 = all
 STRIDE="${STRIDE:-}"                    # read every Nth frame
 
+# rdf_freud.py
+R_MAX="${R_MAX:-}"                      # Å; max r. Must be < half the shortest box edge
+RDF_BINS="${RDF_BINS:-}"                # number of r-bins
+RDF_NORMALIZATION="${RDF_NORMALIZATION:-}"        # semicolon list: unity | FZ | absolute
+RDF_FUNCTIONS="${RDF_FUNCTIONS:-}"                # semicolon list: g | h | D | T
+RDF_RESOLUTION_SIGMA="${RDF_RESOLUTION_SIGMA:-}"  # Å; Gaussian resolution broadening, 0 disables
+
 # vdos.py
 VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
 VDOS_STRIDE="${VDOS_STRIDE:-}"
@@ -91,6 +98,7 @@ MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"          # REQUIRED. tail fraction used
 # Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
 for _var in DYNAMICS_DT DT N_FRAMES STRIDE \
+            R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
             VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION \
             MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION; do

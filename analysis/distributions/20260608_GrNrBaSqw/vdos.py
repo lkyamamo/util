@@ -41,7 +41,7 @@ trajectory), the rest are documented algorithm conventions, not physics:
   VDOS_NUM_GRIDS     frequency grid points         (default 5000)
   VDOS_METHOD        see METHOD below              (default vacf_cosine_transform)
   VDOS_WINDOW        see METHOD below              (default cosine_lag / hann)
-  VDOS_NORMALIZATION see NORMALIZATION below       (default phonon)
+  VDOS_NORMALIZATION phonon | unit_area         (default phonon)
   VDOS_THREADS       FFT workers, 0 = all cores    (default 0)
   VDOS_PLOT_XUNIT    meV | THz | cm-1 | eV         (default meV / THz)
 
@@ -72,7 +72,7 @@ Two interchangeable ways to get VDOS(ν), selected via METHOD:
      msd.cpp's Gw. Vectorized here as one matrix multiply per element rather
      than msd.cpp's nested loop, but numerically the same calculation.
   4. Combine elements into a total using msd.cpp's phonon-DOS convention
-     (NORMALIZATION='phonon'): Total = sum_el (6/pi)*(N_el/N_total)*Gw_el.
+     (VDOS_NORMALIZATION='phonon'): Total = sum_el (6/pi)*(N_el/N_total)*Gw_el.
 
 'fft_periodogram' — this script's own approach (see prior revisions): skips
   the explicit VACF and computes VDOS directly as the batched FFT periodogram
@@ -84,7 +84,7 @@ Two interchangeable ways to get VDOS(ν), selected via METHOD:
   grid is fixed by CORR_LENGTH and TIME_UNIT (FFT bin spacing/Nyquist), not
   freely chosen.
 
-NORMALIZATION applies regardless of METHOD:
+VDOS_NORMALIZATION applies regardless of METHOD:
   'phonon' (default) — matches msd.cpp: partial curves are left as computed
      (C(0)=1-normalized VACF cosine-transform, or — for fft_periodogram,
      which has no intrinsic physical scale — individually unit-area-rescaled
@@ -231,9 +231,9 @@ if WINDOW not in _VALID_WINDOWS[METHOD]:
     )
 
 # How partial/total curves are combined and scaled — see module docstring.
-NORMALIZATION = _env("VDOS_NORMALIZATION", "phonon")
-if NORMALIZATION not in ("phonon", "unit_area"):
-    raise ValueError(f"Unknown VDOS_NORMALIZATION={NORMALIZATION!r}; use 'phonon' or 'unit_area'.")
+VDOS_NORMALIZATION = _env("VDOS_NORMALIZATION", "phonon")
+if VDOS_NORMALIZATION not in ("phonon", "unit_area"):
+    raise ValueError(f"Unknown VDOS_NORMALIZATION={VDOS_NORMALIZATION!r}; use 'phonon' or 'unit_area'.")
 
 # FFT threading — only used by METHOD='fft_periodogram' and only if scipy is
 # installed; 0 = all available cores.
@@ -563,7 +563,7 @@ def plot_vdos(results, freq_by_unit, filename, xunit=PLOT_XUNIT):
     for label, curve in results.items():
         ax.plot(x, curve, label=label, linewidth=1.5 if label == 'total' else 1.0)
     ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
-    ax.set_ylabel('DOS (phonon-normalized)' if NORMALIZATION == 'phonon' else 'VDOS (unit-area normalized)')
+    ax.set_ylabel('DOS (phonon-normalized)' if VDOS_NORMALIZATION == 'phonon' else 'VDOS (unit-area normalized)')
     ax.legend()
     fig.tight_layout()
     fig.savefig(filename, dpi=PLOT_DPI)
@@ -574,7 +574,7 @@ def plot_vdos(results, freq_by_unit, filename, xunit=PLOT_XUNIT):
 if __name__ == '__main__':
     print(f"Reading trajectory: {DUMP_FILE}")
     print(f"  N_FRAMES={N_FRAMES or 'all'}, STRIDE={STRIDE}, TIME_UNIT={TIME_UNIT} fs")
-    print(f"  METHOD={METHOD}, WINDOW={WINDOW}, NORMALIZATION={NORMALIZATION}")
+    print(f"  METHOD={METHOD}, WINDOW={WINDOW}, VDOS_NORMALIZATION={VDOS_NORMALIZATION}")
 
     import time
     t0 = time.time()
@@ -606,7 +606,7 @@ if __name__ == '__main__':
         vac, n_refs = compute_vacf_multi_origin(velocities, elements, corr_length_frames, corr_interval_frames)
         Zt = apply_cosine_lag_window(vac, corr_length_frames, WINDOW)
         freq_eV, Gw = cosine_transform_dos(Zt, TIME_UNIT, corr_length_frames, MAX_FREQUENCY_EV, NUM_GRIDS)
-        results = combine_results(Gw, elements, freq_eV, NORMALIZATION, prenormalize_partials=False)
+        results = combine_results(Gw, elements, freq_eV, VDOS_NORMALIZATION, prenormalize_partials=False)
         freq_by_unit = _freq_all_units(freq_eV)
         print(f"  VACF reference frames used: {n_refs}")
     else:  # 'fft_periodogram'
@@ -616,7 +616,7 @@ if __name__ == '__main__':
         )
         raw_curves = {el: power[elements == el].sum(axis=0) for el in unique_els}
         freq_eV = freq_THz * EV_PER_THZ
-        results = combine_results(raw_curves, elements, freq_eV, NORMALIZATION, prenormalize_partials=True)
+        results = combine_results(raw_curves, elements, freq_eV, VDOS_NORMALIZATION, prenormalize_partials=True)
         freq_by_unit = _freq_all_units(freq_eV)
         print(f"  Segments averaged: {n_segments}")
 

@@ -50,6 +50,15 @@ ANALYSIS_NODELIST=""
 # distribution code parameters
 RDF_R_MAX="8"
 RDF_BINS_VAL="800"
+# Pair-weight conventions and correlation functions for rdf_freud.py; the cross
+# product is emitted, one column per combination, named <function>_<convention>.
+# SEMICOLON-separated — a comma would be truncated by sbatch --export. Empty
+# leaves the script defaults ("FZ;absolute;unity" and "g;h;D").
+#   unity | FZ | absolute   — b=1 mole fractions | Faber-Ziman (/<b>²) | barn/sr/atom
+#   g | h | D | T           — h with absolute is Soper's neutron G_n(r)
+RDF_NORMALIZATION_VAL=""
+RDF_FUNCTIONS_VAL=""
+RDF_RESOLUTION_SIGMA_VAL=""      # Å; Gaussian resolution broadening, 0 disables (default 0.1)
 BAD_ELEMENTS="O;H"
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""

@@ -1,24 +1,104 @@
 """
-rdf_freud.py — Radial Distribution Function and Coordination Number calculator using freud
+rdf_freud.py — Radial distribution function, coordination number, and selectable
+               neutron correlation functions, using freud
 
 QUICK START
 -----------
-1. Set DUMP_FILE to your LAMMPS custom dump trajectory.
-2. Verify COL_ELEMENT / COL_X / COL_Y / COL_Z match your dump's ITEM: ATOMS column order.
-3. Set R_MAX to less than half the shortest box dimension.
+1. Set DUMP_FILE (or $TRAJ) to your LAMMPS custom dump trajectory.
+2. Set R_MAX to less than half the shortest box dimension.
+3. Pick the convention you want with $RDF_NORMALIZATION and $RDF_FUNCTIONS (see below).
 4. Run:  python rdf_freud.py
 
 OUTPUT
 ------
-- rdfs.png  — g(r) subplot grid, one panel per element pair + total + neutron-weighted
-- rdfs.csv  — r (Å), g(r) per pair, total, neutron-weighted  (set OUTPUT_CSV=None to skip)
+- rdfs.png  — subplot grid: one panel per element pair, plus one per convention column
+- rdfs.csv  — r (Å), partial g_AB(r), one column per requested convention
+                                                              (set OUTPUT_CSV=None to skip)
 - nrs.png   — cumulative coordination number n(r) plots       (set OUTPUT_NR_PLOT=None to skip)
-- nrs.csv   — r (Å), n(r) per pair                            (set OUTPUT_NR_CSV=None to skip)
+- nrs.csv   — r (Å), n(r) both directions per pair            (set OUTPUT_NR_CSV=None to skip)
+
+CONVENTIONS
+-----------
+The same physical content gets packaged many ways in the literature, and the
+symbols collide: Soper's G(r) is a weighted h-sum, the PDF community's G(r) is
+4πrρ[g−1], Keen's G(r) is a third function.  Keen, J. Appl. Cryst. 34, 172
+(2001) tabulates the conventions against each other.  So nothing here is named
+by a bare letter — every combined column is named <function>_<normalization>,
+and the script prints each column's defining equation, weight sum, and
+asymptotic limits at startup.  Check a printed limit against the curve; never
+trust the symbol.
+
+Both keys take SEMICOLON-separated lists ("FZ;absolute"), not commas — see
+parse_keys for why.  Both are RDF_-prefixed so the distribution they configure
+is explicit; vdos.py has its own unrelated VDOS_NORMALIZATION.
+
+$RDF_NORMALIZATION — how much each partial contributes to the sum.  It sets the
+pair weight w_AB, with f = 2 − δ_AB written explicitly rather than folded in:
+
+    unity     w_AB = f c_A c_B                    Σw = 1          dimensionless
+    FZ        w_AB = f c_A c_B b_A b_B / <b>²     Σw = 1          dimensionless
+    absolute  w_AB = f c_A c_B b_A b_B / 100      Σw = <b>²/100   barn/sr/atom
+
+  unity     Every element scatters identically — b = 1, hence the name, which
+            refers to the scattering lengths and not to Σw (FZ also sums to 1).
+            The weights are then just mole-fraction products.  This is not a
+            measurable quantity: it is the composition-averaged structure,
+            useful as a structural summary and as the b-free baseline the
+            neutron-weighted curves depart from.  Not called 'number', which
+            would collide with Bhatia-Thornton's number-number correlation, a
+            different construction.  This is the column previously called
+            'total'.
+
+  FZ        Faber-Ziman: divide by <b>², so Σw = 1 and the result approaches 1
+            at large r exactly like a partial g_AB does.  Dimensionless, which
+            makes samples of different composition superimposable — at the cost
+            of dividing by a quantity that nearly cancels for H-rich samples
+            (light water: <b>² = 0.0031 barn) and vanishes for a null mixture.
+
+  absolute  No division at all: the weighted sum in the units a measured
+            differential cross-section carries, barn/sr/atom (the /100 converts
+            fm² to barn).  The scale is physical rather than conventional, so
+            the excluded-volume plateau lands at −Σw = −<b>²/100 and is a
+            direct check on the composition.  Well conditioned as <b> → 0, so
+            this is the one to use for light or null samples.
+
+$RDF_FUNCTIONS — what is built from those weights and the partials g_AB:
+
+    g   Σ w g_AB               r→0: 0     r→∞: Σw
+    h   Σ w [g_AB − 1]         r→0: −Σw   r→∞: 0
+    D   4πrρ Σ w [g_AB − 1]    r→0: 0     r→∞: oscillates about 0
+    T   4πrρ Σ w g_AB          r→0: 0     r→∞: 4πrρ Σw
+
+  g   The weighted pair distribution: peak heights are pair density relative to
+      the bulk average, and the baseline sits at Σw.
+  h   Total correlation function — g with the bulk baseline subtracted off
+      first, so peaks sit on zero and the excluded-volume region reads −Σw
+      instead of 0.  h × absolute IS Soper's equation (20), the neutron G_n(r).
+  D   Differential correlation function.  The 4πr factor offsets the way peak
+      amplitude decays with distance, so far-field oscillations stay legible
+      rather than flattening into the baseline; oscillates about zero.
+      D × FZ is what the PDF community calls G(r).
+  T   Total radial distribution function: D but keeping the bulk baseline, so
+      it climbs as 4πrρΣw.  The area under a T peak is a coordination number.
+      T × FZ reproduces the column this script used to call 't'.
+
+Columns written before this rewrite map as total → g_unity, neutron → g_FZ,
+t → T_FZ (T is not in the default $RDF_FUNCTIONS; add it to get that column back).
+
+HYDROGEN IS TREATED AS DEUTERIUM
+--------------------------------
+NEUTRON_SCATTERING_LENGTHS['H'] holds deuterium's b = 6.671 fm, not protium's
+b = −3.7406 fm, because LAMMPS dumps label both 'H'.  Every neutron-weighted
+column is therefore for a fully deuterated sample, and the script says so at
+startup whenever H is present.  For a light or mixed sample, pass b_override to
+pair_weights() with the effective length b_eff = x_H b_H + x_D b_D (null water
+is x_H ≈ 0.64).
 
 COLUMN LAYOUT
 -------------
 Expects LAMMPS custom dump format with at minimum columns: id type element x y z
 Column positions are read automatically from the ITEM: ATOMS header line.
+Wrapped coordinates (x y z) and a constant atom count are assumed.
 """
 
 import itertools
@@ -27,6 +107,7 @@ from datetime import date
 
 import numpy as np
 import freud
+from scipy.ndimage import gaussian_filter1d
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -47,6 +128,22 @@ OUTPUT_CSV = "rdfs.csv"
 # RDF parameters
 R_MAX = float(os.environ.get("R_MAX", "20.0"))   # maximum r in Angstroms; must be < half shortest box dimension
 BINS  = int(os.environ.get("RDF_BINS", "2000"))  # number of bins
+
+# Correlation-function conventions.  Both take SEMICOLON-separated lists (see
+# parse_keys) and the cross product is emitted, one column per combination,
+# named <function>_<normalization>.  See CONVENTIONS in the module docstring.
+#
+# Everything here is RDF_-prefixed — env key and Python name alike — because
+# 'NORMALIZATION' alone does not say which distribution it belongs to: vdos.py
+# has its own VDOS_NORMALIZATION (phonon | unit_area), a completely different
+# choice, and the two scripts run in one shared environment.
+RDF_NORMALIZATION = os.environ.get("RDF_NORMALIZATION", "FZ;absolute;unity")
+RDF_FUNCTIONS     = os.environ.get("RDF_FUNCTIONS", "g;h;D")
+
+# Instrumental resolution matching: Gaussian sigma in Angstroms applied to every
+# convention column (Soper used ~0.1 Å to suppress Fourier-termination ripples).
+# Written as a *_broadened twin, so the raw curve is never lost.  0 disables.
+RDF_RESOLUTION_SIGMA = float(os.environ.get("RDF_RESOLUTION_SIGMA", "0.1"))
 
 # Plot layout: how many columns in the subplot grid
 PLOT_NCOLS = 2
@@ -73,8 +170,14 @@ OUTPUT_NR_CSV  = _dated(OUTPUT_NR_CSV)
 
 # Coherent neutron scattering lengths (fm).  Add elements as needed.
 # Values from NIST: https://www.ncnr.nist.gov/resources/n-lengths/
+#
+# 'H' is DELIBERATELY deuterium: LAMMPS dumps label both isotopes 'H', and this
+# pipeline's samples are deuterated.  Protium is b = -3.7406 fm — opposite in
+# sign, so every H-containing term would flip and peaks would point the other
+# way.  _warn_hydrogen_is_deuterium() prints this at startup; for a light or
+# mixed sample use pair_weights(..., b_override={'H': b_eff}).
 NEUTRON_SCATTERING_LENGTHS = {
-    'H':   6.671,    # deuterium (D); protium b = -3.7406
+    'H':   6.671,    # deuterium (D), not protium — see note above
     'D':   6.671,
     'C':   6.6460,
     'N':   9.36,
@@ -91,6 +194,7 @@ NEUTRON_SCATTERING_LENGTHS = {
     'Fe':  9.45,
     'Ni': 10.3,
     'Zr':  7.16,
+    'Ba':  5.07,
 }
 
 
@@ -110,11 +214,24 @@ def read_lammps_dump(filename):
             f.readline()
             n_atoms = int(f.readline().strip())
 
-            # BOX BOUNDS
+            # BOX BOUNDS — a triclinic dump carries a third tilt column per line,
+            # and LAMMPS reports the bounding box of the tilted cell rather than
+            # the cell lengths, so freud.box.Box would be silently wrong.  Same
+            # guard as vdos_dynmat.py's read_reference_dump().
             f.readline()
-            xlo, xhi = map(float, f.readline().split())
-            ylo, yhi = map(float, f.readline().split())
-            zlo, zhi = map(float, f.readline().split())
+            bounds = [f.readline().split() for _ in range(3)]
+            tilt   = [float(p[2]) for p in bounds if len(p) > 2]
+            if any(t != 0.0 for t in tilt):
+                raise ValueError(
+                    f"{filename} describes a triclinic box (tilt factors {tilt}). "
+                    f"Its ITEM: BOX BOUNDS lines give the bounding box of the tilted "
+                    f"cell, not the cell lengths, so the orthogonal box built here "
+                    f"would mis-wrap every pair distance. Pass the tilt through to "
+                    f"freud.box.Box, or run the analysis on an orthogonal cell."
+                )
+            (xlo, xhi), (ylo, yhi), (zlo, zhi) = (
+                (float(p[0]), float(p[1])) for p in bounds
+            )
 
             # ATOMS header — parse column positions dynamically
             header = f.readline().split()  # ['ITEM:', 'ATOMS', 'id', 'type', 'element', ...]
@@ -151,6 +268,10 @@ def compute_rdf(frames, get_a, get_b, self_pair=False):
     Compute the frame-averaged RDF and n(r) using freud's built-in accumulation.
     freud accumulates across compute() calls when reset=False, so rdf.rdf and
     rdf.n_r at the end are already the properly normalized frame averages.
+
+    g_AB is symmetric, but n(r) is not: freud counts SYSTEM points around each
+    QUERY point, and pos_a is passed as the system, so mean_nr is A around each
+    B.  build_coordination() names it accordingly and adds the reverse.
 
     Returns: r, mean_g, mean_nr
     """
@@ -207,55 +328,210 @@ def get_concentrations(frames):
 
 
 
-def _neutron_weights(elements, concentrations):
-    """Return (b, b_mean, w_neutron dict) or None if any element is missing."""
-    missing = [el for el in elements if el not in NEUTRON_SCATTERING_LENGTHS]
-    if missing:
-        print(f"Warning: no scattering length for {missing}; neutron g(r) skipped.")
-        return None
-    b = {el: NEUTRON_SCATTERING_LENGTHS[el] for el in elements}
-    b_mean = sum(concentrations[el] * b[el] for el in elements)
-    weights = {}
-    for a, bl in itertools.combinations_with_replacement(sorted(elements), 2):
-        factor = 1 if a == bl else 2
-        w_total = factor * concentrations[a] * concentrations[bl]
-        weights[f'{a}-{bl}'] = w_total * b[a] * b[bl] / b_mean ** 2
-    return weights
+# =============================================================================
+# Correlation-function conventions — see CONVENTIONS in the module docstring
+# =============================================================================
+
+# Weight definitions, for the printed table.  f = 2 - delta_AB throughout.
+NORMALIZATION_EQUATIONS = {
+    'unity':    'w = f c_A c_B',
+    'FZ':       'w = f c_A c_B b_A b_B / <b>²',
+    'absolute': 'w = f c_A c_B b_A b_B / 100',
+}
+
+NORMALIZATION_UNITS = {'unity': '', 'FZ': '', 'absolute': 'barn/sr/atom'}
+
+FUNCTION_EQUATIONS = {
+    'g': 'Σ w g_AB',
+    'h': 'Σ w [g_AB − 1]',
+    'D': '4πrρ Σ w [g_AB − 1]',
+    'T': '4πrρ Σ w g_AB',
+}
 
 
-def combine_partials(partial_results, elements, concentrations, rho):
+def parse_keys(value, valid, name):
     """
-    Combine partial g(r)s into total and neutron-weighted g(r) and t(r).
+    Parse a semicolon-separated convention list, failing loudly on unknown keys.
 
-    Total g(r):   w_αβ = c_α c_β  (×2 for cross-pairs)
-    Neutron g(r): w_αβ = c_α c_β b_α b_β / <b>²  (×2 for cross-pairs)
-    t(r):         g_neutron(r) · 4π r · mean(ρ)
+    The separator is ';' and not ',' because submit_pipeline.sh passes settings
+    through `sbatch --export`, which is itself comma-delimited and silently
+    truncates a value at the first embedded comma — a comma-separated list would
+    arrive on the cluster as its first entry alone, with no error.  Same reason
+    bad_freud.py takes ELEMENTS as "Si;O;H".
+    """
+    if ',' in value:
+        raise ValueError(
+            f"{name}={value!r} uses ',' but the separator is ';' — a comma would be "
+            f"truncated by `sbatch --export` in submit_pipeline.sh. Write it as "
+            f"{value.replace(',', ';')!r}."
+        )
+    keys = [k.strip() for k in value.split(';') if k.strip()]
+    if not keys:
+        raise ValueError(f"{name} is empty; choose from {list(valid)}.")
+    unknown = [k for k in keys if k not in valid]
+    if unknown:
+        raise ValueError(f"Unknown {name} {unknown}; choose from {list(valid)}.")
+    return keys
 
-    rho : per-frame number density array (atoms / Å³), shape (n_frames,)
 
-    Returns a dict {label: (r, y)} with keys 'total', and optionally 'neutron' and 't'.
+def pair_weights(normalization, elements, concentrations, b_override=None):
+    """
+    Return {pair_label: w_AB} for one normalization, or None if it is unusable.
+
+    b_override supplies effective scattering lengths for isotope mixtures — e.g.
+    {'H': 0.64 * (-3.7406) + 0.36 * 6.671} for null water — and falls back to
+    NEUTRON_SCATTERING_LENGTHS for every element it does not name.
+    """
+    pairs = list(itertools.combinations_with_replacement(sorted(elements), 2))
+
+    if normalization == 'unity':
+        # b = 1 for every element, so no scattering lengths are consulted at all.
+        return {f'{a}-{bl}': (1 if a == bl else 2) * concentrations[a] * concentrations[bl]
+                for a, bl in pairs}
+
+    b = dict(b_override or {})
+    missing = [el for el in elements if el not in b and el not in NEUTRON_SCATTERING_LENGTHS]
+    if missing:
+        print(f"Warning: no scattering length for {missing}; '{normalization}' columns skipped.")
+        return None
+    for el in elements:
+        b.setdefault(el, NEUTRON_SCATTERING_LENGTHS[el])
+
+    b_mean = sum(concentrations[el] * b[el] for el in elements)
+
+    if normalization == 'FZ':
+        # FZ divides out <b>², which is a nearly-cancelling sum for H-rich or
+        # null samples; the resulting amplification is numerical, not physical.
+        if abs(b_mean) < 1e-9:
+            print("Warning: <b> = 0 (null mixture); 'FZ' columns skipped — "
+                  "use 'absolute', which never divides by <b>.")
+            return None
+        if abs(b_mean) < 1.0:
+            print(f"Warning: <b> = {b_mean:.4f} fm is small, so 'FZ' divides by "
+                  f"<b>² = {b_mean ** 2:.4f} fm² and amplifies a nearly-cancelling "
+                  f"sum. Prefer the 'absolute' columns for this composition.")
+        denom = b_mean ** 2
+    else:                                    # 'absolute': fm² -> barn, no <b>
+        denom = 100.0
+
+    return {f'{a}-{bl}': (1 if a == bl else 2) * concentrations[a] * concentrations[bl]
+                         * b[a] * b[bl] / denom
+            for a, bl in pairs}
+
+
+def apply_function(func, r, weights, partial_results, rho_mean):
+    """Build one convention curve from pair weights and the partial g_AB(r)."""
+    y = np.zeros(len(r))
+    for label, w in weights.items():
+        g = partial_results[label][1]
+        y += w * (g - 1.0) if func in ('h', 'D') else w * g
+    if func in ('D', 'T'):
+        y = y * 4 * np.pi * r * rho_mean
+    return y
+
+
+def _column_units(func, norm):
+    base = NORMALIZATION_UNITS[norm]
+    if func in ('D', 'T'):
+        return f'{base} Å⁻²'.strip() if base else 'Å⁻²'
+    return base or 'dimensionless'
+
+
+def build_conventions(partial_results, elements, concentrations, rho_mean,
+                      normalizations, functions, b_override=None):
+    """
+    Build every requested (function, normalization) column from the partials.
+
+    Returns (results, meta) where results is {label: (r, y)} and meta is
+    {label: {...}} carrying the defining equation, Σw, asymptotic limits, units,
+    and the y value of the plot's reference line (None for no line).
     """
     r = next(iter(partial_results.values()))[0]
+    results, meta = {}, {}
 
-    g_total   = np.zeros(len(r))
-    g_neutron = np.zeros(len(r))
+    for norm in normalizations:
+        weights = pair_weights(norm, elements, concentrations, b_override)
+        if weights is None:
+            continue
+        sum_w = sum(weights.values())
 
-    nw = _neutron_weights(elements, concentrations)
+        for func in functions:
+            label = f'{func}_{norm}'
+            results[label] = (r, apply_function(func, r, weights, partial_results, rho_mean))
+            meta[label] = {
+                'equation':  f'{FUNCTION_EQUATIONS[func]},  {NORMALIZATION_EQUATIONS[norm]}',
+                'sum_w':     sum_w,
+                'units':     _column_units(func, norm),
+                'limit_0':   {'g': '0', 'h': f'{-sum_w:.4f}', 'D': '0', 'T': '0'}[func],
+                'limit_inf': {'g': f'{sum_w:.4f}', 'h': '0', 'D': '0 (oscillates)',
+                              'T': f'4πrρ·{sum_w:.4f}'}[func],
+                'reference': {'g': sum_w, 'h': 0.0, 'D': 0.0, 'T': None}[func],
+            }
 
-    for a, bl in itertools.combinations_with_replacement(sorted(elements), 2):
-        label  = f'{a}-{bl}'
-        factor = 1 if a == bl else 2
-        _, g, *_ = partial_results[label]
+    if not results:
+        raise ValueError(
+            "No convention columns could be built. Every requested normalization "
+            "was skipped — see the warnings above."
+        )
+    return results, meta
 
-        g_total += factor * concentrations[a] * concentrations[bl] * g
-        if nw is not None:
-            g_neutron += nw[label] * g
 
-    out = {'total': (r, g_total)}
-    if nw is not None:
-        t = g_neutron * 4 * np.pi * r * rho.mean()
-        out['neutron'] = (r, g_neutron)
-        out['t']       = (r, t)
+def broaden(results, meta, sigma, dr):
+    """
+    Add a *_broadened twin of every convention column: Gaussian resolution
+    matching, so modeled peaks are not sharper than measured ones purely for
+    instrumental reasons (Soper used ~0.1 Å).  Mutates both dicts.
+    """
+    if sigma <= 0:
+        return
+    for label in list(results):
+        r, y = results[label]
+        results[f'{label}_broadened'] = (r, gaussian_filter1d(y, sigma / dr, mode='nearest'))
+        meta[f'{label}_broadened'] = dict(
+            meta[label], equation=f"{meta[label]['equation']}, ⊗ Gaussian σ={sigma} Å"
+        )
+
+
+def print_convention_table(meta):
+    """
+    Print each column's defining equation, Σw, and limits.  These are the QC
+    numbers: a printed limit checked against the curve beats a label, and for
+    h_absolute the Σw must reproduce Soper's Table 1 column sum.
+    """
+    width = max(len(name) for name in meta)
+    print("\nConvention columns (check these limits against the curves):")
+    print(f"  {'column'.ljust(width)}  {'Σw':>10}  {'r→0':>10}  {'r→∞':>16}  units")
+    for name, m in meta.items():
+        print(f"  {name.ljust(width)}  {m['sum_w']:>10.4f}  {m['limit_0']:>10}  "
+              f"{m['limit_inf']:>16}  {m['units']}")
+        print(f"  {' '.ljust(width)}    {m['equation']}")
+
+
+def warn_hydrogen_is_deuterium(elements):
+    """Say out loud that H is being weighted as D — the sign of b_H rides on it."""
+    if 'H' in elements:
+        print("Note: 'H' is weighted as DEUTERIUM (b = 6.671 fm). Protium is "
+              "b = -3.7406 fm, so a light sample would flip the sign of every "
+              "H term. All neutron columns below are for a deuterated sample.")
+
+
+def build_coordination(nr_raw, concentrations):
+    """
+    Name the coordination numbers by direction, and add the reverse of each.
+
+    freud's n_r counts SYSTEM points around each QUERY point, and compute_rdf
+    passes A as the system and B as the query for label 'A-B' — so the raw curve
+    is A around each B.  Every A-B pair within r is counted once from each side,
+    N_B·n(A around B) = N_A·n(B around A), so the reverse direction follows from
+    the concentration ratio exactly (given the constant atom count assumed here)
+    and needs no second freud pass.
+    """
+    out = {}
+    for label, (r, nr) in nr_raw.items():
+        a, b = label.split('-')
+        out[f'{a}_around_{b}'] = (r, nr)
+        if a != b:
+            out[f'{b}_around_{a}'] = (r, nr * concentrations[b] / concentrations[a])
     return out
 
 
@@ -268,7 +544,12 @@ def save_csv(results, filename):
     print(f"Data table saved to {filename}")
 
 
-def plot_rdfs(results):
+def plot_rdfs(results, meta):
+    """
+    Plot partials and convention columns.  meta carries per-column units and the
+    reference level, since these panels no longer share one y axis: a partial is
+    a dimensionless g(r) about 1, while h_absolute is barn/sr/atom about 0.
+    """
     n = len(results)
     ncols = PLOT_NCOLS
     nrows = (n + ncols - 1) // ncols
@@ -278,9 +559,12 @@ def plot_rdfs(results):
 
     for ax, (name, (r, g)) in zip(axes, results.items()):
         ax.plot(r, g)
-        ax.axhline(1.0, color='gray', linestyle='--', linewidth=0.8)
+        m         = meta.get(name)
+        reference = 1.0 if m is None else m['reference']       # partials: g(r) -> 1
+        if reference is not None:
+            ax.axhline(reference, color='gray', linestyle='--', linewidth=0.8)
         ax.set_xlabel('r (Å)')
-        ax.set_ylabel('g(r)')
+        ax.set_ylabel('g(r)' if m is None else f"{name} ({m['units']})")
         ax.set_title(name)
 
     # hide any unused subplots
@@ -319,6 +603,13 @@ def plot_nrs(nr_results):
 
 
 if __name__ == '__main__':
+    # Validate the convention keys before reading the trajectory, so a typo costs
+    # a second rather than a full parse of a multi-GB dump.
+    normalizations = parse_keys(RDF_NORMALIZATION, NORMALIZATION_EQUATIONS, 'RDF_NORMALIZATION')
+    functions      = parse_keys(RDF_FUNCTIONS, FUNCTION_EQUATIONS, 'RDF_FUNCTIONS')
+    print(f"RDF_NORMALIZATION: {normalizations}")
+    print(f"RDF_FUNCTIONS:     {functions}")
+
     print(f"Reading trajectory: {DUMP_FILE}")
     frames = read_lammps_dump(DUMP_FILE)
 
@@ -329,6 +620,7 @@ if __name__ == '__main__':
 
     elements = sorted(set(frames[0]['elements'].tolist()))
     print(f"Elements:     {elements}")
+    warn_hydrogen_is_deuterium(elements)
 
     concentrations = get_concentrations(frames)
     print("Concentrations: " + ", ".join(f"{el}={c:.3f}" for el, c in concentrations.items()))
@@ -346,20 +638,28 @@ if __name__ == '__main__':
 
     pairs = build_pair_getters(elements)
     gr_results = {}
-    nr_results = {}
+    nr_raw     = {}
     for name, (get_a, get_b, is_self) in pairs.items():
         print(f"Computing RDF: {name}...")
         r, g, nr = compute_rdf(frames, get_a, get_b, self_pair=is_self)
         gr_results[name] = (r, g)
-        nr_results[name] = (r, nr)
+        nr_raw[name]     = (r, nr)
 
-    gr_results.update(combine_partials(gr_results, elements, concentrations, rho))
+    nr_results = build_coordination(nr_raw, concentrations)
+
+    conventions, meta = build_conventions(
+        gr_results, elements, concentrations, rho.mean(), normalizations, functions
+    )
+    r_grid = next(iter(gr_results.values()))[0]
+    broaden(conventions, meta, RDF_RESOLUTION_SIGMA, r_grid[1] - r_grid[0])
+    print_convention_table(meta)
+    gr_results.update(conventions)
 
     if OUTPUT_CSV is not None:
         save_csv(gr_results, OUTPUT_CSV)
     if OUTPUT_NR_CSV is not None:
         save_csv(nr_results, OUTPUT_NR_CSV)
 
-    plot_rdfs(gr_results)
+    plot_rdfs(gr_results, meta)
     if OUTPUT_NR_PLOT is not None:
         plot_nrs(nr_results)

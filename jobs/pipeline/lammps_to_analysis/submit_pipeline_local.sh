@@ -55,6 +55,14 @@ Optional:
   invocation recipe works against either script:
     --rdf-r-max FLOAT            rdf_freud.py R_MAX (Å), e.g. 20.0
     --rdf-bins INT                rdf_freud.py BINS, e.g. 2000
+    --rdf-normalization STR       rdf_freud.py RDF_NORMALIZATION, SEMICOLON-separated
+                                    pair-weight conventions from 'unity', 'FZ',
+                                    'absolute', e.g. "FZ;absolute;unity"
+    --rdf-functions STR           rdf_freud.py RDF_FUNCTIONS, SEMICOLON-separated
+                                    correlation functions from 'g', 'h', 'D', 'T',
+                                    e.g. "g;h;D" (h with absolute is Soper's G_n(r))
+    --rdf-resolution-sigma FLOAT  rdf_freud.py RDF_RESOLUTION_SIGMA (Å), Gaussian
+                                    resolution broadening; 0 disables (default 0.1)
     --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
     --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
                                     entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
@@ -190,6 +198,9 @@ ANALYSIS_CPUS_PER_TASK=""
 
 RDF_R_MAX=""
 RDF_BINS_VAL=""
+RDF_NORMALIZATION_VAL=""
+RDF_FUNCTIONS_VAL=""
+RDF_RESOLUTION_SIGMA_VAL=""
 BAD_ELEMENTS=""
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
@@ -246,6 +257,9 @@ while [[ $# -gt 0 ]]; do
     --analysis-cpus-per-task) ANALYSIS_CPUS_PER_TASK="$2"; shift 2 ;;
     --rdf-r-max) RDF_R_MAX="$2"; shift 2 ;;
     --rdf-bins) RDF_BINS_VAL="$2"; shift 2 ;;
+    --rdf-normalization) RDF_NORMALIZATION_VAL="$2"; shift 2 ;;
+    --rdf-functions) RDF_FUNCTIONS_VAL="$2"; shift 2 ;;
+    --rdf-resolution-sigma) RDF_RESOLUTION_SIGMA_VAL="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
     --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
@@ -436,6 +450,9 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   export TRAJ="$DUMP_FILE" DYNAMICS_TRAJ="$DYNAMICS_DUMP_FILE" RUN_DSF RUN_RDF RUN_BAD RUN_VDOS RUN_MSD
   [[ -n "$RDF_R_MAX" ]]           && export R_MAX="$RDF_R_MAX"
   [[ -n "$RDF_BINS_VAL" ]]        && export RDF_BINS="$RDF_BINS_VAL"
+  [[ -n "$RDF_NORMALIZATION_VAL" ]] && export RDF_NORMALIZATION="$RDF_NORMALIZATION_VAL"
+  [[ -n "$RDF_FUNCTIONS_VAL" ]]   && export RDF_FUNCTIONS="$RDF_FUNCTIONS_VAL"
+  [[ -n "$RDF_RESOLUTION_SIGMA_VAL" ]] && export RDF_RESOLUTION_SIGMA="$RDF_RESOLUTION_SIGMA_VAL"
   [[ -n "$BAD_ELEMENTS" ]]        && export ELEMENTS="$BAD_ELEMENTS"
   [[ -n "$BAD_R_CUTOFF" ]]        && export R_CUTOFF="$BAD_R_CUTOFF"
   [[ -n "$BAD_R_MINCUT" ]]        && export R_MINCUT="$BAD_R_MINCUT"
