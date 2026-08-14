@@ -410,6 +410,32 @@ def _check_dynasor_table(nsl, atom_types):
 SAMPLING_TARGET = 1e3   # M >= 1e3 is ~3% relative error; see the README ladder
 
 
+def drop_forward_scattering(q_points):
+    """
+    Remove the q = 0 vector, which is forward scattering and not structure.
+
+    get_spherical_qpoints includes the origin of the reciprocal lattice, and
+    there the Fourier sum degenerates: sum_j exp(i*0*r_j) = N_A, so
+
+        S_AB(0) = N_A * N_B / N      and      S_total(0) = N
+
+    i.e. the q = 0 point reports the particle count, nothing else. On a
+    5184-atom cell that is a spike of 5184 sitting next to values of order 1 —
+    it dominates every plot and any Fourier transform of S(q), while carrying no
+    structural information at all. The physical S(q -> 0) is the compressibility
+    limit rho*kB*T*kappa_T, a small number, and it is not accessible from a
+    finite periodic cell anyway: the smallest real wavevector is 2*pi/L.
+
+    Dropping it also fixes the dynamic path, where the q = 0 density is the
+    conserved particle number and produces a delta at omega = 0.
+    """
+    keep = np.linalg.norm(q_points, axis=1) > 0
+    dropped = int((~keep).sum())
+    if dropped:
+        print(f"  dropped {dropped} q = 0 vector (forward scattering: S(0) = N, not structure)")
+    return q_points[keep]
+
+
 def report_sampling_q(q_points, n_q_bins, n_frames, label='static'):
     """
     M for S(q) is the number of q-vectors in a radial bin times the frames used.
@@ -425,7 +451,10 @@ def report_sampling_q(q_points, n_q_bins, n_frames, label='static'):
     Counted from the actual q-point array dynasor was given, not estimated.
     """
     q_norms = np.linalg.norm(q_points, axis=1)
-    edges = np.linspace(0.0, q_norms.max(), n_q_bins + 1)
+    # Span [min|q|, max|q|] to match how dynasor derives its bins from the data
+    # range. With q = 0 dropped the minimum is 2*pi/L, the smallest wavevector a
+    # periodic cell of this size can represent.
+    edges = np.linspace(q_norms.min(), q_norms.max(), n_q_bins + 1)
     counts, _ = np.histogram(q_norms, bins=edges)
     centers = 0.5 * (edges[:-1] + edges[1:])
 
@@ -653,7 +682,8 @@ if __name__ == '__main__':
     # Static S(q)
     # ------------------------------------------------------------------
     if COMPUTE_STATIC:
-        q_points = get_spherical_qpoints(traj_cell.cell, q_max=Q_MAX)
+        q_points = drop_forward_scattering(
+            get_spherical_qpoints(traj_cell.cell, q_max=Q_MAX))
         print(f"  static q-points:  {len(q_points):,} vectors, |q| ≤ {Q_MAX} Å⁻¹")
         _bin_warning('N_Q_BINS', N_Q_BINS, Q_MAX)
 
@@ -687,10 +717,10 @@ if __name__ == '__main__':
     # Dynamic S(q,ω)
     # ------------------------------------------------------------------
     if COMPUTE_DYNAMIC:
-        q_points_dyn = get_spherical_qpoints(
+        q_points_dyn = drop_forward_scattering(get_spherical_qpoints(
             traj_cell.cell, q_max=Q_MAX_DYN,
             max_points=MAX_Q_POINTS_DYN if MAX_Q_POINTS_DYN > 0 else None,
-        )
+        ))
         # Stored arrays: 6 partials + total, for Fqt and Sqw alike -> 2 * (n_pairs + 1).
         n_types = len(traj_cell.atom_types)
         n_pairs = n_types * (n_types + 1) // 2

@@ -209,6 +209,17 @@ each script its own copy would only let them disagree about one physical number 
 frequency axis of S(q,ω) relative to a VDOS built from the very same frames. The short-lived `DSF_DT` aborts
 with the same notice.
 
+> **The q = 0 spike is removed.** `get_spherical_qpoints` includes the reciprocal-lattice origin, where
+> the Fourier sum degenerates to the particle count: `S_AB(0) = N_A·N_B/N`, so `S_total(0) = N`. On a
+> 5184-atom cell that was a spike of **5184** sitting beside values of order 1 — it dominated every plot and
+> any transform of S(q) while carrying no structural information. It is now dropped on both the static and
+> dynamic paths.
+>
+> This **changes output**: the `q = 0` row is gone, and because dynasor derives its bin edges from the data
+> range, raising the minimum \|q\| from 0 to 2π/L shifts every bin center — values move by up to ~3%. The
+> first bin center is now exactly 2π/L, the smallest wavevector a periodic cell of that size can represent.
+> The physical S(q→0) is the compressibility limit ρk_BTκ_T and is not accessible from a finite cell anyway.
+
 **Which normalization `Sq_neutron` is.** dynasor weights partials as `S_AB → f_A f_B S_AB` with `f = b_coh`
 and sums, with **no division by ⟨b⟩²**. So `Sq_neutron` is the unnormalized weighted sum in fm² — the
 reciprocal-space counterpart of `rdf_freud.py`'s `absolute` convention, *not* of its `FZ`. Compare it
