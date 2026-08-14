@@ -440,16 +440,40 @@ iterating for a 4.6× saving.
 via dynasor) ignore it; the scripts now call `freud.parallel.set_num_threads()` and the runners export
 `NUMBA_NUM_THREADS`. Measured for `rdf_freud.py` on 134,784 atoms at `R_MAX=6`:
 
-| threads | wall | core-seconds |
-|---|---|---|
-| 1 | 1.50 s | 1.5 |
-| 2 | 1.17 s | 2.3 |
-| **4** | **0.55 s** | **2.2** |
-| 8 | 0.51 s | 4.1 |
+| threads | wall | speedup | core-seconds | parallel efficiency |
+|---|---|---|---|---|
+| 1 | 2.01 s | 1.00× | 2.0 | 100% |
+| 2 | 1.19 s | 1.68× | 2.4 | 84% |
+| **4** | **0.76 s** | **2.65×** | **3.0** | **66%** |
+| 6 | 0.66 s | 3.05× | 3.9 | 51% |
+| 12 | 0.61 s | 3.30× | 7.3 | 28% |
 
-freud's neighbour search does not scale past ~4 threads: 8 costs roughly twice the CPU for 8% more speed.
-Each run prints wall time, the threads each backend **actually reports** (not what you asked for), and
-core-seconds, so this is checkable on your own hardware.
+Speedup is real but strongly sub-linear, and core-seconds climb the whole way. **2–4 threads is the
+efficient range**; 12 threads costs 3.6× the CPU of one thread for 3.3× the speed. Each run prints wall
+time, the threads each backend **actually reports** (not what you asked for), and core-seconds, so this is
+checkable on your own hardware.
+
+### What would improve that scaling
+
+Measured by varying one knob at a time (speedup at 8 threads):
+
+| change | speedup | verdict |
+|---|---|---|
+| baseline: `R_MAX=8`, 1 frame, all atoms | 3.37× | — |
+| **4 frames** instead of 1 | 3.39× | **no effect** |
+| 25% of the atoms | 2.26× | worse |
+| `R_MAX=4` | 2.53× | worse |
+| `R_MAX=16` | 3.03× | slightly worse |
+
+**More frames does not improve scaling.** Each frame is its own `compute()` call, so frames multiply the
+work at unchanged efficiency — you get more data for proportionally more time, not better use of cores.
+What helps is **more work per call**: more atoms, or a larger `R_MAX` up to ~8 (past that it goes
+bandwidth-bound).
+
+The consequence: on a big allocation, the way to use the cores is **frame-level parallelism**, not more
+freud threads. Frames are independent and `bin_counts` are additive, so processing frames across worker
+processes and summing the histograms is embarrassingly parallel and would scale far better than handing one
+`compute()` call 64 threads. The script currently loops frames serially in Python.
 
 ---
 

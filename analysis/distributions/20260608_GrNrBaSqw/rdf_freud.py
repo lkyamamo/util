@@ -114,11 +114,18 @@ import freud
 # pipeline asked for. 0 is freud's own "all cores" default, so an unset variable
 # behaves exactly as before.
 #
-# Measured on a 134784-atom frame at R_MAX=8 (6 partials): 1 thread 3.95 s,
-# 2 -> 1.23x, 4 -> 1.46x, 8 -> 1.51x, all 12 -> 1.55x. freud's neighbour search
-# parallelizes poorly on this workload, so ~4 threads captures 94% of the
-# available speedup and asking for more is waste. The limit is freud itself, not
-# this script's serial parsing, which is only ~2.6% of the run at that setting.
+# Measured on a 134784-atom frame at R_MAX=8 (6 partials), warmed up at each
+# thread count: 1 -> 2.01 s, 2 -> 1.68x, 4 -> 2.65x, 6 -> 3.05x, 12 -> 3.30x.
+# The speedup is real but strongly sub-linear, and core-seconds climb the whole
+# way (2.0 -> 3.0 at 4 threads -> 7.3 at 12). Parallel efficiency is 66% at 4
+# threads and 28% at 12, so 2-4 threads is the efficient range and more buys
+# little for a lot of allocation. The limit is freud, not this script's serial
+# parsing, which is only ~2.6% of the run at that setting.
+#
+# Note what does NOT help: adding frames. Each frame is a separate compute()
+# call, so frames scale the work linearly at unchanged efficiency (3.37x at one
+# frame, 3.39x at four). What improves the scaling is more work per call —
+# more atoms (25% of them gives only 2.26x) or a larger R_MAX up to ~8.
 # Empty is treated as unset, not as an error: distribution_run.sh defaults to
 # $(nproc), which does not exist on macOS and exports the variable empty.
 freud.parallel.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "").strip() or 0))
@@ -393,8 +400,8 @@ def report_cost(t_serial, t_parallel, threads, m_limiting, scaling=''):
     if m_limiting > 0 and wall > 0:
         print(f"      efficiency {m_limiting/wall:.3g} samples/wall-s, "
               f"{m_limiting/core_seconds:.3g} samples/core-s (limiting partial)")
-        print(f"      measured: freud saturates near 6 threads on this workload; "
-              f"beyond that only core-seconds grow")
+        print(f"      measured: parallel efficiency 66% at 4 threads, 28% at 12; "
+              f"frames add work but not scaling")
     if scaling:
         print(f"      {scaling}")
 

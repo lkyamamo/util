@@ -115,10 +115,12 @@ ANALYSIS_NODELIST=""
 # scripts and runners now set freud.parallel.set_num_threads() and
 # NUMBA_NUM_THREADS explicitly. Measured for rdf_freud.py (134784 atoms,
 # R_MAX=6), wall / core-seconds:
-#     1 thread  1.50 s / 1.5      4 threads  0.55 s / 2.2   <- sweet spot
-#     2 threads 1.17 s / 2.3      8 threads  0.51 s / 4.1
-# 8 threads costs roughly twice the CPU for 8% more speed. freud's neighbour
-# search simply does not scale past ~4; asking for 64 cores wastes the allocation.
+#     1 thread 2.01 s / 2.0     4 threads 0.76 s / 3.0  <- efficient range
+#     2 threads 1.19 s / 2.4    12 threads 0.61 s / 7.3
+# Parallel efficiency is 66% at 4 threads and 28% at 12, so 12 costs 3.6x the
+# CPU for 3.3x the speed; asking for 64 wastes the allocation. Note that MORE
+# FRAMES does not improve this - each frame is its own compute() call, so frames
+# add work at unchanged efficiency. Only more atoms or a larger R_MAX (to ~8) do.
 
 # -----------------------------------------------------------------------------
 # rdf_freud.py — g(r) and coordination numbers. Reads dump.lammpstrj.

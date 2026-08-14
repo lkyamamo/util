@@ -214,8 +214,8 @@ source /home1/lkyamamo/venv/struc_analysis/bin/activate        # env with dynaso
 # all of them:
 #   freud/TBB (rdf_freud.py, bad_freud.py) ignores OMP_NUM_THREADS entirely and
 #     would take every core; those scripts now call freud.parallel.set_num_threads()
-#     with this value. Measured: freud's RDF scales poorly (1.55x on 12 threads),
-#     so ~4 threads captures most of the gain and more is waste.
+#     with this value. Measured: 2.65x at 4 threads (66% efficiency) but only
+#     3.30x at 12 (28%), so 2-4 threads is the efficient range.
 #   numba (dsf.py via dynasor) reads NUMBA_NUM_THREADS, exported below.
 #   OpenBLAS/MKL (vdos.py, msd.py, vdos_dynmat.py) does read OMP_NUM_THREADS.
 #   scipy.fft (vdos.py fft_periodogram) reads VDOS_THREADS, set below.
