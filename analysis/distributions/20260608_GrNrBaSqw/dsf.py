@@ -21,6 +21,31 @@ COMPUTE_DYNAMIC=True
   dsf.csv   — q (Å⁻¹), ω (THz), partial S_AB(q,ω), total, neutron-weighted
   dsf.png   — 2D heatmap S(q,ω) for total and neutron-weighted
 
+NEUTRON WEIGHTING
+-----------------
+The neutron-weighted columns come from dynasor's get_weighted_sample, which
+applies S_AB -> f_A f_B S_AB with f = b_coh and sums, with NO division by <b>^2.
+So Sq_neutron is the UNNORMALIZED weighted sum, in fm^2 — the reciprocal-space
+counterpart of rdf_freud.py's 'absolute' convention (h_absolute), not of its
+default-listed 'FZ'. Comparing Sq_neutron against g_FZ would be comparing two
+different normalizations; compare against g_absolute / h_absolute instead.
+
+There is no convention selector here yet, unlike rdf_freud.py's
+RDF_NORMALIZATION: dsf.py delegates the weighting arithmetic to dynasor rather
+than owning it. Set DSF_NEUTRON_WEIGHTING=no to drop the weighted columns.
+
+Hydrogen is refused: dynasor weights by NATURAL ABUNDANCE, so its 'H' is protium
+with b_coh = -3.7406 fm, while rdf_freud.py's table treats 'H' as deuterium at
++6.671 fm. Those have opposite signs, so S(q) and g(r) — Fourier transform pairs
+that should describe the same sample — would silently disagree on every
+H-containing term. _check_hydrogen() therefore exits rather than choosing for
+you, matching vdos.py and vdos_dynmat.py.
+
+For every other element the two tables agree: REFERENCE_B_COH is checked against
+dynasor's values at runtime and warns on any drift. Ni and Zr sit ~0.3% and
+~0.6% apart because NIST tabulates one value per element while dynasor sums over
+isotopes at natural abundance; both are defensible, so the check tolerates 2%.
+
 DEPENDENCIES
 ------------
   pip install dynasor matplotlib
@@ -79,6 +104,15 @@ MAX_Q_POINTS_DYN = int(os.environ.get("MAX_Q_POINTS_DYN", "25000"))  # prune tar
 COMPUTE_STATIC  = True      # S(q)
 COMPUTE_DYNAMIC = False     # S(q,ω) and F(q,t) — off until the notes below are worked through
 COMPUTE_SELF    = False     # incoherent/self part — can be slow
+
+# Neutron-weighted S(q)/S(q,ω) columns. 'no' emits only the unweighted totals and
+# partials, which is the way to run an H-bearing system — see _check_hydrogen.
+# DSF_-prefixed so it is clear which analysis it configures, as elsewhere in the
+# pipeline (rdf_freud.py's RDF_*, vdos.py's VDOS_*).
+NEUTRON_WEIGHTING = os.environ.get("DSF_NEUTRON_WEIGHTING", "yes")
+if NEUTRON_WEIGHTING not in ("yes", "no"):
+    raise ValueError(
+        f"Unknown DSF_NEUTRON_WEIGHTING={NEUTRON_WEIGHTING!r}; use 'yes' or 'no'.")
 
 # Output files (set to None to skip writing)
 OUTPUT_SQ_CSV   = "sq.csv"
@@ -242,11 +276,95 @@ def _n_atoms(sample):
     return sum(sample.particle_counts.values())
 
 
+# Coherent scattering lengths in fm, kept here only to cross-check dynasor's own
+# table at runtime — the weighting arithmetic is still dynasor's. Values are
+# rdf_freud.py's NEUTRON_SCATTERING_LENGTHS, so a drift between the two scripts
+# (or a dynasor update that changes weights underfoot) surfaces as a warning
+# rather than as two incompatible figures.
+#
+# 'H' is deuterium here, matching rdf_freud.py. dynasor instead defaults to
+# NATURAL ABUNDANCE, i.e. protium, b_coh = -3.7406 fm — opposite in sign. That
+# disagreement is why _check_hydrogen() refuses H-bearing systems outright
+# rather than letting the two scripts describe different samples in silence.
+REFERENCE_B_COH = {
+    'H':   6.671,    # deuterium, as in rdf_freud.py
+    'D':   6.671,
+    'C':   6.6460,
+    'N':   9.36,
+    'O':   5.803,
+    'Na':  3.63,
+    'Mg':  5.375,
+    'Al':  3.449,
+    'Si':  4.1491,
+    'P':   5.13,
+    'S':   2.847,
+    'Cl':  9.577,
+    'K':   3.67,
+    'Ca':  4.70,
+    'Fe':  9.45,
+    'Ni': 10.3,
+    'Zr':  7.16,
+    'Ba':  5.07,
+}
+
+# Ni and Zr differ from dynasor by ~0.3% and ~0.6%: NIST tabulates one value per
+# element while dynasor sums over isotopes at natural abundance. Both are
+# defensible, so the check only fires above this.
+B_COH_TOLERANCE = 0.02      # fractional
+
+
+def _check_hydrogen(atom_types):
+    """
+    Refuse to neutron-weight a hydrogen-bearing system.
+
+    b_coh is +6.671 fm for deuterium and -3.7406 fm for protium — opposite in
+    sign, so every H-containing term flips — and a LAMMPS dump labels both 'H',
+    so the isotope cannot be read off the trajectory. rdf_freud.py resolves this
+    by fiat (H means deuterium) while dynasor defaults to protium, which would
+    make S(q) and g(r) describe different samples despite being Fourier
+    transform pairs. Same guard as vdos.py and vdos_dynmat.py.
+    """
+    present = sorted({'H', 'D'} & set(atom_types))
+    if present:
+        raise SystemExit(
+            f"\ndsf.py: refusing to neutron-weight a hydrogen-bearing system.\n"
+            f"  elements present: {present}\n\n"
+            f"  b_coh is +6.671 fm for deuterium and -3.7406 fm for protium — opposite\n"
+            f"  signs — and a dump labels both 'H', so the isotope cannot be determined\n"
+            f"  from the trajectory. rdf_freud.py treats 'H' as deuterium while dynasor\n"
+            f"  defaults to natural abundance (protium), so a neutron S(q) computed here\n"
+            f"  would contradict the neutron g(r) from rdf_freud.py on the same system.\n"
+            f"  Resolving that needs a careful implementation, deliberately not attempted\n"
+            f"  here.\n\n"
+            f"  Set DSF_NEUTRON_WEIGHTING=no to get the unweighted S(q)/S(q,w) columns.\n"
+        )
+
+
+def _check_dynasor_table(nsl, atom_types):
+    """Warn if dynasor's coherent scattering lengths drift from REFERENCE_B_COH."""
+    for element in atom_types:
+        reference = REFERENCE_B_COH.get(element)
+        if reference is None:
+            print(f"  Note: no reference b_coh for {element}; using dynasor's value unchecked.")
+            continue
+        theirs = complex(nsl.get_weight_coh(element, 0.0)).real
+        if abs(theirs - reference) > B_COH_TOLERANCE * abs(reference):
+            print(f"  Warning: b_coh({element}) = {theirs:.4f} fm in dynasor but "
+                  f"{reference:.4f} fm in rdf_freud.py's table — a {100*abs(theirs-reference)/abs(reference):.1f}% "
+                  f"difference. S(q) and g(r) will not describe the same sample.")
+
+
 def _try_neutron_weights(sample):
     """Apply NeutronScatteringLengths weighting; return None and warn on failure."""
+    if NEUTRON_WEIGHTING != 'yes':
+        return None
+    _check_hydrogen(sample.atom_types)
     try:
         nsl = NeutronScatteringLengths(sample.atom_types)
+        _check_dynasor_table(nsl, sample.atom_types)
         return get_weighted_sample(sample, nsl)
+    except SystemExit:
+        raise
     except Exception as exc:
         print(f"  Warning: neutron weighting skipped — {exc}")
         return None

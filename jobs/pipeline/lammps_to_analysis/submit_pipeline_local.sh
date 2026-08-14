@@ -78,6 +78,9 @@ Optional:
     --dsf-dt FLOAT                dsf.py DT (fs between dumped frames), e.g. 1.0
     --dsf-n-frames INT             dsf.py N_FRAMES, e.g. 500
     --dsf-stride INT               dsf.py STRIDE, e.g. 1
+    --dsf-neutron-weighting STR    dsf.py DSF_NEUTRON_WEIGHTING: 'yes' (default) or 'no'.
+                                     'no' drops the neutron-weighted S(q) columns; required
+                                     for H/D-bearing systems, which are refused outright.
     --dsf-window-size INT           dsf.py WINDOW_SIZE, e.g. 500
     --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
@@ -255,6 +258,7 @@ BAD_BINS_VAL=""
 DSF_DT=""
 DSF_N_FRAMES=""
 DSF_STRIDE=""
+DSF_NEUTRON_WEIGHTING=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
@@ -338,6 +342,7 @@ while [[ $# -gt 0 ]]; do
     --dsf-dt) DSF_DT="$2"; shift 2 ;;
     --dsf-n-frames) DSF_N_FRAMES="$2"; shift 2 ;;
     --dsf-stride) DSF_STRIDE="$2"; shift 2 ;;
+    --dsf-neutron-weighting) DSF_NEUTRON_WEIGHTING="$2"; shift 2 ;;
     --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
@@ -595,6 +600,7 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$DSF_DT" ]]              && export DT="$DSF_DT"
   [[ -n "$DSF_N_FRAMES" ]]        && export N_FRAMES="$DSF_N_FRAMES"
   [[ -n "$DSF_STRIDE" ]]          && export STRIDE="$DSF_STRIDE"
+  [[ -n "$DSF_NEUTRON_WEIGHTING" ]] && export DSF_NEUTRON_WEIGHTING="$DSF_NEUTRON_WEIGHTING"
   [[ -n "$DSF_WINDOW_SIZE" ]]     && export WINDOW_SIZE="$DSF_WINDOW_SIZE"
   [[ -n "$DSF_Q_MAX" ]]           && export Q_MAX="$DSF_Q_MAX"
   [[ -n "$DSF_N_Q_BINS" ]]        && export N_Q_BINS="$DSF_N_Q_BINS"

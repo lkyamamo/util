@@ -193,7 +193,27 @@ Optional:
 | `COMPUTE_STATIC` | Compute S(q) | `True` |
 | `COMPUTE_DYNAMIC` | Compute S(q,ω) | `True` |
 | `COMPUTE_SELF` | Compute incoherent/self part (slow) | `False` |
+| `DSF_NEUTRON_WEIGHTING` | Emit the neutron-weighted S(q) columns: `yes` or `no` | `yes` |
 | `N_THREADS` | numba thread count; `0` = all cores | `0` |
+
+**Which normalization `Sq_neutron` is.** dynasor weights partials as `S_AB → f_A f_B S_AB` with `f = b_coh`
+and sums, with **no division by ⟨b⟩²**. So `Sq_neutron` is the unnormalized weighted sum in fm² — the
+reciprocal-space counterpart of `rdf_freud.py`'s `absolute` convention, *not* of its `FZ`. Compare it
+against `g_absolute`/`h_absolute`, not `g_FZ`. There is no convention selector here yet, because `dsf.py`
+delegates the weighting arithmetic to dynasor rather than owning it.
+
+**Hydrogen is refused**, as in `vdos.py` and `vdos_dynmat.py`, but for a sharper reason: dynasor weights by
+**natural abundance**, so its `H` is protium at `b_coh = −3.7406 fm`, while `rdf_freud.py` treats `H` as
+deuterium at `+6.671 fm`. Those have opposite signs, so S(q) and g(r) — Fourier transform pairs that should
+describe the same sample — would silently disagree on every H-containing term. Run H-bearing systems with
+`DSF_NEUTRON_WEIGHTING=no` to get the unweighted partials and total.
+
+**Every other element agrees**, and `dsf.py` now checks this at runtime against `REFERENCE_B_COH` (a copy of
+`rdf_freud.py`'s table), warning on any drift above 2% — so a future dynasor update cannot change the
+weights underneath you unnoticed. Verified across the shared table: Al, C, Na, P, S, O, Si, N, Mg and Cl
+agree to ≤0.1%; Ni (10.300 vs 10.332) and Zr (7.160 vs 7.119) differ by <1% because NIST tabulates one
+value per element while dynasor sums over isotopes at natural abundance, which is why the tolerance is 2%
+rather than exact.
 
 ---
 

@@ -74,6 +74,9 @@ BAD_BINS_VAL="360"
 DSF_DT=""
 DSF_N_FRAMES=""
 DSF_STRIDE=""
+# yes (default) | no. "no" drops the neutron-weighted S(q) columns; required for
+# H/D systems, where dsf.py refuses to weight (protium vs deuterium sign flip).
+DSF_NEUTRON_WEIGHTING=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
