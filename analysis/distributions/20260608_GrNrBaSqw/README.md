@@ -179,22 +179,29 @@ Optional:
 | Variable | What it controls | Notes |
 |---|---|---|
 | `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element` column in dump (not numeric type) |
-| `DT` | Time between consecutive dumped frames in **femtoseconds** | e.g. if LAMMPS dumps every 100 steps at 0.5 fs/step → `DT = 50.0` |
-| `N_FRAMES` | Max frames to read | Controls how much of the trajectory is used |
-| `WINDOW_SIZE` | Number of time lags for F(q,t) | Sets frequency resolution: Δω ∝ 1/(WINDOW_SIZE × DT); set equal to `N_FRAMES` to use full trajectory |
+| `DSF_DT` | Time between consecutive dumped frames in **femtoseconds** | e.g. if LAMMPS dumps every 100 steps at 0.5 fs/step → `DSF_DT = 50.0`. Not the same key as `DYNAMICS_DT`, which vdos.py and msd.py share |
+| `DSF_N_FRAMES` | `frame_stop`, an **index** into the dump — not a count | Frames used = `DSF_N_FRAMES / DSF_STRIDE` |
+| `DSF_WINDOW_SIZE` | Number of time lags for F(q,t) | Sets frequency resolution: Δν = 1/(2 × WINDOW_SIZE × DT × STRIDE); must cover several periods of the slowest mode |
 
 Optional:
 
 | Variable | What it controls | Default |
 |---|---|---|
-| `STRIDE` | Read every Nth frame | `1` |
-| `Q_MAX` | Max q in Å⁻¹ | `20.0` |
-| `N_Q_BINS` | Radial q-bins after spherical averaging | `200` |
+| `DSF_STRIDE` | Read every Nth frame | `600` |
+| `DSF_Q_MAX` | Max q in Å⁻¹ (static) | `20.0` |
+| `DSF_N_Q_BINS` | Radial q-bins after spherical averaging | `130` |
+| `DSF_WINDOW_STEP`, `DSF_Q_MAX_DYN`, `DSF_N_Q_BINS_DYN`, `DSF_MAX_Q_POINTS_DYN` | Dynamic-only q/window settings | `1`, `4.0`, `25`, `25000` |
 | `COMPUTE_STATIC` | Compute S(q) | `True` |
 | `COMPUTE_DYNAMIC` | Compute S(q,ω) | `True` |
 | `COMPUTE_SELF` | Compute incoherent/self part (slow) | `False` |
 | `DSF_NEUTRON_WEIGHTING` | Emit the neutron-weighted S(q) columns: `yes` or `no` | `yes` |
 | `N_THREADS` | numba thread count; `0` = all cores | `0` |
+
+Every `dsf.py` setting is `DSF_`-prefixed, like `vdos.py`'s `VDOS_*` and `msd.py`'s `MSD_*`. It previously
+read bare `DT`, `N_FRAMES`, `STRIDE`, `Q_MAX`, `N_Q_BINS`, `WINDOW_SIZE`, `WINDOW_STEP`, `Q_MAX_DYN`,
+`N_Q_BINS_DYN` and `MAX_Q_POINTS_DYN` — generic enough to collide with anything else in a shared pipeline
+environment, and requiring `submit_pipeline.sh` to translate `DSF_DT` → `DT` on the way in. Setting one of
+the old names now **aborts with a rename notice** rather than being silently ignored.
 
 **Which normalization `Sq_neutron` is.** dynasor weights partials as `S_AB → f_A f_B S_AB` with `f = b_coh`
 and sums, with **no division by ⟨b⟩²**. So `Sq_neutron` is the unnormalized weighted sum in fm² — the

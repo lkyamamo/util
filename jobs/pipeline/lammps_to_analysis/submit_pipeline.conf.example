@@ -54,60 +54,177 @@ ANALYSIS_CONSTRAINT="epyc-9554"
 ANALYSIS_CPUS_PER_TASK=""
 ANALYSIS_NODELIST=""
 
+# =============================================================================
 # distribution code parameters
+# =============================================================================
+# Every key below is a default that the matching submit_pipeline.sh flag can
+# override for one invocation. Empty = leave the script's own default in effect
+# (see the CONFIGURATION block at the top of each .py). Keys marked REQUIRED
+# have no default and abort the run up front rather than guessing.
+#
+# Each block below states how to CHOOSE the value, not just what it means. The
+# worked examples assume the reference system used throughout: liquid water /
+# hydroxylated silica, ~5000 atoms, cubic cell L = 43 A, MD timestep 0.5 fs.
+
+# -----------------------------------------------------------------------------
+# rdf_freud.py — g(r) and coordination numbers. Reads dump.lammpstrj.
+# -----------------------------------------------------------------------------
+# RDF_R_MAX: how far out to compute g(r). HARD LIMIT: must be < half the
+#   shortest box edge, or freud cannot minimum-image the pair distances and the
+#   script aborts. At L = 43 A that ceiling is 21.4 A.
+#     - 8 A  covers the first few coordination shells; enough for peak positions
+#            and coordination numbers.
+#     - 20 A is what you want if the g(r) will be Fourier transformed, or if you
+#            care that it has actually flattened to 1.
+# RDF_BINS: bin width = R_MAX / BINS. 0.01-0.02 A resolves the first peak well.
+#   Finer bins are not free: with few frames they just add noise.
+#     8 A / 800 bins  = 0.010 A     20 A / 2000 bins = 0.010 A
 RDF_R_MAX="8"
 RDF_BINS_VAL="800"
-# Pair-weight conventions and correlation functions for rdf_freud.py; the cross
-# product is emitted, one column per combination, named <function>_<convention>.
+# Pair-weight conventions and correlation functions; the cross product is
+# emitted, one column per combination, named <function>_<convention>.
 # SEMICOLON-separated — a comma would be truncated by sbatch --export. Empty
 # leaves the script defaults ("FZ;absolute;unity" and "g;h;D").
-#   unity | FZ | absolute   — b=1 mole fractions | Faber-Ziman (/<b>²) | barn/sr/atom
+#   unity | FZ | absolute   — b=1 mole fractions | Faber-Ziman (/<b>^2) | barn/sr/atom
 #   g | h | D | T           — h with absolute is Soper's neutron G_n(r)
+# Choosing: compare to a published FZ-normalized S(q)/g(r) -> "FZ"; compare to a
+# measured differential cross-section on an absolute scale -> "absolute"; want a
+# b-free structural summary -> "unity". If unsure, leave empty and get all three.
 RDF_NORMALIZATION_VAL=""
 RDF_FUNCTIONS_VAL=""
-RDF_RESOLUTION_SIGMA_VAL=""      # Å; Gaussian resolution broadening, 0 disables (default 0.1)
+# Gaussian resolution broadening in A; 0 disables (script default 0.1). Match
+# this to the instrument you are comparing against — Soper used ~0.1 A. Without
+# it, modelled peaks are sharper than measured ones for purely instrumental
+# reasons. The unbroadened curve is always kept alongside as a *_broadened twin.
+RDF_RESOLUTION_SIGMA_VAL=""
+
+# -----------------------------------------------------------------------------
+# bad_freud.py — bond angle distributions. Reads dump.lammpstrj.
+# -----------------------------------------------------------------------------
+# BAD_ELEMENTS: SEMICOLON-separated; the script never auto-detects. Must list
+#   every element you want angles for, e.g. "Si;O;H" or "O;H".
+# BAD_R_CUTOFF / BAD_R_MINCUT: which neighbours count as bonded, per pair.
+#   HOW TO CHOOSE: run rdf_freud.py FIRST and read the first minimum of that
+#   pair's g(r) — that is the cutoff. Guessing here silently changes every angle
+#   distribution downstream. R_MINCUT excludes unphysical close contacts; the
+#   rising edge of the first peak (or ~0.5 A) is the usual choice.
+#   Format "El1-El2:value;...", keys sorted alphabetically. Empty = script default.
+#   Typical water/silica first minima: O-H 1.2-1.4 A (covalent), H-O 2.4 A
+#   (H-bond), O-O 3.2-3.5 A, Si-O 2.2 A.
+# BAD_TRIPLET_CUTOFFS: per-triplet overrides, pipe-separated entries of
+#   label:elA-elB-elC:r_max_ab:r_min_ab:r_max_cb:r_min_cb. This is how you
+#   separate covalent from hydrogen-bonded versions of the same angle — the
+#   example below does exactly that for water.
+# BAD_BINS_VAL: bins over 0-180 deg. 180 = 1 deg, 360 = 0.5 deg.
 BAD_ELEMENTS="O;H"
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
 BAD_TRIPLET_CUTOFFS="H-O-H:H-O-H:1.2:0.5:1.2:0.5|H--O--H:H-O-H:2.4:1.49:2.4:1.49|O-H--O:O-H-O:1.2:0.5:2.4:1.49"
 BAD_BINS_VAL="360"
+
+# -----------------------------------------------------------------------------
+# dsf.py — static S(q) and dynamic S(q,w). Reads dynamics.lammpstrj.
+# -----------------------------------------------------------------------------
+# Every dsf.py key is DSF_-prefixed, like VDOS_* and MSD_*. The bare names it
+# used to read (DT, N_FRAMES, STRIDE, Q_MAX, ...) now abort with a rename notice
+# rather than being silently ignored.
+#
+# DSF_DT: fs between consecutive frames OF dynamics.lammpstrj — i.e. the MD
+#   timestep times that dump's every-N. At 0.5 fs/step dumped every 4 steps,
+#   DSF_DT = 2.0. This is NOT DYNAMICS_DT below; see that note.
+# DSF_N_FRAMES: frame_stop, an INDEX into the dump, not a count. Frames actually
+#   used = DSF_N_FRAMES / DSF_STRIDE.
+# DSF_STRIDE: skipped frames are still parsed, so widening the time span is
+#   nearly free while computing more frames is not — set N_FRAMES to the whole
+#   trajectory and raise STRIDE until the frame count is affordable.
+#     For STATIC S(q): stride freely. Uncorrelated snapshots are what you want.
+#     For DYNAMIC S(q,w): STRIDE MUST BE 1. Nyquist is 1/(2*DT*STRIDE); at
+#     DT = 2 fs that is 250 THz (8340 cm^-1), comfortably above the O-H stretch,
+#     but STRIDE=4 drops it to 62.5 THz and aliases O-H down into the Si-O band.
+#   Example: 30000 frames at DT=2 fs = 60 ps, STRIDE=600 -> 50 frames, 1.2 ps apart.
 DSF_DT=""
 DSF_N_FRAMES=""
 DSF_STRIDE=""
+# DSF_Q_MAX: 20 A^-1 is the range needed to Fourier transform S(q) to G(r)
+#   without bad termination ripples (ripple period 2*pi/Q_MAX = 0.31 A) and
+#   matches neutron diffraction on vitreous silica. Cost is linear in N_q x
+#   frames: ~10.6M q-vectors at 20 A^-1 on an L = 43 A cell vs 2.3M at 12.
+# DSF_N_Q_BINS: keep <= Q_MAX / (2*pi/L), or the low-q bins come back empty.
+#   At L = 43 A, 2*pi/L = 0.146 A^-1, so 20 / 0.146 = 136 -> use 130.
+DSF_Q_MAX=""
+DSF_N_Q_BINS=""
+# DSF_WINDOW_SIZE: dynamic runs only. Number of time lags; frequency resolution
+#   dnu = 1/(2 x WINDOW_SIZE x DT x STRIDE). Must cover several periods of the
+#   slowest mode of interest: the lowest accessible q is 2*pi/L = 0.146 A^-1,
+#   where a longitudinal acoustic mode sits near 1.4 THz (~0.7 ps period), so
+#   5-10 periods needs 3.5-7 ps, i.e. WINDOW_SIZE ~ 2000-3500 at DT = 2 fs.
+#   NOTE the dynamic path is not yet tuned against physics — see DYNAMIC NOTES
+#   in dsf.py, and the memory table there, before turning COMPUTE_DYNAMIC on.
+#   The remaining dynamic-only knobs (WINDOW_STEP, Q_MAX_DYN, N_Q_BINS_DYN,
+#   MAX_Q_POINTS_DYN) are set in distribution_run.sh or dsf.py directly.
+DSF_WINDOW_SIZE=""
 # yes (default) | no. "no" drops the neutron-weighted S(q) columns; required for
 # H/D systems, where dsf.py refuses to weight (protium vs deuterium sign flip).
 DSF_NEUTRON_WEIGHTING=""
-DSF_WINDOW_SIZE=""
-DSF_Q_MAX=""
-DSF_N_Q_BINS=""
+
+# -----------------------------------------------------------------------------
+# vdos.py and msd.py — both read dynamics.lammpstrj.
+# -----------------------------------------------------------------------------
 # DYNAMICS_DT is the only parameter vdos.py and msd.py share (the dt of
 # dynamics.lammpstrj, a property of the trajectory rather than of either
 # analysis); everything else below is per script and set independently —
-# VDOS needs a short correlation length for frequency resolution, MSD a long
-# one to reach the diffusive regime.
+# VDOS needs a SHORT correlation length for frequency resolution, MSD a LONG
+# one to reach the diffusive regime. That is why they are not one setting.
 #
 # Keys marked REQUIRED have no default: leaving one empty aborts the run up
 # front (before the LAMMPS stage) rather than silently substituting a number.
 # The values below are examples for a 2 fs / 50 ps water trajectory.
-DYNAMICS_DT="2.0"                    # REQUIRED when RUN_VDOS=1 or RUN_MSD=1
+DYNAMICS_DT="2.0"                    # REQUIRED when RUN_VDOS=1 or RUN_MSD=1.
+                                     # fs between dynamics.lammpstrj frames.
+                                     # Nyquist = 1/(2*DT) = 250 THz at 2 fs
 VDOS_N_FRAMES=""
 VDOS_STRIDE=""
-VDOS_CORR_LENGTH="2000"              # REQUIRED when RUN_VDOS=1 — sets frequency resolution (dnu ~ 1/L)
-VDOS_CORR_INTERVAL="100"             # REQUIRED when RUN_VDOS=1 — sets noise level only
-VDOS_MAX_FREQUENCY_EV="0.5"          # REQUIRED when RUN_VDOS=1 — 0.5 eV = 4033 cm^-1
-VDOS_NUM_GRIDS=""
-VDOS_METHOD=""
-VDOS_WINDOW=""
-VDOS_NORMALIZATION=""
+# VDOS_CORR_LENGTH sets the frequency resolution directly: dnu ~ 1/CORR_LENGTH.
+#   2000 fs -> 0.5 THz -> 17 cm^-1, enough to separate the water librational,
+#   bending and stretching bands. Halve it and peaks blur; double it and you
+#   need a correspondingly longer trajectory to average over.
+VDOS_CORR_LENGTH="2000"              # REQUIRED when RUN_VDOS=1
+# VDOS_CORR_INTERVAL affects the NOISE LEVEL only, never the resolution: it is
+#   how often a new time origin is taken. Smaller = more origins averaged =
+#   smoother, at linear cost. 100 fs against a 2000 fs window is a good start.
+VDOS_CORR_INTERVAL="100"             # REQUIRED when RUN_VDOS=1
+# VDOS_MAX_FREQUENCY_EV must sit above your highest real mode or the band is cut
+#   off silently. O-H stretch ~3700 cm^-1 = 0.46 eV, so 0.5 eV (4033 cm^-1)
+#   covers water. Si-O stretch tops out near 1200 cm^-1 = 0.15 eV, so dry silica
+#   needs only ~0.2 eV.
+VDOS_MAX_FREQUENCY_EV="0.5"          # REQUIRED when RUN_VDOS=1
+VDOS_NUM_GRIDS=""                    # frequency grid points, default 5000
+VDOS_METHOD=""                       # vacf_cosine_transform (default, matches
+                                     # msd.cpp) | fft_periodogram (faster)
+VDOS_WINDOW=""                       # matches METHOD by default
+VDOS_NORMALIZATION=""                # phonon (default, integral ~ 3 per atom) |
+                                     # unit_area. This is the SUM RULE, and is a
+                                     # different axis from VDOS_WEIGHTING below
 # Species weighting for vdos.py totals; SEMICOLON-separated, one total column each.
 #   unity | coherent | incoherent | total   (empty = "unity", the pre-weighting behavior)
 # Neutron weightings weight each element by sigma/m and refuse H/D-bearing systems.
+# Use "total" to compare against an inelastic neutron measurement; "unity" for the
+# plain simulated DOS.
 VDOS_WEIGHTING=""
 MSD_N_FRAMES=""
 MSD_STRIDE=""
-MSD_CORR_LENGTH="5000"               # REQUIRED when RUN_MSD=1 — max time lag
-MSD_CORR_INTERVAL="500"              # REQUIRED when RUN_MSD=1 — spacing between origins
-MSD_FIT_FRACTION="0.4"               # REQUIRED when RUN_MSD=1 — tail fraction for the D fit
+# MSD_CORR_LENGTH must be long enough to REACH the diffusive regime, where the
+#   MSD is linear in t — otherwise the fitted D describes ballistic or caged
+#   motion instead. Check the log-log MSD plot: the slope must be 1 over the fit
+#   window. 5000 fs is a reasonable start for liquid water at 300 K; cold or
+#   viscous systems need much more.
+MSD_CORR_LENGTH="5000"               # REQUIRED when RUN_MSD=1 — also sets the fit
+                                     # window, so D depends on it
+MSD_CORR_INTERVAL="500"              # REQUIRED when RUN_MSD=1 — spacing between
+                                     # origins; noise level only, like VDOS's
+MSD_FIT_FRACTION="0.4"               # REQUIRED when RUN_MSD=1 — tail fraction used
+                                     # for the D fit. 0.4 = last 40% of the lag
+                                     # range, i.e. the most diffusive part
 
 # dynamical-matrix VDOS parameters (RUN_VDOS_DYNMAT=1)
 #

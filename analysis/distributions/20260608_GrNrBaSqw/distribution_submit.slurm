@@ -65,12 +65,50 @@ RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 
 DYNAMICS_DT="${DYNAMICS_DT:-}"          # REQUIRED by vdos.py and msd.py; fs between frames
 
-# dsf.py
-DT="${DT:-}"                            # fs between dumped frames
-N_FRAMES="${N_FRAMES:-}"                # max frames to read; 0 = all
-STRIDE="${STRIDE:-}"                    # read every Nth frame
-DSF_NEUTRON_WEIGHTING="${DSF_NEUTRON_WEIGHTING:-}"  # yes | no; no drops the neutron
-                                                    # columns (needed for H systems)
+# dsf.py — static S(q) and dynamic S(q,w). Every key is DSF_-prefixed, like
+# vdos.py's VDOS_* and msd.py's MSD_*, so nothing here can be confused with
+# another analysis's setting. dsf.py errors out if the old bare names (DT,
+# N_FRAMES, STRIDE, Q_MAX, ...) are set, rather than ignoring them.
+#
+# Note DSF_DT is dsf.py's own dt and is NOT the same key as DYNAMICS_DT above:
+# vdos.py and msd.py share that one because it describes the trajectory, whereas
+# this is read together with DSF_STRIDE and describes only this analysis.
+DSF_DT="${DSF_DT:-}"                    # fs between consecutive dumped frames
+DSF_N_FRAMES="${DSF_N_FRAMES:-}"        # frame_stop INDEX into the dump, not a count;
+                                        # frames used = DSF_N_FRAMES / DSF_STRIDE
+DSF_STRIDE="${DSF_STRIDE:-}"            # read every Nth frame. Skipped frames are still
+                                        # parsed, so widening the span is free while
+                                        # computing more frames is not
+
+# Static S(q). Q_MAX=20 A^-1 is the range needed to Fourier transform S(q) into
+# G(r) without bad termination ripples (ripple period 2*pi/Q_MAX = 0.31 A) and
+# matches neutron diffraction on vitreous silica. Cost is linear in N_q x frames:
+# ~10.6M q-vectors on a 43 A cell at Q_MAX=20 versus 2.3M at 12.
+DSF_Q_MAX="${DSF_Q_MAX:-}"              # A^-1, static
+DSF_N_Q_BINS="${DSF_N_Q_BINS:-}"        # radial q-bins after spherical averaging. Keep
+                                        # <= Q_MAX / (2*pi/L) or low-q bins come back empty
+
+# Dynamic S(q,w) — only used when COMPUTE_DYNAMIC=True in dsf.py, and NOT yet
+# tuned against physics; see DYNAMIC NOTES in dsf.py before trusting the output.
+# Memory is the binding constraint, not time:
+#   2 x (n_pairs + 1) x N_q x (DSF_WINDOW_SIZE + 1) x 8 bytes
+# which is why the dynamic run has its own q settings rather than reusing the
+# static ones — 19 GB at Q_MAX_DYN=4 unpruned, versus 2373 GB at Q_MAX=20.
+DSF_WINDOW_SIZE="${DSF_WINDOW_SIZE:-}"  # time lags; dnu = 1/(2 x WINDOW_SIZE x DT x STRIDE).
+                                        # Must cover several periods of the slowest mode
+DSF_WINDOW_STEP="${DSF_WINDOW_STEP:-}"  # frames between window origins; 1 = most averaging,
+                                        # and nearly free, so leave it at 1
+DSF_Q_MAX_DYN="${DSF_Q_MAX_DYN:-}"      # A^-1, dynamic; separate from DSF_Q_MAX on purpose
+DSF_N_Q_BINS_DYN="${DSF_N_Q_BINS_DYN:-}"        # radial q-bins, dynamic
+DSF_MAX_Q_POINTS_DYN="${DSF_MAX_Q_POINTS_DYN:-}"  # prune target; 0 = no pruning. Keeps the
+                                        # low-q mesh intact and thins only above a cutoff
+
+# Neutron-weighted S(q) columns. dsf.py delegates the weighting to dynasor,
+# which weights by natural abundance — its 'H' is protium (b = -3.7406 fm) while
+# rdf_freud.py treats 'H' as deuterium (+6.671 fm), opposite signs. dsf.py
+# therefore REFUSES to neutron-weight an H- or D-bearing system; set this to
+# 'no' there to get the unweighted partials and total instead.
+DSF_NEUTRON_WEIGHTING="${DSF_NEUTRON_WEIGHTING:-}"  # yes | no
 
 # rdf_freud.py
 R_MAX="${R_MAX:-}"                      # Å; max r. Must be < half the shortest box edge
@@ -131,7 +169,10 @@ VDOS_DYNMAT_BOND_CUTOFF="${VDOS_DYNMAT_BOND_CUTOFF:-}"      # Angstrom, default 
 
 # Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
-for _var in DYNAMICS_DT DT N_FRAMES STRIDE DSF_NEUTRON_WEIGHTING \
+for _var in DYNAMICS_DT \
+            DSF_DT DSF_N_FRAMES DSF_STRIDE DSF_Q_MAX DSF_N_Q_BINS \
+            DSF_WINDOW_SIZE DSF_WINDOW_STEP DSF_Q_MAX_DYN DSF_N_Q_BINS_DYN \
+            DSF_MAX_Q_POINTS_DYN DSF_NEUTRON_WEIGHTING \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
             VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \

@@ -623,13 +623,13 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$BAD_R_MINCUT" ]]        && export_vars+=",R_MINCUT=$BAD_R_MINCUT"
 [[ -n "$BAD_TRIPLET_CUTOFFS" ]] && export_vars+=",TRIPLET_CUTOFFS=$BAD_TRIPLET_CUTOFFS"
 [[ -n "$BAD_BINS_VAL" ]]        && export_vars+=",BAD_BINS=$BAD_BINS_VAL"
-[[ -n "$DSF_DT" ]]              && export_vars+=",DT=$DSF_DT"
-[[ -n "$DSF_N_FRAMES" ]]        && export_vars+=",N_FRAMES=$DSF_N_FRAMES"
-[[ -n "$DSF_STRIDE" ]]          && export_vars+=",STRIDE=$DSF_STRIDE"
+[[ -n "$DSF_DT" ]]              && export_vars+=",DSF_DT=$DSF_DT"
+[[ -n "$DSF_N_FRAMES" ]]        && export_vars+=",DSF_N_FRAMES=$DSF_N_FRAMES"
+[[ -n "$DSF_STRIDE" ]]          && export_vars+=",DSF_STRIDE=$DSF_STRIDE"
 [[ -n "$DSF_NEUTRON_WEIGHTING" ]] && export_vars+=",DSF_NEUTRON_WEIGHTING=$DSF_NEUTRON_WEIGHTING"
-[[ -n "$DSF_WINDOW_SIZE" ]]     && export_vars+=",WINDOW_SIZE=$DSF_WINDOW_SIZE"
-[[ -n "$DSF_Q_MAX" ]]           && export_vars+=",Q_MAX=$DSF_Q_MAX"
-[[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",N_Q_BINS=$DSF_N_Q_BINS"
+[[ -n "$DSF_WINDOW_SIZE" ]]     && export_vars+=",DSF_WINDOW_SIZE=$DSF_WINDOW_SIZE"
+[[ -n "$DSF_Q_MAX" ]]           && export_vars+=",DSF_Q_MAX=$DSF_Q_MAX"
+[[ -n "$DSF_N_Q_BINS" ]]        && export_vars+=",DSF_N_Q_BINS=$DSF_N_Q_BINS"
 # vdos.py and msd.py read the same dynamics.lammpstrj but want different
 # settings, so each reads its own prefixed vars and nothing else. DYNAMICS_DT
 # is the one and only value they share: the dt of the trajectory itself.

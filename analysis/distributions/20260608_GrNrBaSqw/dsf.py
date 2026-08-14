@@ -66,23 +66,52 @@ from datetime import date
 
 DUMP_FILE       = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 
+# Every setting below is read from exactly one DSF_-prefixed environment
+# variable, the way vdos.py reads VDOS_* and msd.py reads MSD_*. The bare names
+# these used to read — DT, N_FRAMES, STRIDE, Q_MAX and so on — were generic
+# enough to collide with anything else in a shared pipeline environment, and
+# forced submit_pipeline.sh to translate DSF_DT -> DT on the way in. _legacy()
+# below turns a stale bare name into a hard error rather than ignoring it.
+def _legacy(old, new):
+    """Abort if a pre-rename bare env var is set while its DSF_ name is not."""
+    if os.environ.get(old, "") != "" and os.environ.get(new, "") == "":
+        raise SystemExit(
+            f"dsf.py: {old} is no longer read — it has been renamed {new}, so that every\n"
+            f"  dsf.py setting is DSF_-prefixed like vdos.py's VDOS_* and msd.py's MSD_*.\n"
+            f"  {old}={os.environ[old]!r} would have been silently ignored. Rename it in\n"
+            f"  submit_pipeline.conf, or in the Analysis parameters block of\n"
+            f"  distribution_run.sh / distribution_submit.slurm."
+        )
+
+for _old, _new in (("DT", "DSF_DT"), ("N_FRAMES", "DSF_N_FRAMES"),
+                   ("STRIDE", "DSF_STRIDE"), ("Q_MAX", "DSF_Q_MAX"),
+                   ("N_Q_BINS", "DSF_N_Q_BINS"), ("WINDOW_SIZE", "DSF_WINDOW_SIZE"),
+                   ("WINDOW_STEP", "DSF_WINDOW_STEP"), ("Q_MAX_DYN", "DSF_Q_MAX_DYN"),
+                   ("N_Q_BINS_DYN", "DSF_N_Q_BINS_DYN"),
+                   ("MAX_Q_POINTS_DYN", "DSF_MAX_Q_POINTS_DYN")):
+    _legacy(_old, _new)
+del _old, _new
+
 # Trajectory sampling.
-# N_FRAMES is frame_stop, an index into the dump — NOT a count.  Frames actually
-# used is N_FRAMES / STRIDE, so raising STRIDE uses fewer frames over the same
-# span rather than the same number over a longer span.  Skipped frames are still
-# parsed (measured: iterating a 100-frame span costs the same at STRIDE=1, 10 and
-# 50), so set N_FRAMES to the whole trajectory and pick STRIDE for the frame count
-# you can afford — spanning more time is free, computing more frames is not.
-# Defaults: 30000 dumped frames at DT=2 fs = 60 ps, sampled every 1.2 ps.
-N_FRAMES        = int(os.environ.get("N_FRAMES", "30000"))  # frame_stop in Trajectory
-STRIDE          = int(os.environ.get("STRIDE", "600"))      # read every Nth frame (frame_step)
+# DSF_N_FRAMES is frame_stop, an index into the dump — NOT a count.  Frames
+# actually used is DSF_N_FRAMES / DSF_STRIDE, so raising the stride uses fewer
+# frames over the same span rather than the same number over a longer span.
+# Skipped frames are still parsed (measured: iterating a 100-frame span costs the
+# same at stride 1, 10 and 50), so set DSF_N_FRAMES to the whole trajectory and
+# pick DSF_STRIDE for the frame count you can afford — spanning more time is
+# free, computing more frames is not.
+# Defaults: 30000 dumped frames at DSF_DT=2 fs = 60 ps, sampled every 1.2 ps.
+N_FRAMES        = int(os.environ.get("DSF_N_FRAMES", "30000"))  # frame_stop in Trajectory
+STRIDE          = int(os.environ.get("DSF_STRIDE", "600"))      # read every Nth frame (frame_step)
 
 # Threading — 0 = use all available cores
 # Only applied when OMP_NUM_THREADS is not already set in the environment.
 N_THREADS       = 0
 
-# Time axis
-DT              = float(os.environ.get("DT", "2.0"))        # fs between consecutive dumped frames
+# Time axis. This is dsf.py's own dt, deliberately separate from DYNAMICS_DT:
+# vdos.py and msd.py share that one because it describes the trajectory, while
+# this one is read alongside DSF_STRIDE and only ever describes this analysis.
+DT              = float(os.environ.get("DSF_DT", "2.0"))        # fs between consecutive dumped frames
 
 # q-space, static S(q).
 # Q_MAX=20 Å⁻¹ is the range needed to Fourier transform S(q) into G(r) without bad
@@ -90,15 +119,15 @@ DT              = float(os.environ.get("DT", "2.0"))        # fs between consecu
 # neutron diffraction measurements on vitreous silica.  It costs 10.6M q-vectors on
 # a ~43 Å cell versus 2.3M at Q_MAX=12, and cost is linear in N_q × frames.
 # N_Q_BINS must stay ≤ Q_MAX / (2π/L) = 136 here, or low-q bins come back empty.
-Q_MAX           = float(os.environ.get("Q_MAX", "20.0"))    # Å⁻¹, passed to get_spherical_qpoints
-N_Q_BINS        = int(os.environ.get("N_Q_BINS", "130"))    # radial q-bins after spherical averaging
+Q_MAX           = float(os.environ.get("DSF_Q_MAX", "20.0"))    # Å⁻¹, passed to get_spherical_qpoints
+N_Q_BINS        = int(os.environ.get("DSF_N_Q_BINS", "130"))    # radial q-bins after spherical averaging
 
 # --- Dynamic S(q,ω) parameters — NOT YET TUNED, see DYNAMIC NOTES below --------
-WINDOW_SIZE     = int(os.environ.get("WINDOW_SIZE", "2000"))  # time lags; Δν = 1/(2 × WINDOW_SIZE × DT × STRIDE)
-WINDOW_STEP     = int(os.environ.get("WINDOW_STEP", "1"))     # frames between window origins; 1 = maximum averaging
-Q_MAX_DYN       = float(os.environ.get("Q_MAX_DYN", "4.0"))   # Å⁻¹, separate from Q_MAX — see notes
-N_Q_BINS_DYN    = int(os.environ.get("N_Q_BINS_DYN", "25"))   # radial q-bins, dynamic
-MAX_Q_POINTS_DYN = int(os.environ.get("MAX_Q_POINTS_DYN", "25000"))  # prune target; 0 = no pruning
+WINDOW_SIZE     = int(os.environ.get("DSF_WINDOW_SIZE", "2000"))  # time lags; Δν = 1/(2 × WINDOW_SIZE × DT × STRIDE)
+WINDOW_STEP     = int(os.environ.get("DSF_WINDOW_STEP", "1"))     # frames between window origins; 1 = maximum averaging
+Q_MAX_DYN       = float(os.environ.get("DSF_Q_MAX_DYN", "4.0"))   # Å⁻¹, separate from Q_MAX — see notes
+N_Q_BINS_DYN    = int(os.environ.get("DSF_N_Q_BINS_DYN", "25"))   # radial q-bins, dynamic
+MAX_Q_POINTS_DYN = int(os.environ.get("DSF_MAX_Q_POINTS_DYN", "25000"))  # prune target; 0 = no pruning
 
 # What to compute
 COMPUTE_STATIC  = True      # S(q)
