@@ -100,7 +100,12 @@ Optional:
                                     matches analysis/dynamics/src/msd.cpp) or 'fft_periodogram'
     --vdos-window STR                vdos.py WINDOW: 'cosine_lag'/'none' under
                                     vacf_cosine_transform, 'hann'/'none' under fft_periodogram
-    --vdos-normalization STR         vdos.py NORMALIZATION: 'phonon' (default) or 'unit_area'
+    --vdos-normalization STR         vdos.py VDOS_NORMALIZATION sum rule: 'phonon'
+                                       (default) or 'unit_area'
+    --vdos-weighting STR             vdos.py VDOS_WEIGHTING, SEMICOLON-separated species
+                                       weights from 'unity', 'coherent', 'incoherent',
+                                       'total', e.g. "unity;total" (default "unity").
+                                       Neutron weightings refuse H/D-bearing systems.
 
     msd.py — same trajectory as vdos.py, but set independently: MSD wants a long
     correlation length to reach the diffusive regime, VDOS a short one for
@@ -224,6 +229,7 @@ VDOS_NUM_GRIDS="${VDOS_NUM_GRIDS:-}"
 VDOS_METHOD="${VDOS_METHOD:-}"
 VDOS_WINDOW="${VDOS_WINDOW:-}"
 VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"
+VDOS_WEIGHTING="${VDOS_WEIGHTING:-}"
 MSD_N_FRAMES="${MSD_N_FRAMES:-}"
 MSD_STRIDE="${MSD_STRIDE:-}"
 MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"
@@ -295,6 +301,7 @@ while [[ $# -gt 0 ]]; do
     --vdos-method) VDOS_METHOD="$2"; shift 2 ;;
     --vdos-window) VDOS_WINDOW="$2"; shift 2 ;;
     --vdos-normalization) VDOS_NORMALIZATION="$2"; shift 2 ;;
+    --vdos-weighting) VDOS_WEIGHTING="$2"; shift 2 ;;
     --msd-n-frames) MSD_N_FRAMES="$2"; shift 2 ;;
     --msd-stride) MSD_STRIDE="$2"; shift 2 ;;
     --msd-corr-length) MSD_CORR_LENGTH="$2"; shift 2 ;;
@@ -489,6 +496,8 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$VDOS_METHOD" ]]           && export_vars+=",VDOS_METHOD=$VDOS_METHOD"
 [[ -n "$VDOS_WINDOW" ]]           && export_vars+=",VDOS_WINDOW=$VDOS_WINDOW"
 [[ -n "$VDOS_NORMALIZATION" ]]    && export_vars+=",VDOS_NORMALIZATION=$VDOS_NORMALIZATION"
+# Semicolon-separated; a comma here would be eaten by --export above.
+[[ -n "$VDOS_WEIGHTING" ]]       && export_vars+=",VDOS_WEIGHTING=$VDOS_WEIGHTING"
 [[ -n "$MSD_N_FRAMES" ]]          && export_vars+=",MSD_N_FRAMES=$MSD_N_FRAMES"
 [[ -n "$MSD_STRIDE" ]]            && export_vars+=",MSD_STRIDE=$MSD_STRIDE"
 [[ -n "$MSD_CORR_LENGTH" ]]       && export_vars+=",MSD_CORR_LENGTH=$MSD_CORR_LENGTH"

@@ -89,6 +89,10 @@ VDOS_NUM_GRIDS=""
 VDOS_METHOD=""
 VDOS_WINDOW=""
 VDOS_NORMALIZATION=""
+# Species weighting for vdos.py totals; SEMICOLON-separated, one total column each.
+#   unity | coherent | incoherent | total   (empty = "unity", the pre-weighting behavior)
+# Neutron weightings weight each element by sigma/m and refuse H/D-bearing systems.
+VDOS_WEIGHTING=""
 MSD_N_FRAMES=""
 MSD_STRIDE=""
 MSD_CORR_LENGTH="5000"               # REQUIRED when RUN_MSD=1 — max time lag

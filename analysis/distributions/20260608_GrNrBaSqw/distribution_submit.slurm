@@ -84,7 +84,9 @@ VDOS_MAX_FREQUENCY_EV="${VDOS_MAX_FREQUENCY_EV:-}"  # REQUIRED. eV; DOS grid upp
 VDOS_NUM_GRIDS="${VDOS_NUM_GRIDS:-}"
 VDOS_METHOD="${VDOS_METHOD:-}"                    # vacf_cosine_transform | fft_periodogram
 VDOS_WINDOW="${VDOS_WINDOW:-}"
-VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"      # phonon | unit_area
+VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"      # phonon | unit_area (sum rule)
+VDOS_WEIGHTING="${VDOS_WEIGHTING:-}"              # semicolon list: unity | coherent |
+                                                  # incoherent | total (species weight)
 
 # msd.py
 MSD_N_FRAMES="${MSD_N_FRAMES:-}"
@@ -99,7 +101,7 @@ MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"          # REQUIRED. tail fraction used
 for _var in DYNAMICS_DT DT N_FRAMES STRIDE \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
-            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION \
+            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \
             MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION; do
     if [ -n "${!_var}" ]; then
         export "$_var"

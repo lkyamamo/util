@@ -210,9 +210,50 @@ explanation):
 | `MAX_FREQUENCY_EV` (`VDOS_MAX_FREQUENCY_EV`) | Upper frequency limit of the output grid, in eV (`vacf_cosine_transform` only) | `0.1` |
 | `NUM_GRIDS` (`VDOS_NUM_GRIDS`) | Frequency grid points (`vacf_cosine_transform` only) | `5000` |
 | `WINDOW` (`VDOS_WINDOW`) | `'cosine_lag'`/`'none'` under `vacf_cosine_transform`; `'hann'`/`'none'` under `fft_periodogram` | Matches `METHOD` |
-| `NORMALIZATION` (`VDOS_NORMALIZATION`) | `'phonon'` (mole-fraction-weighted, matches msd.cpp) or `'unit_area'` | `'phonon'` |
+| `VDOS_NORMALIZATION` | Sum rule: `'phonon'` (∫ ≈ 3 per atom, matches msd.cpp) or `'unit_area'` (∫ = 1) | `'phonon'` |
+| `VDOS_WEIGHTING` | Species weighting, semicolon-separated: `unity`, `coherent`, `incoherent`, `total` | `"unity"` |
 | `N_FRAMES`, `STRIDE` (`VDOS_N_FRAMES`, `VDOS_STRIDE`) | Max frames to read / read every Nth frame | `0` (all), `1` |
 | `VDOS_THREADS` | scipy FFT thread count (`fft_periodogram` only); `0` = all cores | `0` |
+
+**Weighting.** `VDOS_WEIGHTING` decides how much each element contributes to a total; one
+`DoS(Total_<weighting>)` column is emitted per entry. It is a *different axis* from
+`VDOS_NORMALIZATION`, which sets the sum rule — weighting is relative species contribution, normalization
+is overall scale.
+
+| key | `w_el` | what it is |
+|---|---|---|
+| `unity` | `c_el` | Mole fractions — no scattering physics. Exactly what this script produced before weighting existed. |
+| `coherent` | `c_el · σ_coh,el / m_el` | |
+| `incoherent` | `c_el · σ_inc,el / m_el` | |
+| `total` | `c_el · (σ_coh,el + σ_inc,el) / m_el` | What a chopper spectrometer collects; the usual generalized-DOS weighting. |
+
+Weights are normalized to Σw = 1, so the `phonon` 3-per-atom sum rule survives and every total stays
+comparable to the unity-weighted one. The resolved per-element weights are printed at startup — check
+them against the curves rather than trusting the column name. For SiO₂: `unity` gives Si 0.333 / O 0.667,
+while `coherent` and `total` give Si 0.127 / O 0.873.
+
+**Why σ/m and not `b`.** Inelastic scattering measures the generalized DOS, in which the one-phonon
+incoherent cross-section carries a factor σ/m per species. That is a different quantity from the coherent
+scattering length that weights diffraction, so `rdf_freud.py`'s and `dsf.py`'s `b`-weighting does not
+transfer here — σ_inc cannot be derived from b_coh at all.
+
+**Hydrogen is refused.** With `H` or `D` present, any weighting other than `unity` exits with an
+explanation instead of a number: protium and deuterium differ by ~21× in σ/m, a LAMMPS dump labels both
+`H`, and under `incoherent` weighting H would carry >99.9% of the weight — so the result would be set
+almost entirely by the species whose treatment is undecided. `unity` still works on those systems.
+
+**Debye–Waller is not applied**, and the startup output says so. At fixed Q it would be a pure per-species
+re-weighting, but Q and energy transfer are kinematically coupled in a real spectrometer while this DOS is
+not Q-resolved, and the harmonic fixed-site assumption behind ⟨u²⟩ fails for diffusing species.
+
+The semicolon separator is required for the same reason as `RDF_NORMALIZATION` — `sbatch --export` is
+comma-delimited and would truncate the value. A comma is rejected with the corrected string.
+
+> **Behavior change:** under `VDOS_NORMALIZATION=unit_area` the total was previously an unweighted sum of
+> the raw per-element curves, which gave every element equal weight regardless of atom count — inconsistent
+> with the `phonon` branch's mole fractions. It is now the same weighted sum as `phonon`. On a 1:2 Si:O
+> test this moved the O:Si peak ratio from 1.00 to 1.96 (up to 32% change in the curve). `phonon` output is
+> unchanged.
 
 ---
 
