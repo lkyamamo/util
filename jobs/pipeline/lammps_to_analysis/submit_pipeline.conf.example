@@ -142,6 +142,10 @@ VDOS_DYNMAT_SMEARING=""              # Gaussian FWHM in XUNIT; 0 (default) = his
 VDOS_DYNMAT_MATRIX_STYLE=""          # regular (default) | eskm — must match the
                                      # dynamical_matrix style in the .input file
 VDOS_DYNMAT_NORMALIZATION=""         # phonon (default; integral = 3 per atom) | unit_area
+# Species weighting for vdos_dynmat.py totals; SEMICOLON-separated, one column each.
+#   unity | coherent | incoherent | total   (empty = "unity", unweighted)
+# Needs VDOS_DYNMAT_PARTIAL=yes; refuses H/D-bearing systems.
+VDOS_DYNMAT_WEIGHTING=""
 VDOS_DYNMAT_PARTIAL=""               # yes (default) | no — 'no' skips the per-element
                                      # curves and halves memory and runtime
 VDOS_DYNMAT_ASR=""                   # none (default) | simple — acoustic sum rule

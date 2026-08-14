@@ -414,7 +414,8 @@ it sets this conversion, so a mismatch rescales the whole spectrum.
 | `VDOS_DYNMAT_BINS` | `500` | frequency grid points |
 | `VDOS_DYNMAT_SMEARING` | `0` | Gaussian FWHM in `XUNIT`; 0 = plain histogram |
 | `VDOS_DYNMAT_MATRIX_STYLE` | `regular` | must match the `.input` file |
-| `VDOS_DYNMAT_NORMALIZATION` | `phonon` | `phonon` (∫ = 3 per atom) or `unit_area` |
+| `VDOS_DYNMAT_NORMALIZATION` | `phonon` | Sum rule: `phonon` (∫ = 3 per atom) or `unit_area` |
+| `VDOS_DYNMAT_WEIGHTING` | `unity` | Species weighting, semicolon-separated: `unity`, `coherent`, `incoherent`, `total` |
 | `VDOS_DYNMAT_PARTIAL` | `yes` | `no` skips per-element curves, uses `eigvalsh`, halves memory and runtime |
 | `VDOS_DYNMAT_ASR` | `none` | `simple` imposes the acoustic sum rule |
 | `VDOS_DYNMAT_THREADS` | unset | BLAS threads; the pipeline's `OMP_NUM_THREADS` already covers this |
@@ -424,6 +425,23 @@ it sets this conversion, so a mismatch rescales the whole spectrum.
 | `VDOS_DYNMAT_NEIGHBOR_ELEMENT` | `Si` | its two neighbours |
 | `VDOS_DYNMAT_BOND_CUTOFF` | `2.2` | bridge–neighbour max distance, Å |
 | `VDOS_DYNMAT_OUTPUT` | `vdos_dynmat` | output basename |
+
+**Weighting.** `VDOS_DYNMAT_WEIGHTING` works exactly like `vdos.py`'s `VDOS_WEIGHTING` and emits the same
+`DoS(Total_<weighting>)` columns, with the same σ/m physics, the same Σ-normalization, the same refusal of
+H/D-bearing systems, and the same omission of the Debye–Waller factor. Everything but `unity` needs
+`VDOS_DYNMAT_PARTIAL=yes`, since without eigenvectors there are no per-element participations to weight.
+The mass in σ/m comes from `ELEMENT_MASSES` — the masses the dynamical matrix was mass-weighted with — so
+adding an element for weighting means adding it to both `ELEMENT_MASSES` and `NEUTRON_CROSS_SECTIONS`.
+
+The two scripts print the same per-element *shares* for a given composition (SiO₂: `unity` Si 0.333 /
+O 0.667, `coherent` and `total` Si 0.127 / O 0.873), which is the cross-check that they agree — but they
+reach it differently, and the difference is easy to get wrong when reading the code. `vdos.py`'s partials
+are per-element *shapes*, so its weight carries the concentration (`w_el = c_el·σ/m`). `vdos_dynmat.py`'s
+partials already carry it — each integrates to 3·c_el — so its factor is `k_el = σ/m` normalized so
+`Σ k_el·c_el = 1`. Multiplying by another `c_el` here would count concentration twice.
+
+> **Output rename:** the `DoS(Total)` column is now `DoS(Total_unity)`, matching `vdos.py`. Values are
+> unchanged; the reduced DOS `g/ν²` and the mode-character plot still use the unweighted total.
 
 `MAX_FREQUENCY` is required, like `vdos.py`'s `VDOS_MAX_FREQUENCY_EV`, because a
 default that is too low truncates the spectrum silently rather than failing.

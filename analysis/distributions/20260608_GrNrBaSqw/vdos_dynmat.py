@@ -104,6 +104,46 @@ Partial weights are w[e,m] = sum over atoms i of element e and directions alpha 
 |v[3i+alpha, m]|^2. D is mass-weighted, so its eigenvectors are orthonormal and
 these weights sum to 1 for every mode.
 
+WEIGHTING
+---------
+VDOS_DYNMAT_WEIGHTING sets how much each element contributes to a total, and is
+a different axis from VDOS_DYNMAT_NORMALIZATION below: weighting decides the
+relative species contributions, normalization decides the sum rule. It takes a
+SEMICOLON-separated list and emits one DoS(Total_<weighting>) column per entry:
+
+  unity       k_el = 1                                    (the plain total)
+  coherent    k_el = sigma_coh_el / m_el
+  incoherent  k_el = sigma_inc_el / m_el
+  total       k_el = (sigma_coh_el + sigma_inc_el) / m_el
+
+k_el multiplies each element's per-mode participation before binning, so the
+weight enters per mode rather than by rescaling finished curves, and is
+normalized so sum_el k_el*c_el = 1 — which keeps the 'phonon' 3-per-atom sum
+rule intact. Everything but 'unity' needs VDOS_DYNMAT_PARTIAL=yes, since without
+eigenvectors there are no per-element participations to weight.
+
+Careful when comparing with vdos.py: its partials are per-element *shapes* and
+its weight carries the concentration, w_el = c_el*sigma/m. Here the partials
+already carry it (each integrates to 3*c_el under 'phonon'), so k_el must not
+include another factor of c_el. Both scripts end up giving each element the same
+share of the total, c_el(sigma/m)_el / sum(c*sigma/m), which is what the startup
+table prints and what makes the two directly comparable.
+
+Why sigma/m and not a scattering length: what inelastic neutron scattering
+measures is the generalized DOS, in which the one-phonon incoherent cross
+section carries a factor sigma/m per species. That is a different quantity from
+the coherent scattering length b that weights diffraction, and sigma_inc cannot
+be derived from b_coh at all. The mass comes from ELEMENT_MASSES — the same
+masses the dynamical matrix was mass-weighted with, so the weighting cannot
+drift from the physics the eigenvectors describe.
+
+Not applied: the Debye-Waller factor exp(-2W), which is Q-dependent while this
+DOS is not Q-resolved.
+
+Hydrogen is refused: with H or D present, any weighting other than 'unity' exits
+with an explanation, for the same reason as vdos.py — the isotope cannot be read
+off a dump that labels both 'H', and the two differ by ~21x in sigma/m.
+
 NORMALIZATION
 -------------
 'phonon' (default) — every curve is divided by the atom count, so the total
@@ -276,6 +316,11 @@ NORMALIZATION = _env("VDOS_DYNMAT_NORMALIZATION", "phonon")
 if NORMALIZATION not in ("phonon", "unit_area"):
     raise ValueError(f"Unknown VDOS_DYNMAT_NORMALIZATION={NORMALIZATION!r}; use 'phonon' or 'unit_area'.")
 
+# How much each element contributes to a total — see WEIGHTING in the module
+# docstring. SEMICOLON-separated; one total column per entry. A different axis
+# from VDOS_DYNMAT_NORMALIZATION above, which is a sum rule, not a weighting.
+WEIGHTING = _env("VDOS_DYNMAT_WEIGHTING", "unity")
+
 # Per-element partial DOS needs eigenvectors; turning it off lets the script use
 # eigvalsh instead of eigh, halving peak memory and runtime on large cells.
 PARTIAL = _env("VDOS_DYNMAT_PARTIAL", "yes")
@@ -376,6 +421,175 @@ FREQ_UNIT_LABELS = {'meV': 'E (meV)', 'THz': 'ν (THz)', 'cm-1': 'ν (cm⁻¹)',
 # Only needed for ASR='simple', which has to undo the mass weighting. These are
 # the masses OH-therm.input/b-SiO-therm.input set.
 ELEMENT_MASSES = {'O': 15.9994, 'H': 1.00784, 'Si': 28.0855}
+
+# Coherent and incoherent neutron scattering cross-sections in barn, from NIST
+# (https://www.ncnr.nist.gov/resources/n-lengths/). Used only by
+# VDOS_DYNMAT_WEIGHTING; see WEIGHTING in the module docstring.
+#
+# The mass in the sigma/m weight deliberately comes from ELEMENT_MASSES above
+# rather than from a second table here: that is the mass the dynamical matrix
+# was actually mass-weighted with, so the weighting cannot drift away from the
+# physics the eigenvectors describe. Adding an element means adding it to both.
+NEUTRON_CROSS_SECTIONS = {
+    'H':  (1.7568,  80.26),      # protium
+    'D':  (5.592,    2.05),
+    'C':  (5.551,    0.001),
+    'N':  (11.01,    0.5),
+    'O':  (4.232,    0.0008),
+    'Na': (1.66,     1.62),
+    'Mg': (3.631,    0.08),
+    'Al': (1.495,    0.0082),
+    'Si': (2.163,    0.004),
+    'P':  (3.307,    0.005),
+    'S':  (1.0186,   0.007),
+    'Cl': (11.5257,  5.3),
+    'K':  (1.69,     0.27),
+    'Ca': (2.78,     0.05),
+    'Fe': (11.22,    0.4),
+    'Ni': (13.3,     5.2),
+    'Zr': (6.44,     0.02),
+    'Ba': (3.23,     0.15),
+}
+
+WEIGHTING_EQUATIONS = {
+    'unity':      'k_el = 1',
+    'coherent':   'k_el = sigma_coh_el / m_el',
+    'incoherent': 'k_el = sigma_inc_el / m_el',
+    'total':      'k_el = (sigma_coh_el + sigma_inc_el) / m_el',
+}
+
+
+def parse_weightings(value):
+    """
+    Parse the semicolon-separated VDOS_DYNMAT_WEIGHTING list.
+
+    Semicolon and not comma because submit_pipeline.sh passes settings through
+    `sbatch --export`, which is comma-delimited and silently truncates a value at
+    the first embedded comma.
+    """
+    if ',' in value:
+        raise ValueError(
+            f"VDOS_DYNMAT_WEIGHTING={value!r} uses ',' but the separator is ';' — a comma "
+            f"would be truncated by `sbatch --export` in submit_pipeline.sh. Write it as "
+            f"{value.replace(',', ';')!r}."
+        )
+    keys = [k.strip() for k in value.split(';') if k.strip()]
+    if not keys:
+        raise ValueError(f"VDOS_DYNMAT_WEIGHTING is empty; choose from {list(WEIGHTING_EQUATIONS)}.")
+    unknown = [k for k in keys if k not in WEIGHTING_EQUATIONS]
+    if unknown:
+        raise ValueError(
+            f"Unknown VDOS_DYNMAT_WEIGHTING {unknown}; choose from {list(WEIGHTING_EQUATIONS)}.")
+    return keys
+
+
+def check_weighting_prerequisites(unique_elements, weightings, partial):
+    """
+    Refuse the cases where a neutron-weighted DOS would be meaningless here.
+
+    Hydrogen: protium and deuterium differ by ~21x in sigma/m and a LAMMPS dump
+    labels both 'H', while under 'incoherent' weighting H carries >99.9% of the
+    weight — the result would be set almost entirely by the species whose
+    isotope is unknown. Same guard as vdos.py.
+
+    PARTIAL='no': without eigenvectors there are no per-element participations,
+    so there is nothing to weight — only the plain total exists.
+    """
+    neutron = [w for w in weightings if w != 'unity']
+    if not neutron:
+        return
+
+    if partial != 'yes':
+        raise SystemExit(
+            f"vdos_dynmat.py: VDOS_DYNMAT_WEIGHTING={neutron} needs per-element mode\n"
+            f"  participations, which require eigenvectors. Set VDOS_DYNMAT_PARTIAL=yes,\n"
+            f"  or use VDOS_DYNMAT_WEIGHTING=unity."
+        )
+
+    present = sorted({'H', 'D'} & set(unique_elements))
+    if present:
+        raise SystemExit(
+            f"\nvdos_dynmat.py: refusing to neutron-weight a hydrogen-bearing system.\n"
+            f"  elements present:     {present}\n"
+            f"  weightings requested: {neutron}\n\n"
+            f"  Protium and deuterium differ by ~21x in sigma/m (81.4 vs 3.8 barn/amu)\n"
+            f"  and a LAMMPS dump labels both 'H', so the isotope cannot be determined\n"
+            f"  from the trajectory. Under 'incoherent' weighting H would carry >99.9%\n"
+            f"  of the weight, so the result would be dominated by exactly the species\n"
+            f"  whose treatment is undecided. This needs a careful implementation that\n"
+            f"  is deliberately not attempted here.\n\n"
+            f"  Use VDOS_DYNMAT_WEIGHTING=unity for this system.\n"
+        )
+
+
+def species_weights(weighting, elements):
+    """
+    Per-element factors k_el to apply to the partial mode participations.
+
+    NOTE the difference from vdos.py, which is easy to get wrong: vdos.py's
+    partials are per-element *shapes* and its weight carries the concentration,
+    w_el = c_el*sigma/m. Here the partials already carry it — partial_weights
+    sums |v|^2 over an element's rows, so under 'phonon' each integrates to
+    3*c_el — and multiplying by another c_el would count concentration twice.
+
+    So k_el is sigma/m normalized so that sum_el k_el*c_el = 1, which keeps the
+    total integrating to 3 per atom. The resulting share of the total carried by
+    each element is k_el*c_el = c_el(sigma/m)_el / sum(c*sigma/m), the same
+    quantity vdos.py prints — which is what makes the two directly comparable.
+
+    Returns (k, shares) with shares[el] = k_el * c_el summing to 1.
+    """
+    counts = {el: int((elements == el).sum()) for el in sorted(set(elements.tolist()))}
+    n_total = sum(counts.values())
+    concentration = {el: n / n_total for el, n in counts.items()}
+
+    if weighting == 'unity':
+        k = {el: 1.0 for el in counts}
+        return k, dict(concentration)
+
+    no_sigma = [el for el in counts if el not in NEUTRON_CROSS_SECTIONS]
+    no_mass = [el for el in counts if el not in ELEMENT_MASSES]
+    if no_sigma or no_mass:
+        raise SystemExit(
+            f"vdos_dynmat.py: VDOS_DYNMAT_WEIGHTING={weighting!r} needs both a cross-section "
+            f"and a mass for every element.\n"
+            f"  missing from NEUTRON_CROSS_SECTIONS: {no_sigma or 'none'}\n"
+            f"  missing from ELEMENT_MASSES:         {no_mass or 'none'}\n"
+            f"  Add them at the top of this file (masses matching the LAMMPS input's "
+            f"`mass` lines), or use VDOS_DYNMAT_WEIGHTING=unity."
+        )
+
+    raw = {}
+    for el in counts:
+        sigma_coh, sigma_inc = NEUTRON_CROSS_SECTIONS[el]
+        sigma = {'coherent': sigma_coh,
+                 'incoherent': sigma_inc,
+                 'total': sigma_coh + sigma_inc}[weighting]
+        raw[el] = sigma / ELEMENT_MASSES[el]
+
+    denominator = sum(concentration[el] * raw[el] for el in counts)
+    if denominator <= 0:
+        raise SystemExit(
+            f"vdos_dynmat.py: VDOS_DYNMAT_WEIGHTING={weighting!r} gives zero total weight — "
+            f"every cross-section involved is zero."
+        )
+    k = {el: raw[el] / denominator for el in counts}
+    return k, {el: k[el] * concentration[el] for el in counts}
+
+
+def print_weighting_table(shares_by_key, normalization):
+    """Print each total's defining equation and the share of it each element carries."""
+    sum_rule = ('integral = 3 per atom' if normalization == 'phonon' else 'integral = 1')
+    print("\nWeighted totals (check these shares against the curves):")
+    for key, shares in shares_by_key.items():
+        listed = ', '.join(f'{el}={s:.4f}' for el, s in sorted(shares.items()))
+        print(f"  DoS(Total_{key})")
+        print(f"    {WEIGHTING_EQUATIONS[key]}, normalized so sum_el k_el*c_el = 1")
+        print(f"    share of total: {listed}   sum={sum(shares.values()):.6f}   {sum_rule}")
+    print("  Debye-Waller factor exp(-2W) is NOT applied: it is Q-dependent, while this DOS\n"
+          "  is not Q-resolved. Shares are normalized, so they say nothing about absolute\n"
+          "  signal: for light elements sigma_inc is tiny and a real measurement is\n"
+          "  coherent-dominated.")
 
 
 def read_elements(filename):
@@ -845,11 +1059,13 @@ def save_csv(results, freq_by_unit, filename, extra=None):
     """Save results dict {element_or_'total': array} to CSV. The first columns are
     identical to vdos.py's so the two methods' outputs can be overlaid; `extra`
     appends further named columns (character-resolved DOS, reduced DOS) after."""
-    order = [el for el in results if el != 'total'] + ['total']
+    order = ([el for el in results if not el.startswith('total_')]
+             + [el for el in results if el.startswith('total_')])
     header_parts = ['freq_meV', 'freq_THz', 'freq_cm-1', 'freq_eV']
     columns = [freq_by_unit['meV'], freq_by_unit['THz'], freq_by_unit['cm-1'], freq_by_unit['eV']]
     for label in order:
-        header_parts.append('DoS(Total)' if label == 'total' else f'DoS({label})')
+        header_parts.append(f'DoS(Total_{label[len("total_"):]})'
+                            if label.startswith('total_') else f'DoS({label})')
         columns.append(results[label])
     for label, values in (extra or {}).items():
         header_parts.append(label)
@@ -961,7 +1177,7 @@ def plot_vdos(results, freq_by_unit, filename, xunit=XUNIT):
 
     fig, ax = plt.subplots(figsize=(8, 5))
     for label, curve in results.items():
-        ax.plot(x, curve, label=label, linewidth=1.5 if label == 'total' else 1.0)
+        ax.plot(x, curve, label=label, linewidth=1.5 if label.startswith('total_') else 1.0)
     ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
     ax.set_ylabel('DOS (states / atom / ' + xunit + ')' if NORMALIZATION == 'phonon'
                   else 'VDOS (unit-area normalized)')
@@ -1027,6 +1243,10 @@ def report_diagnostics(freqs, xunit, max_frequency, n_snapped, tolerance):
 if __name__ == '__main__':
     import time
 
+    # Validated before anything is read, so a typo costs a second rather than a
+    # full diagonalization.
+    weightings = parse_weightings(WEIGHTING)
+
     t0 = time.time()
     positions = box_lengths = None
     if CHARACTER == 'yes':
@@ -1053,6 +1273,10 @@ if __name__ == '__main__':
     n_atoms = len(elements)
     unique_els = sorted(set(elements.tolist()))
     print(f"  Atoms: {n_atoms}, elements: {unique_els}")
+
+    # After element detection, so the guard can name what it actually found.
+    print(f"  VDOS_DYNMAT_WEIGHTING={weightings}")
+    check_weighting_prerequisites(unique_els, weightings, PARTIAL)
 
     print(f"Reading dynamical matrix: {DYNMAT_FILE} (binary={BINARY}, style={MATRIX_STYLE})")
     matrix = read_matrix(DYNMAT_FILE, n_atoms, BINARY)
@@ -1095,11 +1319,22 @@ if __name__ == '__main__':
     n_snapped = snap_zero_modes(freqs, zero_tol)
     report_diagnostics(freqs, XUNIT, MAX_FREQUENCY, n_snapped, zero_tol)
 
-    weights = {'total': np.ones_like(freqs)}
+    # 'unity' is the plain total: every mode counts once, which is already the
+    # concentration-weighted sum of the partials. Any other weighting rescales
+    # each element's participation by k_el before binning, so the weight enters
+    # per mode rather than by rescaling finished curves.
+    weights = {'total_unity': np.ones_like(freqs)}
     element_fracs = {}
+    shares_by_key = {'unity': species_weights('unity', elements)[1]}
     if eigenvectors is not None and PARTIAL == 'yes':
         element_fracs = partial_weights(eigenvectors, elements)
         weights.update(element_fracs)
+
+        for weighting in (w for w in weightings if w != 'unity'):
+            k, shares = species_weights(weighting, elements)
+            shares_by_key[weighting] = shares
+            weights[f'total_{weighting}'] = sum(
+                k[el] * frac for el, frac in element_fracs.items())
 
     character = pr = None
     if CHARACTER == 'yes':
@@ -1131,12 +1366,15 @@ if __name__ == '__main__':
     # curves are pulled out here so the leading columns stay byte-comparable with
     # vdos.py's CSV; they come back as extra columns after the DoS block.
     character_curves = {name: results.pop(name) for name in CHARACTER_NAMES if name in results}
-    results = {el: results[el] for el in unique_els if el in results} | {'total': results['total']}
+    totals = {name: results[name] for name in results if name.startswith('total_')}
+    results = {el: results[el] for el in unique_els if el in results} | totals
 
     extra = {f'DoS({name})': curve for name, curve in character_curves.items()}
-    extra['g/nu^2'] = reduced_dos(results['total'], grid)
+    # The reduced DOS and the character plot describe the unweighted spectrum.
+    extra['g/nu^2'] = reduced_dos(results['total_unity'], grid)
 
     print(f"  Total: {time.time() - t0:.2f}s")
+    print_weighting_table(shares_by_key, NORMALIZATION)
 
     if OUTPUT_CSV is not None:
         save_csv(results, freq_by_unit, OUTPUT_CSV, extra=extra)
@@ -1147,5 +1385,5 @@ if __name__ == '__main__':
             save_modes_csv(freqs, _freq_all_units(freqs, XUNIT), pr, character,
                            element_fracs, OUTPUT_MODES)
         if OUTPUT_CHARACTER is not None:
-            plot_character(grid, character_curves, results['total'], pr, freqs,
+            plot_character(grid, character_curves, results['total_unity'], pr, freqs,
                            OUTPUT_CHARACTER)

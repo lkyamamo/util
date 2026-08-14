@@ -155,6 +155,10 @@ Optional:
     --vdos-dynmat-matrix-style STR   regular | eskm (default regular) — must match the
                                      dynamical_matrix style in the .input file
     --vdos-dynmat-normalization STR  phonon (default) or unit_area
+    --vdos-dynmat-weighting STR      vdos_dynmat.py VDOS_DYNMAT_WEIGHTING, SEMICOLON-
+                                       separated species weights from 'unity', 'coherent',
+                                       'incoherent', 'total' (default "unity"). Needs
+                                       --vdos-dynmat-partial yes; refuses H/D systems.
     --vdos-dynmat-partial {yes|no}   per-element partial DOS (default yes); 'no' halves
                                      memory and runtime
     --vdos-dynmat-asr STR            none (default) or simple
@@ -283,6 +287,7 @@ VDOS_DYNMAT_BINS=""
 VDOS_DYNMAT_SMEARING=""
 VDOS_DYNMAT_MATRIX_STYLE=""
 VDOS_DYNMAT_NORMALIZATION=""
+VDOS_DYNMAT_WEIGHTING=""
 VDOS_DYNMAT_PARTIAL=""
 VDOS_DYNMAT_ASR=""
 VDOS_DYNMAT_OUTPUT=""
@@ -366,6 +371,7 @@ while [[ $# -gt 0 ]]; do
     --vdos-dynmat-smearing) VDOS_DYNMAT_SMEARING="$2"; shift 2 ;;
     --vdos-dynmat-matrix-style) VDOS_DYNMAT_MATRIX_STYLE="$2"; shift 2 ;;
     --vdos-dynmat-normalization) VDOS_DYNMAT_NORMALIZATION="$2"; shift 2 ;;
+    --vdos-dynmat-weighting) VDOS_DYNMAT_WEIGHTING="$2"; shift 2 ;;
     --vdos-dynmat-partial) VDOS_DYNMAT_PARTIAL="$2"; shift 2 ;;
     --vdos-dynmat-asr) VDOS_DYNMAT_ASR="$2"; shift 2 ;;
     --vdos-dynmat-output) VDOS_DYNMAT_OUTPUT="$2"; shift 2 ;;
@@ -622,6 +628,7 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$VDOS_DYNMAT_SMEARING" ]]      && export VDOS_DYNMAT_SMEARING="$VDOS_DYNMAT_SMEARING"
   [[ -n "$VDOS_DYNMAT_MATRIX_STYLE" ]]  && export VDOS_DYNMAT_MATRIX_STYLE="$VDOS_DYNMAT_MATRIX_STYLE"
   [[ -n "$VDOS_DYNMAT_NORMALIZATION" ]] && export VDOS_DYNMAT_NORMALIZATION="$VDOS_DYNMAT_NORMALIZATION"
+  [[ -n "$VDOS_DYNMAT_WEIGHTING" ]] && export VDOS_DYNMAT_WEIGHTING="$VDOS_DYNMAT_WEIGHTING"
   [[ -n "$VDOS_DYNMAT_PARTIAL" ]]       && export VDOS_DYNMAT_PARTIAL="$VDOS_DYNMAT_PARTIAL"
   [[ -n "$VDOS_DYNMAT_ASR" ]]           && export VDOS_DYNMAT_ASR="$VDOS_DYNMAT_ASR"
   [[ -n "$VDOS_DYNMAT_OUTPUT" ]]        && export VDOS_DYNMAT_OUTPUT="$VDOS_DYNMAT_OUTPUT"
