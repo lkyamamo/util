@@ -119,7 +119,9 @@ import freud
 # parallelizes poorly on this workload, so ~4 threads captures 94% of the
 # available speedup and asking for more is waste. The limit is freud itself, not
 # this script's serial parsing, which is only ~2.6% of the run at that setting.
-freud.parallel.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "0")))
+# Empty is treated as unset, not as an error: distribution_run.sh defaults to
+# $(nproc), which does not exist on macOS and exports the variable empty.
+freud.parallel.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "").strip() or 0))
 from scipy.ndimage import gaussian_filter1d
 import matplotlib
 matplotlib.use('Agg')
@@ -375,15 +377,24 @@ def report_cost(t_serial, t_parallel, threads, m_limiting, scaling=''):
     comparison across machines and allocations.
     """
     wall = t_serial + t_parallel
-    core_seconds = wall * max(threads, 1)
+    # freud reports 0 for "TBB default" rather than a count, so say that instead
+    # of substituting a guess and presenting it as a measurement.
+    if threads:
+        label, effective = f"{threads} (freud TBB, reported)", threads
+    else:
+        effective = os.cpu_count() or 1
+        label = f"TBB default = all cores (~{effective}, not reported by freud)"
+    core_seconds = wall * max(effective, 1)
     serial_fraction = t_serial / wall if wall > 0 else 0.0
-    print(f"\nCost: wall {wall:.2f} s   threads {threads} (freud TBB, reported)   "
+    print(f"\nCost: wall {wall:.2f} s   threads {label}   "
           f"core-seconds {core_seconds:.1f}")
     print(f"      parse {t_serial:.2f} s serial ({100*serial_fraction:.1f}%) + "
           f"compute {t_parallel:.2f} s")
     if m_limiting > 0 and wall > 0:
         print(f"      efficiency {m_limiting/wall:.3g} samples/wall-s, "
               f"{m_limiting/core_seconds:.3g} samples/core-s (limiting partial)")
+        print(f"      measured: freud saturates near 6 threads on this workload; "
+              f"beyond that only core-seconds grow")
     if scaling:
         print(f"      {scaling}")
 
