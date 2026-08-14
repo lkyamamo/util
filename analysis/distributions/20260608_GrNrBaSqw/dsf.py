@@ -403,6 +403,59 @@ def _check_dynasor_table(nsl, atom_types):
                   f"difference. S(q) and g(r) will not describe the same sample.")
 
 
+# =============================================================================
+# Sampling reporting — see "How much data is enough" in the README
+# =============================================================================
+
+SAMPLING_TARGET = 1e3   # M >= 1e3 is ~3% relative error; see the README ladder
+
+
+def report_sampling_q(q_points, n_q_bins, n_frames, label='static'):
+    """
+    M for S(q) is the number of q-vectors in a radial bin times the frames used.
+
+    Each q-vector in a shell is a near-independent estimate of S(|q|) for an
+    isotropic system, so the shell multiplicity is the per-frame contributor
+    count.  It is fiercely non-uniform: the shell volume grows as q^2 while the
+    reciprocal lattice spacing 2*pi/L is fixed, so the LOWEST-q bin has a handful
+    of vectors and the highest has thousands.  Low-q S(q) is therefore always the
+    noisy end, which is the same fact behind the N_Q_BINS <= Q_MAX/(2*pi/L) rule
+    — below that the low bins are not merely noisy but empty.
+
+    Counted from the actual q-point array dynasor was given, not estimated.
+    """
+    q_norms = np.linalg.norm(q_points, axis=1)
+    edges = np.linspace(0.0, q_norms.max(), n_q_bins + 1)
+    counts, _ = np.histogram(q_norms, bins=edges)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    populated = counts > 0
+    empty = int((~populated).sum())
+    m = counts * n_frames
+
+    print(f"\nSampling achieved, {label} S(q) "
+          f"(relative error ~ 1/sqrt(M), target M >= {SAMPLING_TARGET:.0e}):")
+    if empty:
+        print(f"  {empty} of {n_q_bins} bins are EMPTY — N_Q_BINS is too high for this "
+              f"cell; keep it <= Q_MAX/(2*pi/L)")
+    idx_lo = int(np.flatnonzero(populated)[0]) if populated.any() else 0
+    idx_hi = int(np.flatnonzero(populated)[-1]) if populated.any() else 0
+    worst = int(np.argmin(np.where(populated, m, np.inf))) if populated.any() else 0
+    for name, i in (("lowest-q bin", idx_lo), ("highest-q bin", idx_hi), ("worst bin", worst)):
+        mi = float(m[i])
+        err = 1.0 / np.sqrt(mi) if mi > 0 else float('inf')
+        verdict = 'ok' if mi >= SAMPLING_TARGET else 'LOW'
+        print(f"  {name:<14} q = {centers[i]:6.3f} Å⁻¹   {counts[i]:8d} vectors x "
+              f"{n_frames} frames   M = {mi:9.3g}  {100*err:6.2f}%  {verdict}")
+    mw = float(m[worst])
+    if mw < SAMPLING_TARGET:
+        print(f"  -> the low-q end limits this run; add frames, or lower N_Q_BINS so each "
+              f"bin pools more vectors")
+    print(f"  note: Q_MAX is the expensive knob — cost ~ Q_MAX^3 (vectors grow as the "
+          f"sphere volume).\n        Measured: Q_MAX=20 costs ~10 min on 5184 atoms x 10 "
+          f"frames; 12 is 4.6x cheaper")
+
+
 def _try_neutron_weights(sample):
     """Apply NeutronScatteringLengths weighting; return None and warn on failure."""
     if NEUTRON_WEIGHTING != 'yes':
@@ -605,9 +658,14 @@ if __name__ == '__main__':
         _bin_warning('N_Q_BINS', N_Q_BINS, Q_MAX)
 
         print("Computing S(q)...")
+        # Keep the Trajectory so its own frame counter can be read afterwards:
+        # frames actually consumed is N_FRAMES/STRIDE capped by the file length,
+        # none of which is known up front when N_FRAMES is None (= all).
+        _static_traj = _make_traj()
         static_raw = compute_static_structure_factors(
-            _make_traj(), q_points
+            _static_traj, q_points
         )
+        _frames_used = int(getattr(_static_traj, 'number_of_frames_read', 0)) or 1
         print(f"  Atom types: {static_raw.atom_types}")
         print(f"  N atoms:    {_n_atoms(static_raw)}")
 
@@ -615,6 +673,7 @@ if __name__ == '__main__':
         static_avg = get_spherically_averaged_sample_binned(
             static_raw, num_q_bins=N_Q_BINS
         )
+        report_sampling_q(q_points, N_Q_BINS, _frames_used, label='static')
 
         print("  Applying neutron scattering length weights...")
         static_neutron = _try_neutron_weights(static_avg)

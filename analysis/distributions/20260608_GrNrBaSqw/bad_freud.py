@@ -505,9 +505,17 @@ def compute_bads(frames, plans, queries):
     arm pointing at it. Angles for a triplet are computed for all central atoms
     at once (see _triplet_angles).
 
+    raw_counts accumulates the UNnormalized histogram alongside the per-frame
+    unit-area one.  The normalized curve is the result; the raw counts are the
+    sampling number M — the number of triplets actually observed in each bin,
+    whose square root sets the statistical error there.  Normalizing per frame
+    (which is what makes the mean well defined when the triplet count varies)
+    destroys that information, so it has to be kept separately.
+
     Returns
     -------
-    dict {label: (bin_centers, histogram)} — histogram integrates to 1
+    (results, raw_counts) where results is {label: (bin_centers, histogram)}
+    with the histogram integrating to 1, and raw_counts is {label: counts}
     """
     bin_edges   = np.linspace(0.0, 180.0, BINS + 1)
     bin_width   = bin_edges[1] - bin_edges[0]
@@ -516,6 +524,7 @@ def compute_bads(frames, plans, queries):
     # Accumulate by plan index rather than label: two plans may share a label,
     # and keying by label would silently sum them into one curve.
     hist_accum    = [np.zeros(BINS) for _ in plans]
+    raw_accum     = [np.zeros(BINS) for _ in plans]
     n_frames_used = [0] * len(plans)
 
     elements = {key[0] for key in queries} | {key[1] for key in queries}
@@ -553,16 +562,63 @@ def compute_bads(frames, plans, queries):
             if total > 0:
                 # normalize so that Σ P(θᵢ) · Δθ = 1
                 hist_accum[idx] += h / (total * bin_width)
+                raw_accum[idx] += h
                 n_frames_used[idx] += 1
 
-    results = {}
+    results, raw_counts = {}, {}
     for idx, plan in enumerate(plans):
         n = n_frames_used[idx]
         results[plan['label']] = (
             bin_centers,
             hist_accum[idx] / n if n else np.zeros(BINS),
         )
-    return results
+        raw_counts[plan['label']] = raw_accum[idx]
+    return results, raw_counts
+
+
+# =============================================================================
+# Sampling reporting — see "How much data is enough" in the README
+# =============================================================================
+
+SAMPLING_TARGET = 1e3   # M >= 1e3 is ~3% relative error; see the README ladder
+
+
+def report_sampling(raw_counts, results):
+    """
+    M for a BAD is the triplet count in its peak bin, accumulated over frames.
+
+    Reported at the peak because that is the bin whose height and position get
+    quoted; the tails are always noisier and would make every run look bad. The
+    fractions come from freud's own neighbour lists, so this is a count, not an
+    estimate.
+    """
+    print(f"\nSampling achieved (relative error ~ 1/sqrt(M), target M >= {SAMPLING_TARGET:.0e}):")
+    width = max((len(k) for k in raw_counts), default=8)
+    worst = None
+    for label, counts in raw_counts.items():
+        angles = results[label][0]
+        total = counts.sum()
+        if total <= 0:
+            print(f"  {label.ljust(width)}  no triplets found")
+            worst = (label, 0.0)
+            continue
+        peak = int(np.argmax(counts))
+        m = float(counts[peak])
+        error = 1.0 / np.sqrt(m) if m > 0 else float('inf')
+        verdict = 'ok' if m >= SAMPLING_TARGET else 'LOW'
+        print(f"  {label.ljust(width)}  peak {angles[peak]:6.1f}°  M = {m:9.3g}  "
+              f"{100*error:6.2f}%  {verdict}   ({total:.3g} triplets total)")
+        if worst is None or m < worst[1]:
+            worst = (label, m)
+    if worst is not None:
+        m = worst[1]
+        error = 1.0 / np.sqrt(m) if m > 0 else float('inf')
+        print(f"  limiting: {worst[0]} at {100*error:.2f}%")
+        if m < SAMPLING_TARGET:
+            print(f"  -> below the {SAMPLING_TARGET:.0e} pass mark; add frames, or widen that "
+                  f"triplet's cutoffs if the first RDF minimum allows")
+    print("  note: R_CUTOFF is the expensive knob here — measured ~R^6 "
+          "(4->6 Å cost 16x), since\n        coordination grows as R^3 and triplets as its square")
 
 
 def save_csv(results, filename):
@@ -625,7 +681,9 @@ if __name__ == '__main__':
           f"(from {2 * len(plans)} triplet arms)")
 
     print("Computing BADs...")
-    results = compute_bads(frames, plans, queries)
+    results, raw_counts = compute_bads(frames, plans, queries)
+
+    report_sampling(raw_counts, results)
 
     if OUTPUT_CSV is not None:
         save_csv(results, OUTPUT_CSV)
