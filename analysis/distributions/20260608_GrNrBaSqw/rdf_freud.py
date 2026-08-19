@@ -11,13 +11,20 @@ QUICK START
 
 OUTPUT
 ------
-- rdfs.png  — subplot grid: one panel per element pair, plus one per convention column
 - rdfs.csv  — r (Å), partial g_AB(r), one column per requested convention
                                                               (set OUTPUT_CSV=None to skip)
-- nrs.png   — cumulative coordination number n(r) plots       (set OUTPUT_NR_PLOT=None to skip)
 - nrs.csv   — r (Å), n(r) both directions per pair            (set OUTPUT_NR_CSV=None to skip)
-- wright.csv/.png — a single T(r) built to overlay directly on a published
+- wright.csv — a single T(r) built to overlay directly on a published
                     neutron correlation function        (only when RDF_WRIGHT=yes)
+- <date>_rdf/ — ONE PNG PER QUANTITY, never a subplot grid:
+      <A>-<B>.png            each partial g_AB(r)
+      <function>_<norm>.png  each convention column, and its _broadened twin
+      nr_<A>_around_<B>.png  each cumulative coordination number
+      wright.png             T(r) with its T0 baseline   (only when RDF_WRIGHT=yes)
+      wright_composite.png   broadened + unbroadened + baseline together, the
+                             comparison figure the paper is read against
+  The directory is created by the runner, not by this script — see the plot
+  section below.  Set RDF_PLOT_DIR= (empty) to write only the CSVs.
 
 CONVENTIONS
 -----------
@@ -148,6 +155,7 @@ Wrapped coordinates (x y z) and a constant atom count are assumed.
 
 import itertools
 import os
+import re
 import time
 from datetime import date
 
@@ -185,9 +193,6 @@ import matplotlib.pyplot as plt
 
 # Input trajectory file
 DUMP_FILE = os.environ.get("TRAJ", "../int_dump.lammpstrj")
-
-# Output plot file
-OUTPUT_PLOT = "rdfs.png"
 
 # Output data table (CSV); set to None to skip
 OUTPUT_CSV = "rdfs.csv"
@@ -247,14 +252,27 @@ if RDF_RESOLUTION_MODE == "lorch":
 # reason a published curve sits a constant factor above a per-atom calculation.
 RDF_ATOMS_PER_FORMULA_UNIT = float(os.environ.get("RDF_ATOMS_PER_FORMULA_UNIT", "0") or 0)
 
-# Plot layout: how many columns in the subplot grid
-PLOT_NCOLS = 2
+# ---- Plot output ---------------------------------------------------------
+# Directory every PNG is written into, one quantity per file — no subplot grids.
+# The value is a BASENAME; the YYYYMMDD_ prefix is added below like every other
+# output, so successive runs do not overwrite each other.  Empty disables
+# plotting entirely and the CSVs are still written.
+#
+# The directory is created by the runner (distribution_run.sh /
+# distribution_submit.slurm), not here.  Running this script by hand, make it
+# yourself — the error message says exactly what to run.
+RDF_PLOT_DIR   = os.environ.get("RDF_PLOT_DIR", "rdf")
+# 'analysis' (default, titled and labelled) or 'publication' (heavy lines, big
+# bold labels, no y ticks).  See PLOT_STYLES after the config block.
+PLOT_STYLE     = os.environ.get("RDF_PLOT_STYLE", "analysis")
+PLOT_STYLE_KEY = "RDF_PLOT_STYLE"
+PLOT_DIR_KEY   = "RDF_PLOT_DIR"
+SCRIPT_NAME    = "rdf_freud.py"
 
-# DPI for saved plot
+# DPI for saved plots
 PLOT_DPI = 150
 
-# n(r) output files; set to None to skip
-OUTPUT_NR_PLOT = "nrs.png"
+# n(r) output file; set to None to skip
 OUTPUT_NR_CSV  = "nrs.csv"
 
 # ---- Wright comparison output -------------------------------------------
@@ -280,7 +298,6 @@ if RDF_WRIGHT == "yes":
             "RDF_WRIGHT=yes needs RDF_ATOMS_PER_FORMULA_UNIT — the number of atoms in "
             "the formula unit the paper quotes its cross-section per (SiO2 -> 3).")
 OUTPUT_WRIGHT_CSV  = "wright.csv"
-OUTPUT_WRIGHT_PLOT = "wright.png"
 
 # =============================================================================
 # END CONFIGURATION
@@ -290,12 +307,93 @@ OUTPUT_WRIGHT_PLOT = "wright.png"
 def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
-OUTPUT_PLOT    = _dated(OUTPUT_PLOT)
 OUTPUT_CSV     = _dated(OUTPUT_CSV)
-OUTPUT_NR_PLOT = _dated(OUTPUT_NR_PLOT)
 OUTPUT_NR_CSV  = _dated(OUTPUT_NR_CSV)
 OUTPUT_WRIGHT_CSV  = _dated(OUTPUT_WRIGHT_CSV)
-OUTPUT_WRIGHT_PLOT = _dated(OUTPUT_WRIGHT_PLOT)
+PLOT_DIR       = _dated(RDF_PLOT_DIR) if RDF_PLOT_DIR else None
+
+# =============================================================================
+# Plot output — one quantity per file
+# =============================================================================
+# Every curve is written as its own PNG into PLOT_DIR; nothing is packed into a
+# subplot grid.  A composite survives only where the combination *is* the
+# result — Wright's T(r) against the baseline it oscillates about, the mode
+# character decomposition, the species overlays — and those are named so they
+# read as composites rather than as one more quantity.
+#
+# PLOT_DIR is created by the runner (distribution_run.sh /
+# distribution_submit.slurm), never by this script: a missing directory means
+# the run was wired wrong, and quietly creating it would hide that.
+
+PLOT_STYLES = {
+    # 'analysis'    — titled and fully labelled, for reading a run.
+    # 'publication' — heavy lines and spines, large bold labels, no y ticks.
+    #                 This is the styling the separate *_plot.py pass used to
+    #                 apply; it is a config choice now, not a second script.
+    'analysis':    dict(figsize=(7.0, 4.5), linewidth=1.5, color='C0', spine_lw=0.8,
+                        weight='normal', label_fs=12, tick_fs=10,
+                        tick_len=4, tick_w=1.0, yticks=True, titles=True),
+    'publication': dict(figsize=(4.0, 3.0), linewidth=3.0, color='steelblue', spine_lw=2.0,
+                        weight='bold', label_fs=20, tick_fs=14,
+                        tick_len=6, tick_w=2.0, yticks=False, titles=False),
+}
+
+
+def plot_style():
+    if PLOT_STYLE not in PLOT_STYLES:
+        raise ValueError(
+            f"Unknown {PLOT_STYLE_KEY}={PLOT_STYLE!r}; use one of {list(PLOT_STYLES)}.")
+    return PLOT_STYLES[PLOT_STYLE]
+
+
+def check_plot_dir():
+    """
+    True if plots should be written.  PLOT_DIR must already exist — see the note
+    above on why this refuses to create it.
+    """
+    if PLOT_DIR is None:
+        return False
+    if not os.path.isdir(PLOT_DIR):
+        raise SystemExit(
+            f"{SCRIPT_NAME}: plot directory {PLOT_DIR!r} does not exist.\n"
+            f"  The runner creates it; running this script by hand, create it first:\n"
+            f"      mkdir -p {PLOT_DIR}\n"
+            f"  Or set {PLOT_DIR_KEY}= (empty) to skip plotting and write only the CSVs.")
+    return True
+
+
+def new_plot():
+    """A single-axes figure in the configured style."""
+    st = plot_style()
+    return plt.subplots(figsize=st['figsize']) + (st,)
+
+
+def save_plot(fig, ax, name, xlabel, ylabel, title=None, legend=False):
+    """
+    Finish one figure and write it as PLOT_DIR/<name>.png.
+
+    `name` becomes the filename, so anything a path cannot carry is substituted
+    rather than left to mangle the path silently.
+    """
+    st = plot_style()
+    ax.set_xlabel(xlabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    ax.set_ylabel(ylabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    if title and st['titles']:
+        ax.set_title(title)
+    ax.tick_params(axis='x', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    if st['yticks']:
+        ax.tick_params(axis='y', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    else:
+        ax.yaxis.set_ticks([])
+    if legend:
+        ax.legend(fontsize=8 if st['titles'] else 10)
+    for spine in ax.spines.values():
+        spine.set_linewidth(st['spine_lw'])
+    fig.tight_layout()
+    path = os.path.join(PLOT_DIR, f"{re.sub(r'[^A-Za-z0-9._+-]', '_', name)}.png")
+    fig.savefig(path, dpi=PLOT_DPI)
+    plt.close(fig)
+    return path
 
 # Coherent neutron scattering lengths (fm).  Add elements as needed.
 # Values from NIST: https://www.ncnr.nist.gov/resources/n-lengths/
@@ -900,23 +998,44 @@ def report_wright(info):
     print(f"                   density alone, so it needs no fitting.")
 
 
-def plot_wright(columns, r, info, filename):
-    """T(r) against its own T0 baseline, the way published figures show it."""
-    fig, ax = plt.subplots(figsize=(8, 5))
+WRIGHT_YLABEL = r'T(r)  (barn sr$^{-1}$ formula-unit$^{-1}$ Å$^{-2}$)'
+WRIGHT_T0_LABEL = r'$T^0(r)=4\pi r\rho^0\langle b\rangle^2$'
+
+
+def plot_wright(columns, r, info):
+    """
+    The Wright comparison, as individual curves plus the one composite that is
+    itself the result.
+
+    T0(r) is drawn on the individual T(r) panels as a dashed line rather than
+    being split off: it is the baseline the curve oscillates about, in the same
+    role as the g(r) = 1 line elsewhere, not a second quantity.  It also gets
+    its own file, since its slope is the check the comparison turns on.
+    """
+    title = (f"Wright comparison — Lorch Q$_{{max}}$={info['q_max']:g} Å⁻¹, "
+             f"FWHM {info['fwhm']:.3f} Å")
+
+    for name, label in (('T_wright', 'wright'),
+                        ('T_wright_unbroadened', 'wright_unbroadened')):
+        fig, ax, st = new_plot()
+        ax.plot(r, columns[name], color=st['color'], linewidth=st['linewidth'])
+        ax.plot(r, columns['T0_baseline'], color='0.4', linestyle='--', linewidth=1.0)
+        print(f"  {save_plot(fig, ax, label, 'r (Å)', WRIGHT_YLABEL, title=title)}")
+
+    fig, ax, st = new_plot()
+    ax.plot(r, columns['T0_baseline'], color=st['color'], linewidth=st['linewidth'])
+    print(f"  {save_plot(fig, ax, 'wright_T0_baseline', 'r (Å)', WRIGHT_YLABEL, title=title)}")
+
+    # The composite: the figure a published T(r) is actually overlaid on, where
+    # seeing the broadened curve, the raw curve and the baseline together is the
+    # whole point.
+    fig, ax, st = new_plot()
     ax.plot(r, columns['T_wright'], color='C0', linewidth=1.6, label='T(r), Lorch-broadened')
     ax.plot(r, columns['T_wright_unbroadened'], color='C0', linewidth=0.8, alpha=0.45,
             label='T(r), unbroadened')
     ax.plot(r, columns['T0_baseline'], color='0.4', linestyle='--', linewidth=1.0,
-            label=r'$T^0(r)=4\pi r\rho^0\langle b\rangle^2$')
-    ax.set_xlabel('r (Å)')
-    ax.set_ylabel(r'T(r)  (barn sr$^{-1}$ formula-unit$^{-1}$ Å$^{-2}$)')
-    ax.set_title(f"Wright comparison — Lorch Q$_{{max}}$={info['q_max']:g} Å⁻¹, "
-                 f"FWHM {info['fwhm']:.3f} Å")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Wright-comparison plot saved to {filename}")
+            label=WRIGHT_T0_LABEL)
+    print(f"  {save_plot(fig, ax, 'wright_composite', 'r (Å)', WRIGHT_YLABEL, title=title, legend=True)}")
 
 
 def save_csv(results, filename):
@@ -930,60 +1049,33 @@ def save_csv(results, filename):
 
 def plot_rdfs(results, meta):
     """
-    Plot partials and convention columns.  meta carries per-column units and the
-    reference level, since these panels no longer share one y axis: a partial is
-    a dimensionless g(r) about 1, while h_absolute is barn/sr/atom about 0.
+    One PNG per partial and per convention column.
+
+    meta carries each column's units and reference level, which is why these
+    cannot share an axis in the first place: a partial is a dimensionless g(r)
+    about 1, while h_absolute is barn/sr/atom about 0.  The reference line is
+    drawn on the curve it belongs to, not split into a file of its own.
     """
-    n = len(results)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, (name, (r, g)) in zip(axes, results.items()):
-        ax.plot(r, g)
+    for name, (r, g) in results.items():
+        fig, ax, st = new_plot()
+        ax.plot(r, g, color=st['color'], linewidth=st['linewidth'])
         m         = meta.get(name)
         reference = 1.0 if m is None else m['reference']       # partials: g(r) -> 1
         if reference is not None:
             ax.axhline(reference, color='gray', linestyle='--', linewidth=0.8)
-        ax.set_xlabel('r (Å)')
-        ax.set_ylabel('g(r)' if m is None else f"{name} ({m['units']})")
-        ax.set_title(name)
-
-    # hide any unused subplots
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-    if OUTPUT_PLOT is not None:
-        fig.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
-        print(f"Plot saved to {OUTPUT_PLOT}")
-    plt.close(fig)
+        ylabel = 'g(r)' if m is None else (f"{name} ({m['units']})" if m['units'] else name)
+        save_plot(fig, ax, name, 'r (Å)', ylabel, title=name)
+    print(f"{len(results)} g(r) plot(s) written to {PLOT_DIR}/")
 
 
 def plot_nrs(nr_results):
-    n = len(nr_results)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, (name, (r, nr)) in zip(axes, nr_results.items()):
-        ax.plot(r, nr)
-        ax.set_xlabel('r (Å)')
-        ax.set_ylabel('n(r)')
-        ax.set_title(name)
-
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-    if OUTPUT_NR_PLOT is not None:
-        fig.savefig(OUTPUT_NR_PLOT, dpi=PLOT_DPI)
-        print(f"n(r) plot saved to {OUTPUT_NR_PLOT}")
-    plt.close(fig)
+    """One PNG per cumulative coordination number, prefixed so it cannot be
+    confused with the g(r) of the same pair sitting in the same directory."""
+    for name, (r, nr) in nr_results.items():
+        fig, ax, st = new_plot()
+        ax.plot(r, nr, color=st['color'], linewidth=st['linewidth'])
+        save_plot(fig, ax, f'nr_{name}', 'r (Å)', 'n(r)', title=f'n(r)  {name}')
+    print(f"{len(nr_results)} n(r) plot(s) written to {PLOT_DIR}/")
 
 
 if __name__ == '__main__':
@@ -991,8 +1083,13 @@ if __name__ == '__main__':
     # a second rather than a full parse of a multi-GB dump.
     normalizations = parse_keys(RDF_NORMALIZATION, NORMALIZATION_EQUATIONS, 'RDF_NORMALIZATION')
     functions      = parse_keys(RDF_FUNCTIONS, FUNCTION_EQUATIONS, 'RDF_FUNCTIONS')
+    # Same reason as above: a missing plot directory is a wiring error, and it
+    # should cost a second rather than a completed run with nowhere to write.
+    plots          = check_plot_dir()
     print(f"RDF_NORMALIZATION: {normalizations}")
     print(f"RDF_FUNCTIONS:     {functions}")
+    print(f"Plot output:       {PLOT_DIR + '/' if plots else '(disabled)'}"
+          f"   style={PLOT_STYLE}")
 
     print(f"Reading trajectory: {DUMP_FILE}")
     _t_parse_start = time.time()
@@ -1069,8 +1166,8 @@ if __name__ == '__main__':
     if OUTPUT_NR_CSV is not None:
         save_csv(nr_results, OUTPUT_NR_CSV)
 
-    plot_rdfs(gr_results, meta)
-    if OUTPUT_NR_PLOT is not None:
+    if plots:
+        plot_rdfs(gr_results, meta)
         plot_nrs(nr_results)
 
     if RDF_WRIGHT == 'yes':
@@ -1082,5 +1179,5 @@ if __name__ == '__main__':
         report_wright(wright_info)
         if OUTPUT_WRIGHT_CSV is not None:
             save_csv({k: (r_grid, v) for k, v in wright_cols.items()}, OUTPUT_WRIGHT_CSV)
-        if OUTPUT_WRIGHT_PLOT is not None:
-            plot_wright(wright_cols, r_grid, wright_info, OUTPUT_WRIGHT_PLOT)
+        if plots:
+            plot_wright(wright_cols, r_grid, wright_info)

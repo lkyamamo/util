@@ -16,12 +16,44 @@ frame of `dump.lammpstrj`, for element labels).
 
 | Script | What it computes | Output files |
 |---|---|---|
-| `rdf_freud.py` | Radial distribution function g(r), coordination number n(r), and selectable neutron correlation functions for all element pairs | `rdfs.csv`, `rdfs.png`, `nrs.csv`, `nrs.png`, and `wright.csv`/`.png` when `RDF_WRIGHT=yes` |
-| `bad_freud.py` | Bond angle distribution P(θ) for all A-B-C triplets | `bads.csv`, `bads.png` |
-| `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `sq.png`, `dsf.csv`, `dsf.png` |
-| `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `vdos.png` |
-| `msd.py` | Mean square displacement and self-diffusion coefficient (10⁻⁵ cm²/s) per element | `msd.csv`, `msd.png` |
-| `vdos_dynmat.py` | Vibrational density of states from the LAMMPS dynamical matrix — harmonic, 0 K, no trajectory; optionally the stretch/bend/rock band assignment, participation ratio and boson peak | `vdos_dynmat.csv`, `vdos_dynmat.png`, `vdos_dynmat_modes.csv`, `vdos_dynmat_character.png` |
+| `rdf_freud.py` | Radial distribution function g(r), coordination number n(r), and selectable neutron correlation functions for all element pairs | `rdfs.csv`, `nrs.csv`, `wright.csv` when `RDF_WRIGHT=yes`, and `<date>_rdf/` |
+| `bad_freud.py` | Bond angle distribution P(θ) for all A-B-C triplets | `bads.csv`, `<date>_bad/` |
+| `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `dsf.csv`, `<date>_dsf/` |
+| `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `<date>_vdos/` |
+| `msd.py` | Mean square displacement and self-diffusion coefficient (10⁻⁵ cm²/s) per element | `msd.csv`, `<date>_msd/` |
+| `vdos_dynmat.py` | Vibrational density of states from the LAMMPS dynamical matrix — harmonic, 0 K, no trajectory; optionally the stretch/bend/rock band assignment, participation ratio and boson peak | `vdos_dynmat.csv`, `vdos_dynmat_modes.csv`, `<date>_vdos_dynmat/` |
+
+### Plots: one file per quantity
+
+Every calculation writes **one PNG per quantity** into its own dated directory —
+`<date>_rdf/`, `<date>_bad/`, `<date>_dsf/`, `<date>_vdos/`, `<date>_msd/`,
+`<date>_vdos_dynmat/` — instead of packing curves into a subplot grid. A single
+g(r), band or angle distribution is then a file you can drop straight into a
+document without cropping.
+
+**The runners create those directories**, not the scripts. `distribution_run.sh` and
+`distribution_submit.slurm` `mkdir -p` each one just before invoking its calculation, and the
+scripts stop with the name they expected if it is missing — a missing directory is a wiring
+error, and inventing it silently would hide that. Running a script by hand, create the
+directory first; the error message gives the exact command.
+
+Two keys per calculation, where **an empty value is meaningful** rather than "use the default":
+
+| Key | Effect |
+|---|---|
+| `<CALC>_PLOT_DIR` | Directory basename; the `YYYYMMDD_` prefix is added by both the runner and the script. **Empty disables plotting** for that calculation, leaving only its CSV. Through `submit_pipeline.sh` spell it `none`, since blank there already means "leave the default in effect". |
+| `<CALC>_PLOT_STYLE` | `analysis` (default: titled, labelled, y ticks) or `publication` (heavy lines and spines, large bold labels, no y ticks). |
+
+`publication` is the styling the separate `rdf_freud_plot.py` / `bad_freud_plot.py` pass used to
+apply. Those two scripts are **gone** — restyling is a setting on the main scripts now, and it
+covers all six calculations rather than only two.
+
+A composite figure survives only where the combination *is* the result, and each is named so it
+reads as one: `wright_composite.png` (T(r) broadened, raw and baseline together),
+`character_composite.png` (stretch/bend/rock against the total — a band assignment is made by
+reading them against each other), and the `all_curves.png` / `all_species.png` overlays in
+`vdos`, `dsf` and `msd`. Reference lines are *not* split off: the `g(r) = 1` line and Wright's
+`T⁰(r)` baseline stay drawn on the curve they belong to.
 
 ---
 
@@ -153,8 +185,10 @@ became configurable map as `total → g_unity`, `neutron → g_FZ`, `t → T_FZ`
 | `T` | `4πrρ Σ w g_AB` | Total radial distribution function — `D` keeping the bulk baseline, so it climbs as 4πrρΣw. Area under a peak is a coordination number. Not in the default `RDF_FUNCTIONS`. |
 
 **Comparing against a published neutron curve.** `RDF_WRIGHT=yes` writes a separate `<date>_wright.csv`
-and `.png` holding `T(r)` **Lorch-broadened and per formula unit**, plus the `T⁰(r)` baseline it oscillates
-about — built to overlay directly on a measured correlation function:
+holding `T(r)` **Lorch-broadened and per formula unit**, plus the `T⁰(r)` baseline it oscillates
+about — built to overlay directly on a measured correlation function. The plots land in
+`<date>_rdf/` as `wright.png`, `wright_unbroadened.png`, `wright_T0_baseline.png` and
+`wright_composite.png`:
 
 ```bash
 RDF_WRIGHT=yes RDF_WRIGHT_QMAX=45.2 RDF_ATOMS_PER_FORMULA_UNIT=3
@@ -711,8 +745,9 @@ Extra outputs when this is on:
 - `<date>_vdos_dynmat_modes.csv` — one row per mode: frequency in all four units,
   participation ratio, `frac_stretch/bend/rock`, and per-element fractions. This
   is what makes "which modes are in this peak" answerable.
-- `<date>_vdos_dynmat_character.png` — three panels: character-resolved DOS,
-  participation ratio vs frequency, and the reduced DOS.
+- In `<date>_vdos_dynmat/`: `character_stretch.png`, `character_bend.png`,
+  `character_rock.png` and `character_total.png` separately, `character_composite.png`
+  with all four together, plus `participation_ratio.png` and `reduced_dos.png`.
 
 It needs `dynmat_ref.lammpstrj`, the coordinates LAMMPS writes immediately after
 `minimize`. The last frame of `dump.lammpstrj` will not do: it predates the

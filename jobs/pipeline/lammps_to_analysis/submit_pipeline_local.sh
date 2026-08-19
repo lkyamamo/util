@@ -77,6 +77,25 @@ Optional:
                                     neutron correlation function. Needs --rdf-wright-qmax
                                     and --rdf-atoms-per-formula-unit
     --rdf-wright-qmax FLOAT       rdf_freud.py RDF_WRIGHT_QMAX (A^-1), e.g. 45.2
+
+    Plot output — every calculation writes ONE PNG PER QUANTITY into its own
+    dated directory (<date>_rdf/, <date>_bad/, <date>_dsf/, <date>_vdos/,
+    <date>_msd/, <date>_vdos_dynmat/) rather than packing curves into a subplot
+    grid. distribution_run.sh creates the directories. Composites survive only
+    where the combination is itself the result: the Wright overlay, the
+    mode-character decomposition, and the species overlays.
+    --<calc>-plot-dir STR         Directory BASENAME for that calculation's plots
+                                    (rdf, bad, dsf, vdos, msd, vdos-dynmat). The
+                                    YYYYMMDD_ prefix is added downstream. Pass the
+                                    literal 'none' to write no plots for that
+                                    calculation and keep only its CSV.
+    --<calc>-plot-style STR       'analysis' (default: titled, labelled, y ticks)
+                                    or 'publication' (heavy lines and spines, large
+                                    bold labels, no y ticks). This replaces the old
+                                    rdf_freud_plot.py / bad_freud_plot.py second
+                                    pass, which is gone.
+    --vdos-plot-xunit STR         vdos.py VDOS_PLOT_XUNIT: meV | THz | cm-1 | eV.
+                                    Plot x axis only; the CSV always carries all four
     --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
     --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
                                     entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
@@ -243,14 +262,14 @@ LOG_FILE="$RUN_DIR/overwrite.log"
 # one does. Keep in sync with the OUTPUT_* constants in the .py files.
 outputs_for() {
   case "$1" in
-    dsf)  echo "sq.csv sq.png dsf.csv dsf.png" ;;
-    rdf)  echo "rdfs.csv rdfs.png nrs.csv nrs.png" ;;
-    bad)  echo "bads.csv bads.png" ;;
-    vdos) echo "vdos.csv vdos.png" ;;
-    msd)  echo "msd.csv msd.png" ;;
+    dsf)  echo "sq.csv dsf.csv dsf" ;;
+    rdf)  echo "rdfs.csv nrs.csv rdf" ;;
+    bad)  echo "bads.csv bad" ;;
+    vdos) echo "vdos.csv vdos" ;;
+    msd)  echo "msd.csv msd" ;;
     vdos_dynmat)
       local b="${VDOS_DYNMAT_OUTPUT:-vdos_dynmat}"
-      echo "$b.csv $b.png ${b}_modes.csv ${b}_character.png" ;;
+      echo "$b.csv ${b}_modes.csv $b" ;;
   esac
 }
 
@@ -333,6 +352,19 @@ RDF_LORCH_QMAX_VAL=""
 RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
 RDF_WRIGHT_VAL=""
 RDF_WRIGHT_QMAX_VAL=""
+RDF_PLOT_DIR_VAL=""
+RDF_PLOT_STYLE_VAL=""
+BAD_PLOT_DIR_VAL=""
+BAD_PLOT_STYLE_VAL=""
+DSF_PLOT_DIR=""
+DSF_PLOT_STYLE=""
+VDOS_PLOT_XUNIT=""
+VDOS_PLOT_DIR=""
+VDOS_PLOT_STYLE=""
+MSD_PLOT_DIR=""
+MSD_PLOT_STYLE=""
+VDOS_DYNMAT_PLOT_DIR=""
+VDOS_DYNMAT_PLOT_STYLE=""
 BAD_ELEMENTS=""
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
@@ -421,6 +453,19 @@ while [[ $# -gt 0 ]]; do
     --rdf-atoms-per-formula-unit) RDF_ATOMS_PER_FORMULA_UNIT_VAL="$2"; shift 2 ;;
     --rdf-wright) RDF_WRIGHT_VAL="$2"; shift 2 ;;
     --rdf-wright-qmax) RDF_WRIGHT_QMAX_VAL="$2"; shift 2 ;;
+    --rdf-plot-dir) RDF_PLOT_DIR_VAL="$2"; shift 2 ;;
+    --rdf-plot-style) RDF_PLOT_STYLE_VAL="$2"; shift 2 ;;
+    --bad-plot-dir) BAD_PLOT_DIR_VAL="$2"; shift 2 ;;
+    --bad-plot-style) BAD_PLOT_STYLE_VAL="$2"; shift 2 ;;
+    --dsf-plot-dir) DSF_PLOT_DIR="$2"; shift 2 ;;
+    --dsf-plot-style) DSF_PLOT_STYLE="$2"; shift 2 ;;
+    --vdos-plot-xunit) VDOS_PLOT_XUNIT="$2"; shift 2 ;;
+    --vdos-plot-dir) VDOS_PLOT_DIR="$2"; shift 2 ;;
+    --vdos-plot-style) VDOS_PLOT_STYLE="$2"; shift 2 ;;
+    --msd-plot-dir) MSD_PLOT_DIR="$2"; shift 2 ;;
+    --msd-plot-style) MSD_PLOT_STYLE="$2"; shift 2 ;;
+    --vdos-dynmat-plot-dir) VDOS_DYNMAT_PLOT_DIR="$2"; shift 2 ;;
+    --vdos-dynmat-plot-style) VDOS_DYNMAT_PLOT_STYLE="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
     --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
@@ -721,6 +766,30 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$RDF_ATOMS_PER_FORMULA_UNIT_VAL" ]] && export RDF_ATOMS_PER_FORMULA_UNIT="$RDF_ATOMS_PER_FORMULA_UNIT_VAL"
   [[ -n "$RDF_WRIGHT_VAL" ]] && export RDF_WRIGHT="$RDF_WRIGHT_VAL"
   [[ -n "$RDF_WRIGHT_QMAX_VAL" ]] && export RDF_WRIGHT_QMAX="$RDF_WRIGHT_QMAX_VAL"
+
+  # Plot output. Each calculation writes one PNG per quantity into its own dated
+  # directory, created by distribution_run.sh. The DIR keys take a basename (the
+  # YYYYMMDD_ prefix is added downstream) or the literal 'none' to write no plots
+  # for that calculation. 'none' has to be spelled out because a blank value
+  # already means "leave the default in effect" for every other key here.
+  export_plot_dir() {   # $1 = env name, $2 = configured value
+    [[ -z "$2" ]] && return 0
+    [[ "$2" == "none" ]] && { export "$1="; return 0; }
+    export "$1=$2"
+  }
+  export_plot_dir RDF_PLOT_DIR         "$RDF_PLOT_DIR_VAL"
+  export_plot_dir BAD_PLOT_DIR         "$BAD_PLOT_DIR_VAL"
+  export_plot_dir DSF_PLOT_DIR         "$DSF_PLOT_DIR"
+  export_plot_dir VDOS_PLOT_DIR        "$VDOS_PLOT_DIR"
+  export_plot_dir MSD_PLOT_DIR         "$MSD_PLOT_DIR"
+  export_plot_dir VDOS_DYNMAT_PLOT_DIR "$VDOS_DYNMAT_PLOT_DIR"
+  [[ -n "$RDF_PLOT_STYLE_VAL" ]]         && export RDF_PLOT_STYLE="$RDF_PLOT_STYLE_VAL"
+  [[ -n "$BAD_PLOT_STYLE_VAL" ]]         && export BAD_PLOT_STYLE="$BAD_PLOT_STYLE_VAL"
+  [[ -n "$DSF_PLOT_STYLE" ]]             && export DSF_PLOT_STYLE
+  [[ -n "$VDOS_PLOT_STYLE" ]]            && export VDOS_PLOT_STYLE
+  [[ -n "$VDOS_PLOT_XUNIT" ]]            && export VDOS_PLOT_XUNIT
+  [[ -n "$MSD_PLOT_STYLE" ]]             && export MSD_PLOT_STYLE
+  [[ -n "$VDOS_DYNMAT_PLOT_STYLE" ]]     && export VDOS_DYNMAT_PLOT_STYLE
   [[ -n "$BAD_ELEMENTS" ]]        && export ELEMENTS="$BAD_ELEMENTS"
   [[ -n "$BAD_R_CUTOFF" ]]        && export R_CUTOFF="$BAD_R_CUTOFF"
   [[ -n "$BAD_R_MINCUT" ]]        && export R_MINCUT="$BAD_R_MINCUT"

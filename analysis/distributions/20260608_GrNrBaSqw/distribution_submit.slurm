@@ -57,6 +57,22 @@ RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 # submitters (submit_pipeline.sh / submit_pipeline_local.sh) can drive this
 # script without their settings being clobbered by the edits here.
 #
+# PLOT OUTPUT. Every script writes one PNG per quantity into its own dated
+# directory — <date>_rdf/, <date>_bad/, <date>_dsf/, <date>_vdos/, <date>_msd/,
+# <date>_vdos_dynmat/ — rather than packing curves into a subplot grid. THIS
+# SCRIPT CREATES THOSE DIRECTORIES; the .py files refuse to, so that a missing
+# one is reported as the wiring error it is instead of being silently invented.
+#
+# Two keys per calculation, and unlike everything else here an empty value is
+# meaningful rather than "use the script default":
+#   *_PLOT_DIR    directory basename; the YYYYMMDD_ prefix is added by both this
+#                 script and the .py. EMPTY DISABLES PLOTTING for that
+#                 calculation, leaving only its CSV.
+#   *_PLOT_STYLE  'analysis' (default; titled, labelled, y ticks) or
+#                 'publication' (heavy lines and spines, large bold labels, no
+#                 y ticks). This is the styling the separate rdf_freud_plot.py /
+#                 bad_freud_plot.py pass used to apply; it is a setting now, and
+#                 those two scripts are gone.
 # vdos.py and msd.py read the same dynamics.lammpstrj but want different
 # settings — VDOS needs a short CORR_LENGTH for frequency resolution, MSD a
 # long one to reach the diffusive regime — so each has its own prefixed
@@ -109,6 +125,8 @@ DSF_MAX_Q_POINTS_DYN="${DSF_MAX_Q_POINTS_DYN:-}"  # prune target; 0 = no pruning
 # therefore REFUSES to neutron-weight an H- or D-bearing system; set this to
 # 'no' there to get the unweighted partials and total instead.
 DSF_NEUTRON_WEIGHTING="${DSF_NEUTRON_WEIGHTING:-}"  # yes | no
+DSF_PLOT_DIR="${DSF_PLOT_DIR-dsf}"                  # both S(q) and S(q,w) plots land here
+DSF_PLOT_STYLE="${DSF_PLOT_STYLE-analysis}"         # analysis | publication
 
 # rdf_freud.py
 R_MAX="${R_MAX:-}"                      # Å; max r. Must be < half the shortest box edge
@@ -129,6 +147,8 @@ RDF_ATOMS_PER_FORMULA_UNIT="${RDF_ATOMS_PER_FORMULA_UNIT:-}"  # SiO2 -> 3; neede
 # neutron correlation function. Needs QMAX and ATOMS_PER_FORMULA_UNIT above.
 RDF_WRIGHT="${RDF_WRIGHT:-}"            # yes | no (default no)
 RDF_WRIGHT_QMAX="${RDF_WRIGHT_QMAX:-}"  # Å⁻¹; the paper's Fourier truncation, e.g. 45.2
+RDF_PLOT_DIR="${RDF_PLOT_DIR-rdf}"      # g(r), n(r) and the wright curves land here
+RDF_PLOT_STYLE="${RDF_PLOT_STYLE-analysis}"       # analysis | publication
 
 # bad_freud.py — bond angle distributions. These keys are BARE rather than
 # BAD_-prefixed at the script level (the submitters map --bad-elements to
@@ -145,6 +165,8 @@ R_MINCUT="${R_MINCUT:-}"                # same format; excludes unphysical close
 TRIPLET_CUTOFFS="${TRIPLET_CUTOFFS:-}"  # pipe-separated per-triplet overrides,
                                         # label:elA-elB-elC:r_max_ab:r_min_ab:r_max_cb:r_min_cb
 BAD_BINS="${BAD_BINS:-}"                # bins over 0-180 deg; 180 = 1 deg, 360 = 0.5 deg
+BAD_PLOT_DIR="${BAD_PLOT_DIR-bad}"      # one PNG per triplet lands here
+BAD_PLOT_STYLE="${BAD_PLOT_STYLE-analysis}"       # analysis | publication
 
 # vdos.py
 VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
@@ -161,6 +183,8 @@ VDOS_WEIGHTING="${VDOS_WEIGHTING:-}"              # semicolon list: unity | cohe
                                                   # incoherent | total (species weight)
 VDOS_PLOT_XUNIT="${VDOS_PLOT_XUNIT:-}"            # meV | THz | cm-1 | eV (plot axis only;
                                                   # the CSV always carries all four)
+VDOS_PLOT_DIR="${VDOS_PLOT_DIR-vdos}"             # one PNG per curve lands here
+VDOS_PLOT_STYLE="${VDOS_PLOT_STYLE-analysis}"     # analysis | publication
 
 # msd.py
 MSD_N_FRAMES="${MSD_N_FRAMES:-}"
@@ -169,6 +193,8 @@ MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"            # REQUIRED. fs; max time lag. 
                                                   # diffusion fit window, so D depends on it
 MSD_CORR_INTERVAL="${MSD_CORR_INTERVAL:-}"        # REQUIRED. fs; spacing between reference frames
 MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"          # REQUIRED. tail fraction used for the D fit
+MSD_PLOT_DIR="${MSD_PLOT_DIR-msd}"                # one PNG per species lands here
+MSD_PLOT_STYLE="${MSD_PLOT_STYLE-analysis}"       # analysis | publication
 
 # vdos_dynmat.py — the harmonic counterpart to vdos.py. It reads the dynamical
 # matrix LAMMPS wrote (not a trajectory), plus the first frame of $TRAJ for the
@@ -199,6 +225,9 @@ DYNMAT_REF_TRAJ="${DYNMAT_REF_TRAJ:-}"                      # default dynmat_ref
 VDOS_DYNMAT_BRIDGE_ELEMENT="${VDOS_DYNMAT_BRIDGE_ELEMENT:-}"      # default O
 VDOS_DYNMAT_NEIGHBOR_ELEMENT="${VDOS_DYNMAT_NEIGHBOR_ELEMENT:-}"  # default Si
 VDOS_DYNMAT_BOND_CUTOFF="${VDOS_DYNMAT_BOND_CUTOFF:-}"      # Angstrom, default 2.2
+VDOS_DYNMAT_PLOT_DIR="${VDOS_DYNMAT_PLOT_DIR-vdos_dynmat}"  # DOS, character, PR and
+                                                            # reduced-DOS plots land here
+VDOS_DYNMAT_PLOT_STYLE="${VDOS_DYNMAT_PLOT_STYLE-analysis}" # analysis | publication
 
 # Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
@@ -225,6 +254,23 @@ for _var in DYNAMICS_DT \
     fi
 done
 unset _var
+
+# The plot keys are exported unconditionally, unlike everything above, because
+# empty is a real setting here: it means "write no plots for this calculation".
+# Skipping an empty one would let the .py fall back to its own default directory
+# name, which this script has not created — turning "no plots please" into a
+# hard error.
+export RDF_PLOT_DIR RDF_PLOT_STYLE BAD_PLOT_DIR BAD_PLOT_STYLE \
+       DSF_PLOT_DIR DSF_PLOT_STYLE VDOS_PLOT_DIR VDOS_PLOT_STYLE \
+       MSD_PLOT_DIR MSD_PLOT_STYLE VDOS_DYNMAT_PLOT_DIR VDOS_DYNMAT_PLOT_STYLE
+
+# The YYYYMMDD_ prefix here must match the one each .py adds via its _dated()
+# helper. A run that straddles midnight is the one case they can disagree, and
+# the script then stops with the directory name it wanted.
+make_plot_dir() {
+    [ -z "$1" ] && return 0          # plotting disabled for this calculation
+    mkdir -p "$(date +%Y%m%d)_$1"
+}
 
 ############################
 # Paths
@@ -270,26 +316,31 @@ export VDOS_THREADS=$SLURM_CPUS_PER_TASK
 
 if [ "$RUN_DSF" -eq 1 ]; then
     echo "--- dsf.py ---"
+    make_plot_dir "$DSF_PLOT_DIR"
     python dsf.py
 fi
 
 if [ "$RUN_RDF" -eq 1 ]; then
     echo "--- rdf_freud.py ---"
+    make_plot_dir "$RDF_PLOT_DIR"
     python rdf_freud.py
 fi
 
 if [ "$RUN_BAD" -eq 1 ]; then
     echo "--- bad_freud.py ---"
+    make_plot_dir "$BAD_PLOT_DIR"
     python bad_freud.py
 fi
 
 if [ "$RUN_VDOS" -eq 1 ]; then
     echo "--- vdos.py ---"
+    make_plot_dir "$VDOS_PLOT_DIR"
     python vdos.py
 fi
 
 if [ "$RUN_MSD" -eq 1 ]; then
     echo "--- msd.py ---"
+    make_plot_dir "$MSD_PLOT_DIR"
     python msd.py
 fi
 
@@ -297,6 +348,7 @@ fi
 # LAPACK call, so OMP_NUM_THREADS above is what parallelizes it.
 if [ "$RUN_VDOS_DYNMAT" -eq 1 ]; then
     echo "--- vdos_dynmat.py ---"
+    make_plot_dir "$VDOS_DYNMAT_PLOT_DIR"
     python vdos_dynmat.py
 fi
 

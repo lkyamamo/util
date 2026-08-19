@@ -16,11 +16,19 @@ OUTPUT
 ------
 COMPUTE_STATIC=True
   sq.csv    — q (Å⁻¹), partial S_AB(q), total S(q), neutron-weighted S(q)
-  sq.png    — line plot of all S(q) curves
 
 COMPUTE_DYNAMIC=True
   dsf.csv   — q (Å⁻¹), ω (THz), partial S_AB(q,ω), total, neutron-weighted
-  dsf.png   — 2D heatmap S(q,ω) for total and neutron-weighted
+
+<date>_dsf/ — ONE PNG PER QUANTITY, never a subplot grid.  Both calculations
+  write here, prefixed so they cannot collide:
+    sq_<A>-<B>.png, sq_total.png, sq_neutron.png   the static curves
+    sq_all_curves.png                              their overlay, kept because
+                                                   a partial is read against
+                                                   the total it sums into
+    sqw_total.png, sqw_neutron.png                 the S(q,ω) heatmaps
+  The directory is created by the runner, not by this script; set
+  DSF_PLOT_DIR= (empty) to write only the CSVs.
 
 NEUTRON WEIGHTING
 -----------------
@@ -59,6 +67,7 @@ PARALLELIZATION
 """
 
 import os
+import re
 from datetime import date
 
 # =============================================================================
@@ -165,12 +174,21 @@ if NEUTRON_WEIGHTING not in ("yes", "no"):
 
 # Output files (set to None to skip writing)
 OUTPUT_SQ_CSV   = "sq.csv"
-OUTPUT_SQ_PLOT  = "sq.png"
 OUTPUT_DSF_CSV  = "dsf.csv"
-OUTPUT_DSF_PLOT = "dsf.png"
 
-# Plot layout
-PLOT_NCOLS = 2
+# ---- Plot output ---------------------------------------------------------
+# Directory every PNG is written into, one quantity per file — no subplot
+# grids.  Both the static and the dynamic calculation write here under
+# distinct prefixes.  A BASENAME; the YYYYMMDD_ prefix is added below like
+# every other output.  Empty disables plotting and the CSVs are still written.
+# Created by the runner (distribution_run.sh / distribution_submit.slurm).
+DSF_PLOT_DIR   = os.environ.get("DSF_PLOT_DIR", "dsf")
+# 'analysis' (default) or 'publication'; see PLOT_STYLES after the config block.
+PLOT_STYLE     = os.environ.get("DSF_PLOT_STYLE", "analysis")
+PLOT_STYLE_KEY = "DSF_PLOT_STYLE"
+PLOT_DIR_KEY   = "DSF_PLOT_DIR"
+SCRIPT_NAME    = "dsf.py"
+
 PLOT_DPI   = 150
 
 # =============================================================================
@@ -232,9 +250,91 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_SQ_CSV   = _dated(OUTPUT_SQ_CSV)
-OUTPUT_SQ_PLOT  = _dated(OUTPUT_SQ_PLOT)
 OUTPUT_DSF_CSV  = _dated(OUTPUT_DSF_CSV)
-OUTPUT_DSF_PLOT = _dated(OUTPUT_DSF_PLOT)
+PLOT_DIR        = _dated(DSF_PLOT_DIR) if DSF_PLOT_DIR else None
+
+# =============================================================================
+# Plot output — one quantity per file
+# =============================================================================
+# Every curve is written as its own PNG into PLOT_DIR; nothing is packed into a
+# subplot grid.  A composite survives only where the combination *is* the
+# result — Wright's T(r) against the baseline it oscillates about, the mode
+# character decomposition, the species overlays — and those are named so they
+# read as composites rather than as one more quantity.
+#
+# PLOT_DIR is created by the runner (distribution_run.sh /
+# distribution_submit.slurm), never by this script: a missing directory means
+# the run was wired wrong, and quietly creating it would hide that.
+
+PLOT_STYLES = {
+    # 'analysis'    — titled and fully labelled, for reading a run.
+    # 'publication' — heavy lines and spines, large bold labels, no y ticks.
+    #                 This is the styling the separate *_plot.py pass used to
+    #                 apply; it is a config choice now, not a second script.
+    'analysis':    dict(figsize=(7.0, 4.5), linewidth=1.5, color='C0', spine_lw=0.8,
+                        weight='normal', label_fs=12, tick_fs=10,
+                        tick_len=4, tick_w=1.0, yticks=True, titles=True),
+    'publication': dict(figsize=(4.0, 3.0), linewidth=3.0, color='steelblue', spine_lw=2.0,
+                        weight='bold', label_fs=20, tick_fs=14,
+                        tick_len=6, tick_w=2.0, yticks=False, titles=False),
+}
+
+
+def plot_style():
+    if PLOT_STYLE not in PLOT_STYLES:
+        raise ValueError(
+            f"Unknown {PLOT_STYLE_KEY}={PLOT_STYLE!r}; use one of {list(PLOT_STYLES)}.")
+    return PLOT_STYLES[PLOT_STYLE]
+
+
+def check_plot_dir():
+    """
+    True if plots should be written.  PLOT_DIR must already exist — see the note
+    above on why this refuses to create it.
+    """
+    if PLOT_DIR is None:
+        return False
+    if not os.path.isdir(PLOT_DIR):
+        raise SystemExit(
+            f"{SCRIPT_NAME}: plot directory {PLOT_DIR!r} does not exist.\n"
+            f"  The runner creates it; running this script by hand, create it first:\n"
+            f"      mkdir -p {PLOT_DIR}\n"
+            f"  Or set {PLOT_DIR_KEY}= (empty) to skip plotting and write only the CSVs.")
+    return True
+
+
+def new_plot():
+    """A single-axes figure in the configured style."""
+    st = plot_style()
+    return plt.subplots(figsize=st['figsize']) + (st,)
+
+
+def save_plot(fig, ax, name, xlabel, ylabel, title=None, legend=False):
+    """
+    Finish one figure and write it as PLOT_DIR/<name>.png.
+
+    `name` becomes the filename, so anything a path cannot carry is substituted
+    rather than left to mangle the path silently.
+    """
+    st = plot_style()
+    ax.set_xlabel(xlabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    ax.set_ylabel(ylabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    if title and st['titles']:
+        ax.set_title(title)
+    ax.tick_params(axis='x', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    if st['yticks']:
+        ax.tick_params(axis='y', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    else:
+        ax.yaxis.set_ticks([])
+    if legend:
+        ax.legend(fontsize=8 if st['titles'] else 10)
+    for spine in ax.spines.values():
+        spine.set_linewidth(st['spine_lw'])
+    fig.tight_layout()
+    path = os.path.join(PLOT_DIR, f"{re.sub(r'[^A-Za-z0-9._+-]', '_', name)}.png")
+    fig.savefig(path, dpi=PLOT_DPI)
+    plt.close(fig)
+    return path
 
 # Must be set before importing dynasor/numba — numba reads thread count at JIT time.
 # os.environ.setdefault only writes when OMP_NUM_THREADS is not already present
@@ -534,8 +634,8 @@ def save_csv_sq(sample, sample_neutron, filename):
     print(f"  S(q) data saved to {filename}")
 
 
-def plot_sq(sample, sample_neutron, filename):
-    """Line plot: one panel per partial + total + neutron-weighted."""
+def plot_sq(sample, sample_neutron):
+    """One PNG per S(q) curve, plus the overlay."""
     q = sample.q_norms
 
     curves = {f'{a}-{b}': sample[f'Sq_{a}_{b}'] for (a, b) in sample.pairs}
@@ -543,26 +643,17 @@ def plot_sq(sample, sample_neutron, filename):
     if sample_neutron is not None:
         curves['neutron'] = sample_neutron.Sq
 
-    n     = len(curves)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols,
-                              figsize=(6 * ncols, 4 * nrows), squeeze=False)
-    axes = axes.flatten()
+    for label, sq in curves.items():
+        fig, ax, st = new_plot()
+        ax.plot(q, sq, color=st['color'], linewidth=st['linewidth'])
+        save_plot(fig, ax, f'sq_{label}', 'q (Å⁻¹)', 'S(q)', title=f'S(q)  {label}')
 
-    for ax, (label, sq) in zip(axes, curves.items()):
-        ax.plot(q, sq)
-        ax.set_xlabel('q (Å⁻¹)')
-        ax.set_ylabel('S(q)')
-        ax.set_title(label)
-
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"  S(q) plot saved to {filename}")
+    fig, ax, st = new_plot()
+    for label, sq in curves.items():
+        ax.plot(q, sq, label=label, linewidth=1.5 if label in ('total', 'neutron') else 1.0)
+    save_plot(fig, ax, 'sq_all_curves', 'q (Å⁻¹)', 'S(q)',
+              title='S(q), all curves', legend=True)
+    print(f"  {len(curves) + 1} S(q) plot(s) written to {PLOT_DIR}/")
 
 
 # ---------------------------------------------------------------------------
@@ -612,43 +703,38 @@ def save_csv_dsf(sample, sample_neutron, filename):
     print(f"  S(q,ω) data saved to {filename}")
 
 
-def plot_dsf(sample, sample_neutron, filename):
-    """2D imshow heatmaps: total S(q,ω) and neutron-weighted S(q,ω)."""
+def plot_dsf(sample, sample_neutron):
+    """
+    One heatmap per file.  These carry a colorbar rather than a y-axis scale,
+    so they keep their own axes handling instead of going through save_plot():
+    a heatmap with its ticks stripped by the publication style would be
+    unreadable.
+    """
     q     = sample.q_norms          # (N_Q_BINS,)
     omega = _omega_THz(sample)      # (N_omega,)
 
     # sample.Sqw_coh shape: (N_Q_BINS, N_omega) — q on axis-0, omega on axis-1
-    panels = {'S(q,ω) total': sample.Sqw_coh}
+    panels = {'sqw_total': ('S(q,ω) total', sample.Sqw_coh)}
     if sample_neutron is not None:
-        panels['S(q,ω) neutron'] = sample_neutron.Sqw_coh
+        panels['sqw_neutron'] = ('S(q,ω) neutron', sample_neutron.Sqw_coh)
 
-    n_panels = len(panels)
-    fig, axes = plt.subplots(1, n_panels,
-                              figsize=(7 * n_panels, 5), squeeze=False)
-    axes = axes.flatten()
-
+    st     = plot_style()
     extent = [omega[0], omega[-1], q[0], q[-1]]
 
-    for ax, (title, Sqw) in zip(axes, panels.items()):
-        vmax = np.nanpercentile(Sqw, 99)
-        im = ax.imshow(
-            Sqw,
-            origin='lower',
-            aspect='auto',
-            extent=extent,
-            vmin=0,
-            vmax=vmax,
-            cmap='inferno',
-        )
-        ax.set_xlabel('ω (THz)')
-        ax.set_ylabel('q (Å⁻¹)')
-        ax.set_title(title)
+    for name, (title, Sqw) in panels.items():
+        fig, ax = plt.subplots(figsize=(7, 5))
+        im = ax.imshow(Sqw, origin='lower', aspect='auto', extent=extent,
+                       vmin=0, vmax=np.nanpercentile(Sqw, 99), cmap='inferno')
+        ax.set_xlabel('ω (THz)', fontsize=st['label_fs'], fontweight=st['weight'])
+        ax.set_ylabel('q (Å⁻¹)', fontsize=st['label_fs'], fontweight=st['weight'])
+        if st['titles']:
+            ax.set_title(title)
         fig.colorbar(im, ax=ax, label='S(q,ω)')
-
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"  S(q,ω) plot saved to {filename}")
+        fig.tight_layout()
+        path = os.path.join(PLOT_DIR, f'{name}.png')
+        fig.savefig(path, dpi=PLOT_DPI)
+        plt.close(fig)
+        print(f"  {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +742,9 @@ def plot_dsf(sample, sample_neutron, filename):
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
+    # A missing plot directory is a wiring error: catch it before the parse,
+    # which for dsf.py is the expensive half of the run.
+    plots = check_plot_dir()
     print(f"Reading trajectory: {DUMP_FILE}")
     print(f"  N_FRAMES={N_FRAMES if N_FRAMES is not None else 'all'}, "
           f"STRIDE={STRIDE}, DT={DT} fs")
@@ -710,8 +799,8 @@ if __name__ == '__main__':
 
         if OUTPUT_SQ_CSV:
             save_csv_sq(static_avg, static_neutron, OUTPUT_SQ_CSV)
-        if OUTPUT_SQ_PLOT:
-            plot_sq(static_avg, static_neutron, OUTPUT_SQ_PLOT)
+        if plots:
+            plot_sq(static_avg, static_neutron)
 
     # ------------------------------------------------------------------
     # Dynamic S(q,ω)
@@ -753,7 +842,7 @@ if __name__ == '__main__':
 
         if OUTPUT_DSF_CSV:
             save_csv_dsf(dynamic_avg, dynamic_neutron, OUTPUT_DSF_CSV)
-        if OUTPUT_DSF_PLOT:
-            plot_dsf(dynamic_avg, dynamic_neutron, OUTPUT_DSF_PLOT)
+        if plots:
+            plot_dsf(dynamic_avg, dynamic_neutron)
 
     print("Done.")

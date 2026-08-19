@@ -257,6 +257,28 @@ ANALYSIS_NODELIST=""
 #                      together with the T0(r) baseline it oscillates about.
 #                      Bundles function + normalization + broadening so the three
 #                      cannot disagree. Needs the two keys above.
+
+# PLOT OUTPUT (all calculations). Every script writes ONE PNG PER QUANTITY into
+# its own dated directory rather than packing curves into a subplot grid, so a
+# single g(r), band or angle distribution is a file you can drop straight into a
+# document. distribution_run.sh / distribution_submit.slurm CREATE those
+# directories; the .py scripts refuse to, so a missing one is reported as the
+# wiring error it is instead of being silently invented.
+#
+# A composite is kept only where the combination is itself the result: the Wright
+# overlay (T(r) against its baseline), the mode-character decomposition, and the
+# per-species overlays in vdos/msd. Those are named so they read as composites.
+#
+#   RDF_PLOT_DIR_VAL   Directory BASENAME for the g(r), n(r) and wright plots;
+#                      the YYYYMMDD_ prefix is added downstream, so successive
+#                      runs do not overwrite each other. Default 'rdf' -> a
+#                      <date>_rdf/ holding one PNG per partial, per convention
+#                      column, per _broadened twin, per n(r), and the wright
+#                      curves. The literal 'none' writes no plots at all and
+#                      keeps only the CSVs; blank leaves the default in effect.
+#   RDF_PLOT_STYLE_VAL 'analysis' (default: titled, labelled, y ticks) or
+#                      'publication' (heavy lines and spines, large bold labels,
+#                      no y ticks). Replaces rdf_freud_plot.py, now deleted.
 #   RDF_WRIGHT_QMAX_VAL  A^-1; the paper's truncation, e.g. 45.2 for Wright's
 #                      vitreous-silica work.
 #                      Check after running: the printed T0 slope 4*pi*rho*Sum(w)
@@ -278,6 +300,8 @@ RDF_LORCH_QMAX_VAL=""
 RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
 RDF_WRIGHT_VAL=""
 RDF_WRIGHT_QMAX_VAL=""
+RDF_PLOT_DIR_VAL=""
+RDF_PLOT_STYLE_VAL=""
 
 # -----------------------------------------------------------------------------
 # bad_freud.py — bond angle distributions. Reads dump.lammpstrj.
@@ -301,11 +325,18 @@ RDF_WRIGHT_QMAX_VAL=""
 #                      versions of the same angle — the default below does
 #                      exactly that for water.
 #   BAD_BINS_VAL       Bins over 0-180 deg. 180 = 1 deg, 360 = 0.5 deg.
+#   BAD_PLOT_DIR_VAL   Directory BASENAME for the angle-distribution plots, one
+#                      PNG per triplet. Default 'bad' -> <date>_bad/. The literal
+#                      'none' writes no plots; blank leaves the default.
+#   BAD_PLOT_STYLE_VAL 'analysis' (default) or 'publication'. Replaces
+#                      bad_freud_plot.py, now deleted.
 BAD_ELEMENTS="O;H"
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
 BAD_TRIPLET_CUTOFFS="H-O-H:H-O-H:1.2:0.5:1.2:0.5|H--O--H:H-O-H:2.4:1.49:2.4:1.49|O-H--O:O-H-O:1.2:0.5:2.4:1.49"
 BAD_BINS_VAL="360"
+BAD_PLOT_DIR_VAL=""
+BAD_PLOT_STYLE_VAL=""
 
 # -----------------------------------------------------------------------------
 # dsf.py — static S(q) and dynamic S(q,w). Reads dynamics.lammpstrj.
@@ -353,6 +384,13 @@ BAD_BINS_VAL="360"
 #                      knobs (WINDOW_STEP, Q_MAX_DYN, N_Q_BINS_DYN,
 #                      MAX_Q_POINTS_DYN) are set in distribution_run.sh or
 #                      dsf.py directly.
+#   DSF_PLOT_DIR       Directory BASENAME for the S(q) and S(q,w) plots — both
+#                      calculations write here, prefixed sq_ and sqw_ so they
+#                      cannot collide. Default 'dsf' -> <date>_dsf/, holding one
+#                      PNG per partial, the total, the neutron-weighted curve,
+#                      their overlay, and one heatmap per S(q,w) quantity. The
+#                      literal 'none' writes no plots; blank leaves the default.
+#   DSF_PLOT_STYLE     'analysis' (default) or 'publication'.
 #   DSF_NEUTRON_WEIGHTING  yes (default) | no. "no" drops the neutron-weighted
 #                      S(q) columns; required for H/D systems, where dsf.py
 #                      refuses to weight at all (protium vs deuterium sign flip).
@@ -362,6 +400,8 @@ DSF_Q_MAX=""
 DSF_N_Q_BINS=""
 DSF_WINDOW_SIZE=""
 DSF_NEUTRON_WEIGHTING=""
+DSF_PLOT_DIR=""
+DSF_PLOT_STYLE=""
 
 # -----------------------------------------------------------------------------
 # Shared by dsf.py, vdos.py and msd.py
@@ -407,6 +447,14 @@ DYNAMICS_DT="2.0"
 #   VDOS_NORMALIZATION phonon (default, integral ~ 3 per atom) | unit_area.
 #                      This is the SUM RULE, a different axis from the weighting
 #                      below.
+#   VDOS_PLOT_XUNIT    Plot x axis: meV | THz | cm-1 | eV. The CSV always carries
+#                      all four, so this changes the figures only.
+#   VDOS_PLOT_DIR      Directory BASENAME for the DOS plots, one PNG per species
+#                      and per weighted total, plus all_curves.png — the overlay
+#                      is kept because a partial DOS is read against the total it
+#                      sums into. Default 'vdos' -> <date>_vdos/. The literal
+#                      'none' writes no plots; blank leaves the default.
+#   VDOS_PLOT_STYLE    'analysis' (default) or 'publication'.
 #   VDOS_WEIGHTING     Species weighting, SEMICOLON-separated, one total column
 #                      each: unity | coherent | incoherent | total. Empty =
 #                      "unity", the pre-weighting behaviour. Neutron weightings
@@ -423,6 +471,9 @@ VDOS_METHOD=""
 VDOS_WINDOW=""
 VDOS_NORMALIZATION=""
 VDOS_WEIGHTING=""
+VDOS_PLOT_XUNIT=""
+VDOS_PLOT_DIR=""
+VDOS_PLOT_STYLE=""
 
 # -----------------------------------------------------------------------------
 # msd.py — mean square displacement and self-diffusion. Reads dynamics.lammpstrj.
@@ -439,6 +490,12 @@ VDOS_WEIGHTING=""
 #                      need much more.
 #   MSD_CORR_INTERVAL  REQUIRED when RUN_MSD=1. fs between reference frames.
 #                      Noise level only, like VDOS_CORR_INTERVAL.
+#   MSD_PLOT_DIR       Directory BASENAME for the MSD plots, one PNG per species
+#                      plus all_species.png — the overlay is kept because the
+#                      comparison between species is the result here. Default
+#                      'msd' -> <date>_msd/. The literal 'none' writes no plots;
+#                      blank leaves the default.
+#   MSD_PLOT_STYLE     'analysis' (default) or 'publication'.
 #   MSD_FIT_FRACTION   REQUIRED when RUN_MSD=1. Tail fraction used for the D
 #                      fit. 0.4 = the last 40% of the lag range, i.e. the most
 #                      diffusive part.
@@ -447,6 +504,8 @@ MSD_STRIDE=""
 MSD_CORR_LENGTH="5000"
 MSD_CORR_INTERVAL="500"
 MSD_FIT_FRACTION="0.4"
+MSD_PLOT_DIR=""
+MSD_PLOT_STYLE=""
 
 # -----------------------------------------------------------------------------
 # vdos_dynmat.py — VDOS from the LAMMPS dynamical matrix (RUN_VDOS_DYNMAT=1)
@@ -514,6 +573,14 @@ MSD_FIT_FRACTION="0.4"
 #                          One value reaches both stages, like DYNMAT_FILE.
 #   VDOS_DYNMAT_BRIDGE_ELEMENT    the bridging atom, default O
 #   VDOS_DYNMAT_NEIGHBOR_ELEMENT  its two neighbours, default Si
+#   VDOS_DYNMAT_PLOT_DIR  Directory BASENAME for the harmonic-DOS plots: one PNG
+#                      per species and weighted total, their overlay, and — when
+#                      CHARACTER=yes — stretch/bend/rock separately, their
+#                      composite (kept: a band assignment is made by reading the
+#                      three against each other), the participation ratio, and
+#                      the reduced DOS. Defaults to VDOS_DYNMAT_OUTPUT's basename
+#                      -> <date>_vdos_dynmat/. 'none' writes no plots.
+#   VDOS_DYNMAT_PLOT_STYLE  'analysis' (default) or 'publication'.
 #   VDOS_DYNMAT_BOND_CUTOFF       bridge-neighbour max distance in A, default 2.2
 DYNMAT_MIN_STYLE=""
 DYNMAT_MIN_ETOL=""
@@ -538,3 +605,5 @@ DYNMAT_REF_TRAJ=""
 VDOS_DYNMAT_BRIDGE_ELEMENT=""
 VDOS_DYNMAT_NEIGHBOR_ELEMENT=""
 VDOS_DYNMAT_BOND_CUTOFF=""
+VDOS_DYNMAT_PLOT_DIR=""
+VDOS_DYNMAT_PLOT_STYLE=""

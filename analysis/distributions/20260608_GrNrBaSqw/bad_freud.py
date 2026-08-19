@@ -13,8 +13,10 @@ QUICK START
 
 OUTPUT
 ------
-- A PNG plot of all BAD curves  (OUTPUT_PLOT)
 - A CSV table of angle vs P(θ)  (OUTPUT_CSV; set to None to skip)
+- <date>_bad/ — ONE PNG PER TRIPLET, never a subplot grid: <A>-<B>-<C>.png.
+  The directory is created by the runner, not by this script; set
+  BAD_PLOT_DIR= (empty) to write only the CSV.
 
 DEFAULT TRIPLET SWEEP
 ----------------------
@@ -47,6 +49,7 @@ Column positions are read automatically from the ITEM: ATOMS header line.
 
 import itertools
 import os
+import re
 from datetime import date
 from typing import NamedTuple
 
@@ -62,9 +65,6 @@ import matplotlib.pyplot as plt
 
 # Input trajectory file
 DUMP_FILE = os.environ.get("TRAJ", "../OH.lammpstrj")
-
-# Output plot file
-OUTPUT_PLOT = "bads.png"
 
 # Output data table (CSV); set to None to skip
 OUTPUT_CSV = "bads.csv"
@@ -160,8 +160,18 @@ TRIPLET_CUTOFFS = _parse_triplet_cutoffs("TRIPLET_CUTOFFS", [
 # Number of bins spanning 0–180°
 BINS = int(os.environ.get("BAD_BINS", "180"))
 
-# Plot layout
-PLOT_NCOLS = 3
+# ---- Plot output ---------------------------------------------------------
+# Directory every PNG is written into, one triplet per file — no subplot grids.
+# A BASENAME; the YYYYMMDD_ prefix is added below like every other output.
+# Empty disables plotting and the CSV is still written.  Created by the runner
+# (distribution_run.sh / distribution_submit.slurm), not by this script.
+BAD_PLOT_DIR   = os.environ.get("BAD_PLOT_DIR", "bad")
+# 'analysis' (default) or 'publication'; see PLOT_STYLES after the config block.
+PLOT_STYLE     = os.environ.get("BAD_PLOT_STYLE", "analysis")
+PLOT_STYLE_KEY = "BAD_PLOT_STYLE"
+PLOT_DIR_KEY   = "BAD_PLOT_DIR"
+SCRIPT_NAME    = "bad_freud.py"
+
 PLOT_DPI   = 150
 
 # =============================================================================
@@ -172,8 +182,91 @@ PLOT_DPI   = 150
 def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
-OUTPUT_PLOT = _dated(OUTPUT_PLOT)
 OUTPUT_CSV  = _dated(OUTPUT_CSV)
+PLOT_DIR    = _dated(BAD_PLOT_DIR) if BAD_PLOT_DIR else None
+
+# =============================================================================
+# Plot output — one quantity per file
+# =============================================================================
+# Every curve is written as its own PNG into PLOT_DIR; nothing is packed into a
+# subplot grid.  A composite survives only where the combination *is* the
+# result — Wright's T(r) against the baseline it oscillates about, the mode
+# character decomposition, the species overlays — and those are named so they
+# read as composites rather than as one more quantity.
+#
+# PLOT_DIR is created by the runner (distribution_run.sh /
+# distribution_submit.slurm), never by this script: a missing directory means
+# the run was wired wrong, and quietly creating it would hide that.
+
+PLOT_STYLES = {
+    # 'analysis'    — titled and fully labelled, for reading a run.
+    # 'publication' — heavy lines and spines, large bold labels, no y ticks.
+    #                 This is the styling the separate *_plot.py pass used to
+    #                 apply; it is a config choice now, not a second script.
+    'analysis':    dict(figsize=(7.0, 4.5), linewidth=1.5, color='C0', spine_lw=0.8,
+                        weight='normal', label_fs=12, tick_fs=10,
+                        tick_len=4, tick_w=1.0, yticks=True, titles=True),
+    'publication': dict(figsize=(4.0, 3.0), linewidth=3.0, color='steelblue', spine_lw=2.0,
+                        weight='bold', label_fs=20, tick_fs=14,
+                        tick_len=6, tick_w=2.0, yticks=False, titles=False),
+}
+
+
+def plot_style():
+    if PLOT_STYLE not in PLOT_STYLES:
+        raise ValueError(
+            f"Unknown {PLOT_STYLE_KEY}={PLOT_STYLE!r}; use one of {list(PLOT_STYLES)}.")
+    return PLOT_STYLES[PLOT_STYLE]
+
+
+def check_plot_dir():
+    """
+    True if plots should be written.  PLOT_DIR must already exist — see the note
+    above on why this refuses to create it.
+    """
+    if PLOT_DIR is None:
+        return False
+    if not os.path.isdir(PLOT_DIR):
+        raise SystemExit(
+            f"{SCRIPT_NAME}: plot directory {PLOT_DIR!r} does not exist.\n"
+            f"  The runner creates it; running this script by hand, create it first:\n"
+            f"      mkdir -p {PLOT_DIR}\n"
+            f"  Or set {PLOT_DIR_KEY}= (empty) to skip plotting and write only the CSVs.")
+    return True
+
+
+def new_plot():
+    """A single-axes figure in the configured style."""
+    st = plot_style()
+    return plt.subplots(figsize=st['figsize']) + (st,)
+
+
+def save_plot(fig, ax, name, xlabel, ylabel, title=None, legend=False):
+    """
+    Finish one figure and write it as PLOT_DIR/<name>.png.
+
+    `name` becomes the filename, so anything a path cannot carry is substituted
+    rather than left to mangle the path silently.
+    """
+    st = plot_style()
+    ax.set_xlabel(xlabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    ax.set_ylabel(ylabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    if title and st['titles']:
+        ax.set_title(title)
+    ax.tick_params(axis='x', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    if st['yticks']:
+        ax.tick_params(axis='y', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    else:
+        ax.yaxis.set_ticks([])
+    if legend:
+        ax.legend(fontsize=8 if st['titles'] else 10)
+    for spine in ax.spines.values():
+        spine.set_linewidth(st['spine_lw'])
+    fig.tight_layout()
+    path = os.path.join(PLOT_DIR, f"{re.sub(r'[^A-Za-z0-9._+-]', '_', name)}.png")
+    fig.savefig(path, dpi=PLOT_DPI)
+    plt.close(fig)
+    return path
 
 
 def _pair_key(el1, el2):
@@ -631,32 +724,24 @@ def save_csv(results, filename):
 
 
 def plot_bads(results):
-    n     = len(results)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, (name, (angles, hist)) in zip(axes, results.items()):
-        ax.plot(angles, hist)
-        ax.set_xlabel('Angle (degrees)')
-        ax.set_ylabel('P(θ)')
-        ax.set_title(name)
+    """One PNG per triplet.  The 0-180 x limit is kept on every one of them:
+    a bond angle distribution read against an auto-scaled axis invites
+    comparing two triplets that do not share a range."""
+    for name, (angles, hist) in results.items():
+        fig, ax, st = new_plot()
+        ax.plot(angles, hist, color=st['color'], linewidth=st['linewidth'])
         ax.set_xlim(0, 180)
-
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Plot saved to {OUTPUT_PLOT}")
+        save_plot(fig, ax, name, 'Angle (degrees)', 'P(θ)', title=name)
+    print(f"{len(results)} BAD plot(s) written to {PLOT_DIR}/")
 
 
 if __name__ == '__main__':
     if not ELEMENTS:
         raise ValueError("ELEMENTS is empty — set it to the element symbols present in the simulation.")
+
+    # A missing plot directory is a wiring error: catch it before the parse,
+    # not after the triplet sweep has already run.
+    plots = check_plot_dir()
 
     all_triplet_cutoffs = _build_triplet_cutoffs()
     _validate_triplet_cutoffs(all_triplet_cutoffs)
@@ -688,4 +773,5 @@ if __name__ == '__main__':
     if OUTPUT_CSV is not None:
         save_csv(results, OUTPUT_CSV)
 
-    plot_bads(results)
+    if plots:
+        plot_bads(results)

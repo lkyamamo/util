@@ -196,7 +196,17 @@ OUTPUT
 - <date>_vdos_dynmat.csv — freq_meV, freq_THz, freq_cm-1, freq_eV, then
                            DoS(<element>) per element and DoS(Total). Same column
                            layout as vdos.py's CSV so the two can be overlaid.
-- <date>_vdos_dynmat.png — all curves on one axes, x-axis in XUNIT
+- <date>_vdos_dynmat/ — ONE PNG PER QUANTITY, never a stacked panel figure:
+      <element>.png, Total_<weighting>.png   the DOS curves
+      all_curves.png                         their overlay
+      character_<name>.png                   stretch / bend / rock, and total
+      character_composite.png                the four together, which is how a
+                                             band assignment is actually read
+      participation_ratio.png                localization, one point per mode
+      reduced_dos.png                        g(v)/v^2, where the boson peak is
+  The last four appear only when CHARACTER='yes'.  The directory is created by
+  the runner, not by this script; set VDOS_DYNMAT_PLOT_DIR= (empty) to write
+  only the CSVs.
 
 DEPENDENCIES
 ------------
@@ -204,6 +214,7 @@ DEPENDENCIES
 """
 
 import os
+import re
 
 # Thread count must be set BEFORE numpy is imported — OpenBLAS and MKL both read
 # their thread environment once, at load time, and ignore later changes. This is
@@ -359,10 +370,20 @@ if BOND_CUTOFF <= 0:
 # Output basename; .csv and .png are appended (set either to None to skip).
 _OUTPUT_BASE = _env("VDOS_DYNMAT_OUTPUT", "vdos_dynmat")
 OUTPUT_CSV   = f"{_OUTPUT_BASE}.csv"
-OUTPUT_PLOT  = f"{_OUTPUT_BASE}.png"
 # Written only when CHARACTER='yes'.
 OUTPUT_MODES     = f"{_OUTPUT_BASE}_modes.csv"
-OUTPUT_CHARACTER = f"{_OUTPUT_BASE}_character.png"
+
+# ---- Plot output ---------------------------------------------------------
+# Directory every PNG is written into, one quantity per file — no stacked
+# panels.  A BASENAME; the YYYYMMDD_ prefix is added below like every other
+# output.  Empty disables plotting and the CSVs are still written.  Created by
+# the runner (distribution_run.sh / distribution_submit.slurm), not here.
+VDOS_DYNMAT_PLOT_DIR = _env("VDOS_DYNMAT_PLOT_DIR", _OUTPUT_BASE)
+# 'analysis' (default) or 'publication'; see PLOT_STYLES after the config block.
+PLOT_STYLE     = _env("VDOS_DYNMAT_PLOT_STYLE", "analysis")
+PLOT_STYLE_KEY = "VDOS_DYNMAT_PLOT_STYLE"
+PLOT_DIR_KEY   = "VDOS_DYNMAT_PLOT_DIR"
+SCRIPT_NAME    = "vdos_dynmat.py"
 
 # Plot appearance
 PLOT_DPI = 150
@@ -376,9 +397,91 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_CSV       = _dated(OUTPUT_CSV)
-OUTPUT_PLOT      = _dated(OUTPUT_PLOT)
 OUTPUT_MODES     = _dated(OUTPUT_MODES)
-OUTPUT_CHARACTER = _dated(OUTPUT_CHARACTER)
+PLOT_DIR         = _dated(VDOS_DYNMAT_PLOT_DIR) if VDOS_DYNMAT_PLOT_DIR else None
+
+# =============================================================================
+# Plot output — one quantity per file
+# =============================================================================
+# Every curve is written as its own PNG into PLOT_DIR; nothing is packed into a
+# subplot grid.  A composite survives only where the combination *is* the
+# result — Wright's T(r) against the baseline it oscillates about, the mode
+# character decomposition, the species overlays — and those are named so they
+# read as composites rather than as one more quantity.
+#
+# PLOT_DIR is created by the runner (distribution_run.sh /
+# distribution_submit.slurm), never by this script: a missing directory means
+# the run was wired wrong, and quietly creating it would hide that.
+
+PLOT_STYLES = {
+    # 'analysis'    — titled and fully labelled, for reading a run.
+    # 'publication' — heavy lines and spines, large bold labels, no y ticks.
+    #                 This is the styling the separate *_plot.py pass used to
+    #                 apply; it is a config choice now, not a second script.
+    'analysis':    dict(figsize=(7.0, 4.5), linewidth=1.5, color='C0', spine_lw=0.8,
+                        weight='normal', label_fs=12, tick_fs=10,
+                        tick_len=4, tick_w=1.0, yticks=True, titles=True),
+    'publication': dict(figsize=(4.0, 3.0), linewidth=3.0, color='steelblue', spine_lw=2.0,
+                        weight='bold', label_fs=20, tick_fs=14,
+                        tick_len=6, tick_w=2.0, yticks=False, titles=False),
+}
+
+
+def plot_style():
+    if PLOT_STYLE not in PLOT_STYLES:
+        raise ValueError(
+            f"Unknown {PLOT_STYLE_KEY}={PLOT_STYLE!r}; use one of {list(PLOT_STYLES)}.")
+    return PLOT_STYLES[PLOT_STYLE]
+
+
+def check_plot_dir():
+    """
+    True if plots should be written.  PLOT_DIR must already exist — see the note
+    above on why this refuses to create it.
+    """
+    if PLOT_DIR is None:
+        return False
+    if not os.path.isdir(PLOT_DIR):
+        raise SystemExit(
+            f"{SCRIPT_NAME}: plot directory {PLOT_DIR!r} does not exist.\n"
+            f"  The runner creates it; running this script by hand, create it first:\n"
+            f"      mkdir -p {PLOT_DIR}\n"
+            f"  Or set {PLOT_DIR_KEY}= (empty) to skip plotting and write only the CSVs.")
+    return True
+
+
+def new_plot():
+    """A single-axes figure in the configured style."""
+    st = plot_style()
+    return plt.subplots(figsize=st['figsize']) + (st,)
+
+
+def save_plot(fig, ax, name, xlabel, ylabel, title=None, legend=False):
+    """
+    Finish one figure and write it as PLOT_DIR/<name>.png.
+
+    `name` becomes the filename, so anything a path cannot carry is substituted
+    rather than left to mangle the path silently.
+    """
+    st = plot_style()
+    ax.set_xlabel(xlabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    ax.set_ylabel(ylabel, fontsize=st['label_fs'], fontweight=st['weight'])
+    if title and st['titles']:
+        ax.set_title(title)
+    ax.tick_params(axis='x', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    if st['yticks']:
+        ax.tick_params(axis='y', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
+    else:
+        ax.yaxis.set_ticks([])
+    if legend:
+        ax.legend(fontsize=8 if st['titles'] else 10)
+    for spine in ax.spines.values():
+        spine.set_linewidth(st['spine_lw'])
+    fig.tight_layout()
+    path = os.path.join(PLOT_DIR, f"{re.sub(r'[^A-Za-z0-9._+-]', '_', name)}.png")
+    fig.savefig(path, dpi=PLOT_DPI)
+    plt.close(fig)
+    return path
 
 # The three orthogonal directions the bridging atom can move in, in the order
 # they are reported. Names follow the silica-glass literature.
@@ -1097,40 +1200,52 @@ def save_modes_csv(freqs, freq_by_unit_of, pr, character, element_fracs, filenam
     print(f"Per-mode table saved to {filename}  ({len(freqs)} modes)")
 
 
-def plot_character(grid, character_curves, total, pr, mode_freqs, filename, xunit=XUNIT):
+def plot_character(grid, character_curves, total, pr, mode_freqs, xunit=XUNIT):
     """
-    Three stacked panels: what kind of motion each band is, how localized its
-    modes are, and the reduced DOS that exposes the boson peak.
-    """
-    fig, axes = plt.subplots(3, 1, figsize=(8, 11), sharex=True)
+    The three things the character analysis produces, each as its own file:
+    what kind of motion each band is, how localized its modes are, and the
+    reduced DOS that exposes the boson peak.
 
-    ax = axes[0]
+    The character composite is kept alongside the individual curves because a
+    band assignment is made by reading stretch, bend and rock against each
+    other and against the total — separated, they answer a different question
+    than they do together.
+    """
+    xlabel  = FREQ_UNIT_LABELS[xunit]
+    dos_lab = 'DOS (states / atom / ' + xunit + ')'
+
+    for name in CHARACTER_NAMES:
+        fig, ax, st = new_plot()
+        ax.plot(grid, character_curves[name], color=st['color'], linewidth=st['linewidth'])
+        save_plot(fig, ax, f'character_{name}', xlabel, dos_lab,
+                  title=f'{name.capitalize()} character (bridging-atom motion)')
+
+    fig, ax, st = new_plot()
+    ax.plot(grid, total, color=st['color'], linewidth=st['linewidth'])
+    save_plot(fig, ax, 'character_total', xlabel, dos_lab, title='Total DOS')
+
+    fig, ax, st = new_plot()
     ax.plot(grid, total, color='0.3', linewidth=1.6, label='total')
     for name in CHARACTER_NAMES:
         ax.plot(grid, character_curves[name], linewidth=1.2, label=name)
-    ax.set_ylabel('DOS (states / atom / ' + xunit + ')')
-    ax.set_title('Character-resolved DOS (bridging-atom motion)')
-    ax.legend()
+    save_plot(fig, ax, 'character_composite', xlabel, dos_lab,
+              title='Character-resolved DOS (bridging-atom motion)', legend=True)
 
-    ax = axes[1]
     # One point per mode: scatter rather than a curve, because the spread of PR
     # at a given frequency is itself the information — a tight low band means
     # every mode there is equally extended, a wide one means they are not.
+    fig, ax, st = new_plot()
     ax.plot(mode_freqs, pr, '.', markersize=2, alpha=0.4)
-    ax.set_ylabel('participation ratio')
-    ax.set_title('Localization (1 = every atom moves, 1/N = one atom moves)')
     ax.set_ylim(0, 1)
+    save_plot(fig, ax, 'participation_ratio', xlabel, 'participation ratio',
+              title='Localization (1 = every atom moves, 1/N = one atom moves)')
 
-    ax = axes[2]
-    ax.plot(grid, reduced_dos(total, grid), color='C3', linewidth=1.2)
-    ax.set_ylabel(f'g / {xunit}²')
-    ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
-    ax.set_title('Reduced DOS g(ν)/ν² — a peak here is the boson peak')
+    fig, ax, st = new_plot()
+    ax.plot(grid, reduced_dos(total, grid), color='C3', linewidth=st['linewidth'])
+    save_plot(fig, ax, 'reduced_dos', xlabel, f'g / {xunit}²',
+              title='Reduced DOS g(ν)/ν² — a peak here is the boson peak')
 
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Character plot saved to {filename}")
+    print(f"{len(CHARACTER_NAMES) + 4} character plot(s) written to {PLOT_DIR}/")
 
 
 def report_census(census, bridge_element, neighbor_element, cutoff):
@@ -1172,20 +1287,24 @@ def report_census(census, bridge_element, neighbor_element, cutoff):
               f"unaffected.")
 
 
-def plot_vdos(results, freq_by_unit, filename, xunit=XUNIT):
-    x = freq_by_unit[xunit]
+def plot_vdos(results, freq_by_unit, xunit=XUNIT):
+    """One PNG per curve, plus the overlay — same split as vdos.py, so the two
+    directories can be compared file for file."""
+    x      = freq_by_unit[xunit]
+    ylabel = ('DOS (states / atom / ' + xunit + ')' if NORMALIZATION == 'phonon'
+              else 'VDOS (unit-area normalized)')
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    for label, curve in results.items():
+        fig, ax, st = new_plot()
+        ax.plot(x, curve, color=st['color'], linewidth=st['linewidth'])
+        save_plot(fig, ax, label, FREQ_UNIT_LABELS[xunit], ylabel, title=f'VDOS  {label}')
+
+    fig, ax, st = new_plot()
     for label, curve in results.items():
         ax.plot(x, curve, label=label, linewidth=1.5 if label.startswith('total_') else 1.0)
-    ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
-    ax.set_ylabel('DOS (states / atom / ' + xunit + ')' if NORMALIZATION == 'phonon'
-                  else 'VDOS (unit-area normalized)')
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Plot saved to {filename}")
+    save_plot(fig, ax, 'all_curves', FREQ_UNIT_LABELS[xunit], ylabel,
+              title='VDOS, all curves', legend=True)
+    print(f"{len(results) + 1} VDOS plot(s) written to {PLOT_DIR}/")
 
 
 def snap_zero_modes(freqs, tolerance):
@@ -1244,8 +1363,10 @@ if __name__ == '__main__':
     import time
 
     # Validated before anything is read, so a typo costs a second rather than a
-    # full diagonalization.
+    # full diagonalization.  A missing plot directory is the same class of
+    # error, so it is caught in the same place.
     weightings = parse_weightings(WEIGHTING)
+    plots      = check_plot_dir()
 
     t0 = time.time()
     positions = box_lengths = None
@@ -1378,12 +1499,11 @@ if __name__ == '__main__':
 
     if OUTPUT_CSV is not None:
         save_csv(results, freq_by_unit, OUTPUT_CSV, extra=extra)
-    if OUTPUT_PLOT is not None:
-        plot_vdos(results, freq_by_unit, OUTPUT_PLOT)
+    if plots:
+        plot_vdos(results, freq_by_unit)
     if CHARACTER == 'yes':
         if OUTPUT_MODES is not None:
             save_modes_csv(freqs, _freq_all_units(freqs, XUNIT), pr, character,
                            element_fracs, OUTPUT_MODES)
-        if OUTPUT_CHARACTER is not None:
-            plot_character(grid, character_curves, results['total_unity'], pr, freqs,
-                           OUTPUT_CHARACTER)
+        if plots:
+            plot_character(grid, character_curves, results['total_unity'], pr, freqs)
