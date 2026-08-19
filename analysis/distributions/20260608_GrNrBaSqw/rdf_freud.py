@@ -16,6 +16,8 @@ OUTPUT
                                                               (set OUTPUT_CSV=None to skip)
 - nrs.png   — cumulative coordination number n(r) plots       (set OUTPUT_NR_PLOT=None to skip)
 - nrs.csv   — r (Å), n(r) both directions per pair            (set OUTPUT_NR_CSV=None to skip)
+- wright.csv/.png — a single T(r) built to overlay directly on a published
+                    neutron correlation function        (only when RDF_WRIGHT=yes)
 
 CONVENTIONS
 -----------
@@ -93,6 +95,17 @@ double-humped.
 
 A Gaussian matches the width but not the shape: the Lorch kernel has negative
 side lobes near -5% of the peak, which appear beside strong peaks.
+
+RDF_WRIGHT=yes bundles the three choices such a comparison needs into one
+output, so none of them has to be remembered separately:
+
+    RDF_WRIGHT=yes RDF_WRIGHT_QMAX=45.2 RDF_ATOMS_PER_FORMULA_UNIT=3
+
+writes <date>_wright.csv and .png with T(r) Lorch-broadened, per formula unit,
+alongside the unbroadened curve and the T0(r) baseline it oscillates about. It
+prints Sum(w), the resolution FWHM and the T0 slope 4*pi*rho*Sum(w) — that last
+number is the check worth making, since the slope of the paper's average-density
+line must equal it and is fixed by composition and density with nothing fitted.
 
 $RDF_FUNCTIONS — what is built from those weights and the partials g_AB:
 
@@ -244,6 +257,31 @@ PLOT_DPI = 150
 OUTPUT_NR_PLOT = "nrs.png"
 OUTPUT_NR_CSV  = "nrs.csv"
 
+# ---- Wright comparison output -------------------------------------------
+# A single curve built to be overlaid directly on a published neutron T(r),
+# bundling the three choices such a comparison needs so none has to be
+# remembered separately:
+#     function      T(r)
+#     normalization per FORMULA UNIT   (RDF_ATOMS_PER_FORMULA_UNIT)
+#     broadening    Lorch, dr = pi/Q_max   (RDF_WRIGHT_QMAX)
+# Emitted to its own CSV/PNG rather than mixed into rdfs.csv, because it is a
+# finished comparison artefact with its own units, not another convention column.
+RDF_WRIGHT      = os.environ.get("RDF_WRIGHT", "no")
+if RDF_WRIGHT not in ("yes", "no"):
+    raise ValueError(f"Unknown RDF_WRIGHT={RDF_WRIGHT!r}; use 'yes' or 'no'.")
+RDF_WRIGHT_QMAX = float(os.environ.get("RDF_WRIGHT_QMAX", "0") or 0)   # Å⁻¹
+if RDF_WRIGHT == "yes":
+    if RDF_WRIGHT_QMAX <= 0:
+        raise ValueError(
+            "RDF_WRIGHT=yes needs RDF_WRIGHT_QMAX (Å⁻¹), the truncation of the Fourier "
+            "transform in the paper. Wright's vitreous-silica work used 45.2.")
+    if RDF_ATOMS_PER_FORMULA_UNIT <= 0:
+        raise ValueError(
+            "RDF_WRIGHT=yes needs RDF_ATOMS_PER_FORMULA_UNIT — the number of atoms in "
+            "the formula unit the paper quotes its cross-section per (SiO2 -> 3).")
+OUTPUT_WRIGHT_CSV  = "wright.csv"
+OUTPUT_WRIGHT_PLOT = "wright.png"
+
 # =============================================================================
 # END CONFIGURATION
 # =============================================================================
@@ -256,6 +294,8 @@ OUTPUT_PLOT    = _dated(OUTPUT_PLOT)
 OUTPUT_CSV     = _dated(OUTPUT_CSV)
 OUTPUT_NR_PLOT = _dated(OUTPUT_NR_PLOT)
 OUTPUT_NR_CSV  = _dated(OUTPUT_NR_CSV)
+OUTPUT_WRIGHT_CSV  = _dated(OUTPUT_WRIGHT_CSV)
+OUTPUT_WRIGHT_PLOT = _dated(OUTPUT_WRIGHT_PLOT)
 
 # Coherent neutron scattering lengths (fm).  Add elements as needed.
 # Values from NIST: https://www.ncnr.nist.gov/resources/n-lengths/
@@ -803,6 +843,82 @@ def build_coordination(nr_raw, concentrations):
     return out
 
 
+def build_wright(partial_results, elements, concentrations, rho_mean, q_max, n_formula):
+    """
+    T(r) on a published neutron-diffraction footing, ready to overlay.
+
+    Three choices, all of which have to agree with the paper or the curves will
+    not lie on top of each other:
+
+      function       T(r) = 4*pi*r*rho*sum w g_AB, which is Wright's
+                     T(r) = D(r) + T0(r) — it oscillates about the straight
+                     baseline T0 rather than about zero.
+      normalization  per FORMULA UNIT, so a factor n above the per-atom result
+                     (see the 'formula' entry in CONVENTIONS).
+      broadening     the Lorch modification function with dr = pi/q_max, applied
+                     as the full P(r-r') - P(r+r') convolution.
+
+    Returns (columns, info) where columns is {label: array} and info carries the
+    numbers worth checking against the paper: the T0 slope, Sum(w), and the
+    resolution FWHM.
+    """
+    r = next(iter(partial_results.values()))[0]
+    weights = pair_weights('formula', elements, concentrations)
+    if weights is None:
+        raise SystemExit("rdf_freud.py: RDF_WRIGHT=yes could not build weights — see above.")
+
+    sum_w = sum(weights.values())
+    delta_r = np.pi / q_max
+    fwhm, double_humped = lorch_fwhm(delta_r, q_max)
+
+    t_raw = apply_function('T', r, weights, partial_results, rho_mean)
+    t_broad = apply_lorch(r, t_raw, delta_r, q_max)
+    baseline = 4 * np.pi * r * rho_mean * sum_w        # Wright's T0(r)
+
+    info = {
+        'sum_w': sum_w, 'delta_r': delta_r, 'fwhm': fwhm, 'q_max': q_max,
+        'n_formula': n_formula, 'rho': rho_mean,
+        't0_slope': 4 * np.pi * rho_mean * sum_w, 'double_humped': double_humped,
+    }
+    return {'T_wright': t_broad, 'T_wright_unbroadened': t_raw, 'T0_baseline': baseline}, info
+
+
+def report_wright(info):
+    """Print the numbers that decide whether the comparison is set up right."""
+    print("\nWright-comparison output (overlay T_wright on the published T(r)):")
+    print(f"  normalization  per formula unit, n = {info['n_formula']:g} atoms   "
+          f"Σw = {info['sum_w']:.4f} barn/sr/formula-unit")
+    print(f"  broadening     Lorch Δr = π/Q_max = {info['delta_r']:.4f} Å at "
+          f"Q_max = {info['q_max']:g} Å⁻¹  ->  resolution FWHM {info['fwhm']:.4f} Å")
+    print(f"                 ^ compare that FWHM against the resolution the paper quotes")
+    if info['double_humped']:
+        print("  WARNING: the kernel is double-humped — check Q_max")
+    print(f"  density        ρ = {info['rho']:.6f} atoms/Å³ (per atom; the n is in the weights)")
+    print(f"  T0 slope       4πρΣw = {info['t0_slope']:.4f} barn/sr/formula-unit/Å³")
+    print(f"                 ^ THE check: measure the slope of the paper's average-density")
+    print(f"                   line and it must equal this. It is fixed by composition and")
+    print(f"                   density alone, so it needs no fitting.")
+
+
+def plot_wright(columns, r, info, filename):
+    """T(r) against its own T0 baseline, the way published figures show it."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(r, columns['T_wright'], color='C0', linewidth=1.6, label='T(r), Lorch-broadened')
+    ax.plot(r, columns['T_wright_unbroadened'], color='C0', linewidth=0.8, alpha=0.45,
+            label='T(r), unbroadened')
+    ax.plot(r, columns['T0_baseline'], color='0.4', linestyle='--', linewidth=1.0,
+            label=r'$T^0(r)=4\pi r\rho^0\langle b\rangle^2$')
+    ax.set_xlabel('r (Å)')
+    ax.set_ylabel(r'T(r)  (barn sr$^{-1}$ formula-unit$^{-1}$ Å$^{-2}$)')
+    ax.set_title(f"Wright comparison — Lorch Q$_{{max}}$={info['q_max']:g} Å⁻¹, "
+                 f"FWHM {info['fwhm']:.3f} Å")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(filename, dpi=PLOT_DPI)
+    plt.close(fig)
+    print(f"Wright-comparison plot saved to {filename}")
+
+
 def save_csv(results, filename):
     """Save results dict {label: (r, y)} to CSV with one column per label."""
     r = next(iter(results.values()))[0]
@@ -956,3 +1072,15 @@ if __name__ == '__main__':
     plot_rdfs(gr_results, meta)
     if OUTPUT_NR_PLOT is not None:
         plot_nrs(nr_results)
+
+    if RDF_WRIGHT == 'yes':
+        wright_cols, wright_info = build_wright(
+            {k: v for k, v in gr_results.items() if '-' in k},   # partials only
+            elements, concentrations, rho.mean(),
+            RDF_WRIGHT_QMAX, RDF_ATOMS_PER_FORMULA_UNIT,
+        )
+        report_wright(wright_info)
+        if OUTPUT_WRIGHT_CSV is not None:
+            save_csv({k: (r_grid, v) for k, v in wright_cols.items()}, OUTPUT_WRIGHT_CSV)
+        if OUTPUT_WRIGHT_PLOT is not None:
+            plot_wright(wright_cols, r_grid, wright_info, OUTPUT_WRIGHT_PLOT)
