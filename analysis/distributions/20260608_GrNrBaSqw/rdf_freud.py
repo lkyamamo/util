@@ -167,6 +167,41 @@ RDF_FUNCTIONS     = os.environ.get("RDF_FUNCTIONS", "g;h;D")
 # Written as a *_broadened twin, so the raw curve is never lost.  0 disables.
 RDF_RESOLUTION_SIGMA = float(os.environ.get("RDF_RESOLUTION_SIGMA", "0.1"))
 
+# Resolution kernel shape. 'gaussian' is the generic stand-in; 'lorch' reproduces
+# the modification function used in neutron glass diffraction (Wright's eq. 10
+# and the equations that follow it), where the Q-space window
+#     M(Q) = sin(dr Q)/(dr Q)   for Q <= Q_max,  0 above
+# is cosine-transformed into a real-space peak function P(r) and convolved with
+# the correlation function. A Gaussian matches its WIDTH but not its shape: the
+# Lorch kernel has negative side lobes (~-9% of peak) that a Gaussian cannot
+# reproduce, which matters between and beside strong peaks.
+RDF_RESOLUTION_MODE = os.environ.get("RDF_RESOLUTION_MODE", "gaussian")
+if RDF_RESOLUTION_MODE not in ("gaussian", "lorch"):
+    raise ValueError(
+        f"Unknown RDF_RESOLUTION_MODE={RDF_RESOLUTION_MODE!r}; use 'gaussian' or 'lorch'.")
+RDF_LORCH_QMAX = float(os.environ.get("RDF_LORCH_QMAX", "0") or 0)   # Å⁻¹
+# The parameter INSIDE M(Q) = sin(dr Q)/(dr Q). Defaults to the standard Lorch
+# choice pi/Q_max, which puts M's first zero exactly at the truncation so the
+# window closes smoothly. Papers usually quote the RESULTING real-space
+# resolution (the FWHM of P(r)) rather than this parameter, and the two differ
+# by about 1.73x — Wright's Q_max = 45.2 with pi/Q_max = 0.0695 yields FWHM
+# 0.120 A, which is the number his text quotes. Setting this to the quoted
+# resolution instead is the easy mistake, and it doubles the broadening.
+RDF_LORCH_DR = float(os.environ.get("RDF_LORCH_DR", "0") or 0)       # Å; 0 = pi/Q_max
+if RDF_RESOLUTION_MODE == "lorch":
+    if RDF_LORCH_QMAX <= 0:
+        raise ValueError(
+            "RDF_RESOLUTION_MODE=lorch needs RDF_LORCH_QMAX (Å⁻¹), the truncation of "
+            "the Fourier transform in the paper you are comparing against.")
+    if RDF_LORCH_DR <= 0:
+        RDF_LORCH_DR = np.pi / RDF_LORCH_QMAX
+
+# Atoms per formula unit, needed only by the 'formula' normalization. Neutron
+# diffraction papers frequently quote cross-sections per formula unit (per SiO2)
+# rather than per atom; that is a factor of n, and it is the single most common
+# reason a published curve sits a constant factor above a per-atom calculation.
+RDF_ATOMS_PER_FORMULA_UNIT = float(os.environ.get("RDF_ATOMS_PER_FORMULA_UNIT", "0") or 0)
+
 # Plot layout: how many columns in the subplot grid
 PLOT_NCOLS = 2
 
@@ -444,9 +479,11 @@ NORMALIZATION_EQUATIONS = {
     'unity':    'w = f c_A c_B',
     'FZ':       'w = f c_A c_B b_A b_B / <b>²',
     'absolute': 'w = f c_A c_B b_A b_B / 100',
+    'formula':  'w = n f c_A c_B b_A b_B / 100   (n = atoms per formula unit)',
 }
 
-NORMALIZATION_UNITS = {'unity': '', 'FZ': '', 'absolute': 'barn/sr/atom'}
+NORMALIZATION_UNITS = {'unity': '', 'FZ': '', 'absolute': 'barn/sr/atom',
+                       'formula': 'barn/sr/formula-unit'}
 
 FUNCTION_EQUATIONS = {
     'g': 'Σ w g_AB',
@@ -506,7 +543,26 @@ def pair_weights(normalization, elements, concentrations, b_override=None):
 
     b_mean = sum(concentrations[el] * b[el] for el in elements)
 
-    if normalization == 'FZ':
+    if normalization == 'formula':
+        # Per formula unit rather than per atom. Wright's eq. (10) writes the
+        # baseline as T0 = 4*pi*r*rho0*(sum_j b_j)^2 with rho0 in formula units
+        # per A^3 and sum_j b_j the TOTAL scattering length of one unit. Since
+        # sum_j b_j = n<b> and rho0 = rho_atom/n, that is
+        #     (rho_a/n)(n<b>)^2 = n * rho_a * <b>^2
+        # i.e. exactly n times the per-atom result, for any composition. Folding
+        # the n into the weights keeps rho per atom everywhere else in this
+        # script, so only this one factor changes.
+        if RDF_ATOMS_PER_FORMULA_UNIT <= 0:
+            raise SystemExit(
+                "rdf_freud.py: RDF_NORMALIZATION=formula needs RDF_ATOMS_PER_FORMULA_UNIT,\n"
+                "  the number of atoms in the formula unit the paper quotes (SiO2 -> 3).\n"
+                f"  This system's concentrations are "
+                + ", ".join(f"{el}={concentrations[el]:.4f}" for el in sorted(elements))
+                + ",\n  so the smallest integer formula implies n = "
+                + f"{1.0/min(concentrations[el] for el in elements):.2f} — set it explicitly."
+            )
+        denom = 100.0 / RDF_ATOMS_PER_FORMULA_UNIT
+    elif normalization == 'FZ':
         # FZ divides out <b>², which is a nearly-cancelling sum for H-rich or
         # null samples; the resulting amplification is numerical, not physical.
         if abs(b_mean) < 1e-9:
@@ -583,19 +639,92 @@ def build_conventions(partial_results, elements, concentrations, rho_mean,
     return results, meta
 
 
-def broaden(results, meta, sigma, dr):
+def lorch_peak_function(r, delta_r, q_max):
     """
-    Add a *_broadened twin of every convention column: Gaussian resolution
-    matching, so modeled peaks are not sharper than measured ones purely for
-    instrumental reasons (Soper used ~0.1 Å).  Mutates both dicts.
+    Wright's real-space peak function P(r), the cosine transform of the Q-space
+    modification function M(Q) = sin(dr*Q)/(dr*Q) truncated at q_max.
+
+    The integral has a closed form in sine integrals:
+
+        int_0^Qmax  sin(dr Q) cos(r Q) / (dr Q) dQ
+            = [ Si((dr + r) Qmax) + Si((dr - r) Qmax) ] / (2 dr)
+
+    so no numerical quadrature is needed. Returned unnormalized; the caller
+    normalizes it to unit area, which is what makes it a resolution kernel
+    rather than a weighted one (Wright carries b_j b_k in P_jk; here those
+    weights already live in the convention's w_AB).
     """
-    if sigma <= 0:
+    from scipy.special import sici
+    return (sici((delta_r + r) * q_max)[0] + sici((delta_r - r) * q_max)[0]) / (2 * delta_r)
+
+
+def apply_lorch(r, y, delta_r, q_max, chunk=512):
+    """
+    Convolve with the Lorch peak function, including the reflected term:
+
+        y'(r) = int_0^inf y(r') [ P(r - r') - P(r + r') ] dr'
+
+    The P(r + r') term enforces the odd symmetry of the correlation function
+    about the origin. It is negligible beyond a few kernel widths but is what
+    keeps the excluded-volume region correct at small r, which is exactly the
+    region used to check the normalization.
+    """
+    dr_grid = r[1] - r[0]
+    norm = np.trapezoid(lorch_peak_function(np.linspace(-2.0, 2.0, 20001), delta_r, q_max),
+                        np.linspace(-2.0, 2.0, 20001))
+    out = np.empty_like(y)
+    for start in range(0, len(r), chunk):
+        stop = min(start + chunk, len(r))
+        block = r[start:stop, None]                       # (chunk, 1)
+        kernel = (lorch_peak_function(block - r[None, :], delta_r, q_max)
+                  - lorch_peak_function(block + r[None, :], delta_r, q_max))
+        out[start:stop] = kernel @ y * dr_grid / norm
+    return out
+
+
+def lorch_fwhm(delta_r, q_max):
+    """
+    FWHM of the resulting peak function — the number papers actually quote as
+    their real-space resolution, so it is what you check against the text.
+    Also reports whether the kernel came out double-humped, which happens when
+    delta_r*q_max > pi and is the signature of having fed in the quoted
+    resolution instead of the M(Q) parameter.
+    """
+    x = np.linspace(0.0, 20.0 / q_max, 20001)
+    p = lorch_peak_function(x, delta_r, q_max)
+    p = p / p.max()
+    half = x[p >= 0.5]
+    return 2 * half.max(), bool(x[np.argmax(p)] > 1e-3)
+
+
+def broaden(results, meta, sigma, dr, mode='gaussian', delta_r=0.0, q_max=0.0):
+    """
+    Add a *_broadened twin of every convention column, so modeled peaks are not
+    sharper than measured ones purely for instrumental reasons.  Mutates both
+    dicts.
+
+    'gaussian' is the generic stand-in (Soper used ~0.1 Å).  'lorch' reproduces
+    the modification function neutron glass diffraction actually uses; it matches
+    a Gaussian in width but has negative side lobes a Gaussian cannot produce.
+    """
+    if mode == 'gaussian' and sigma <= 0:
         return
     for label in list(results):
         r, y = results[label]
-        results[f'{label}_broadened'] = (r, gaussian_filter1d(y, sigma / dr, mode='nearest'))
+        if mode == 'lorch':
+            wide = apply_lorch(r, y, delta_r, q_max)
+            fwhm, double = lorch_fwhm(delta_r, q_max)
+            note = (f"⊗ Lorch Δr={delta_r:.4f} Å, Q_max={q_max} Å⁻¹ "
+                    f"-> resolution FWHM {fwhm:.4f} Å"
+                    + ("  [WARNING: kernel is double-humped, Δr*Q_max > pi — Δr is "
+                       "probably the paper's quoted resolution, not its M(Q) parameter]"
+                       if double else ""))
+        else:
+            wide = gaussian_filter1d(y, sigma / dr, mode='nearest')
+            note = f"⊗ Gaussian σ={sigma} Å"
+        results[f'{label}_broadened'] = (r, wide)
         meta[f'{label}_broadened'] = dict(
-            meta[label], equation=f"{meta[label]['equation']}, ⊗ Gaussian σ={sigma} Å"
+            meta[label], equation=f"{meta[label]['equation']}, {note}"
         )
 
 
@@ -773,7 +902,8 @@ if __name__ == '__main__':
         gr_results, elements, concentrations, rho.mean(), normalizations, functions
     )
     r_grid = next(iter(gr_results.values()))[0]
-    broaden(conventions, meta, RDF_RESOLUTION_SIGMA, r_grid[1] - r_grid[0])
+    broaden(conventions, meta, RDF_RESOLUTION_SIGMA, r_grid[1] - r_grid[0],
+            mode=RDF_RESOLUTION_MODE, delta_r=RDF_LORCH_DR, q_max=RDF_LORCH_QMAX)
     print_convention_table(meta)
     gr_results.update(conventions)
 
