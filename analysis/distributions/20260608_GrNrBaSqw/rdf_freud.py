@@ -38,6 +38,7 @@ pair weight w_AB, with f = 2 − δ_AB written explicitly rather than folded in:
     unity     w_AB = f c_A c_B                    Σw = 1          dimensionless
     FZ        w_AB = f c_A c_B b_A b_B / <b>²     Σw = 1          dimensionless
     absolute  w_AB = f c_A c_B b_A b_B / 100      Σw = <b>²/100   barn/sr/atom
+    formula   w_AB = n f c_A c_B b_A b_B / 100   Σw = n<b>²/100  barn/sr/formula-unit
 
   unity     Every element scatters identically — b = 1, hence the name, which
             refers to the scattering lengths and not to Σw (FZ also sums to 1).
@@ -61,6 +62,37 @@ pair weight w_AB, with f = 2 − δ_AB written explicitly rather than folded in:
             the excluded-volume plateau lands at −Σw = −<b>²/100 and is a
             direct check on the composition.  Well conditioned as <b> → 0, so
             this is the one to use for light or null samples.
+
+  formula   'absolute' re-quoted per FORMULA UNIT rather than per atom, which is
+            what neutron diffraction papers on compounds usually do. Wright's
+            eq. (10) writes the baseline as T0 = 4*pi*r*rho0*(sum_j b_j)^2 with
+            rho0 in units/A^3 and sum_j b_j the TOTAL scattering length of one
+            unit; since sum_j b_j = n<b> and rho0 = rho_atom/n, that equals
+            n*rho_a*<b>^2 — exactly n times the per-atom result, for any
+            composition. Needs RDF_ATOMS_PER_FORMULA_UNIT (SiO2 -> 3). This
+            factor is the commonest reason a published curve sits a constant
+            factor above a per-atom calculation.
+
+COMPARING AGAINST A MEASURED CURVE
+----------------------------------
+RDF_RESOLUTION_MODE=lorch with RDF_LORCH_QMAX reproduces the modification
+function neutron glass diffraction uses,
+
+    M(Q) = sin(dr Q)/(dr Q)   for Q <= Q_max,  0 above
+
+whose cosine transform is the real-space peak function convolved with the
+correlation function. dr defaults to pi/Q_max, the standard Lorch choice that
+places M's first zero at the truncation.
+
+Papers quote the RESULTING resolution (the FWHM of that peak function) rather
+than dr, and the two differ by ~1.73x: Q_max = 45.2 gives dr = 0.0695 and
+FWHM = 0.120 A. Passing the quoted resolution as dr instead doubles the
+broadening and makes the kernel double-humped — the script prints the FWHM so
+it can be checked against the paper, and warns when the kernel comes out
+double-humped.
+
+A Gaussian matches the width but not the shape: the Lorch kernel has negative
+side lobes near -5% of the peak, which appear beside strong peaks.
 
 $RDF_FUNCTIONS — what is built from those weights and the partials g_AB:
 
