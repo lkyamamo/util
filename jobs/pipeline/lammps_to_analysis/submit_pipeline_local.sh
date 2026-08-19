@@ -55,6 +55,28 @@ Optional:
   invocation recipe works against either script:
     --rdf-r-max FLOAT            rdf_freud.py R_MAX (Å), e.g. 20.0
     --rdf-bins INT                rdf_freud.py BINS, e.g. 2000
+    --rdf-normalization STR       rdf_freud.py RDF_NORMALIZATION, SEMICOLON-separated
+                                    pair-weight conventions from 'unity', 'FZ',
+                                    'absolute', e.g. "FZ;absolute;unity"
+    --rdf-functions STR           rdf_freud.py RDF_FUNCTIONS, SEMICOLON-separated
+                                    correlation functions from 'g', 'h', 'D', 'T',
+                                    e.g. "g;h;D" (h with absolute is Soper's G_n(r))
+    --rdf-resolution-sigma FLOAT  rdf_freud.py RDF_RESOLUTION_SIGMA (Å), Gaussian
+                                    resolution broadening; 0 disables (default 0.1)
+    --rdf-resolution-mode STR     rdf_freud.py RDF_RESOLUTION_MODE: 'gaussian' (default)
+                                    or 'lorch' (the neutron-diffraction modification
+                                    function; needs --rdf-lorch-qmax)
+    --rdf-lorch-qmax FLOAT        rdf_freud.py RDF_LORCH_QMAX (A^-1), the Fourier
+                                    truncation of the measurement being compared to
+    --rdf-atoms-per-formula-unit INT
+                                  rdf_freud.py RDF_ATOMS_PER_FORMULA_UNIT (SiO2 -> 3),
+                                    needed by the 'formula' normalization and --rdf-wright
+    --rdf-wright {yes|no}         rdf_freud.py RDF_WRIGHT. Writes an extra
+                                    <date>_wright.csv/.png: T(r) Lorch-broadened and per
+                                    formula unit, built to overlay directly on a published
+                                    neutron correlation function. Needs --rdf-wright-qmax
+                                    and --rdf-atoms-per-formula-unit
+    --rdf-wright-qmax FLOAT       rdf_freud.py RDF_WRIGHT_QMAX (A^-1), e.g. 45.2
     --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
     --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
                                     entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
@@ -67,15 +89,17 @@ Optional:
                                     R_CUTOFF/R_MINCUT), e.g.
                                     "O-Si-O:O-Si-O:2.2:0.5:2.2:0.5|H-O-H:H-O-H:1.4:0.5:1.4:0.5"
     --bad-bins INT                bad_freud.py BINS, e.g. 180
-    --dsf-dt FLOAT                dsf.py DT (fs between dumped frames), e.g. 1.0
     --dsf-n-frames INT             dsf.py N_FRAMES, e.g. 500
     --dsf-stride INT               dsf.py STRIDE, e.g. 1
+    --dsf-neutron-weighting STR    dsf.py DSF_NEUTRON_WEIGHTING: 'yes' (default) or 'no'.
+                                     'no' drops the neutron-weighted S(q) columns; required
+                                     for H/D-bearing systems, which are refused outright.
     --dsf-window-size INT           dsf.py WINDOW_SIZE, e.g. 500
     --dsf-q-max FLOAT              dsf.py Q_MAX (Å⁻¹), e.g. 20.0
     --dsf-n-q-bins INT              dsf.py N_Q_BINS, e.g. 200
 
     --dynamics-dt FLOAT             dt of dynamics.lammpstrj in fs, e.g. 2.0 — the
-                                    ONLY value vdos.py and msd.py share, since it
+                                    ONLY value dsf.py, vdos.py and msd.py share, since it
                                     describes the trajectory rather than either
                                     analysis. Every other flag below is per script.
 
@@ -94,7 +118,12 @@ Optional:
                                     matches analysis/dynamics/src/msd.cpp) or 'fft_periodogram'
     --vdos-window STR                vdos.py WINDOW: 'cosine_lag'/'none' under
                                     vacf_cosine_transform, 'hann'/'none' under fft_periodogram
-    --vdos-normalization STR         vdos.py NORMALIZATION: 'phonon' (default) or 'unit_area'
+    --vdos-normalization STR         vdos.py VDOS_NORMALIZATION sum rule: 'phonon'
+                                       (default) or 'unit_area'
+    --vdos-weighting STR             vdos.py VDOS_WEIGHTING, SEMICOLON-separated species
+                                       weights from 'unity', 'coherent', 'incoherent',
+                                       'total', e.g. "unity;total" (default "unity").
+                                       Neutron weightings refuse H/D-bearing systems.
 
     msd.py — same trajectory as vdos.py, but set independently: MSD wants a long
     correlation length to reach the diffusive regime, VDOS a short one for
@@ -111,19 +140,83 @@ Optional:
                                     correlation window used for the diffusion-coefficient
                                     linear fit, e.g. 0.5
 
+    Dynamical-matrix VDOS. --run-vdos-dynmat 1 spans both stages: it sets
+    LAMMPS's RUN_DYNMAT=1, appending a minimization + dynamical_matrix block to
+    the end of in.input (acting on the final MD configuration), then runs
+    vdos_dynmat.py on the resulting matrix. The --dynmat-* flags reach in.input
+    as -var; the --vdos-dynmat-* flags drive the .py. Needs a --lmp-bin built
+    with the PHONON package.
+
+    Cost: the finite-difference loop is 6N force evaluations and the matrix is
+    (3N)^2 — at N=5184 that is 31104 force evaluations and ~1.9 GB. Local runs
+    want a much smaller cell than the cluster ones.
+
+    --run-vdos-dynmat {0|1}          enable both halves (default 0)
+    --dynmat-min-style STR           min_style for the pre-dynmat minimization (default cg)
+    --dynmat-min-etol FLOAT          minimize etol    (default 1.0e-12)
+    --dynmat-min-ftol FLOAT          minimize ftol    (default 1.0e-12) — residual forces
+                                     become spurious imaginary modes
+    --dynmat-min-maxiter INT         minimize maxiter (default 100000)
+    --dynmat-min-maxeval INT         minimize maxeval (default 1000000)
+    --dynmat-displacement FLOAT      finite-difference displacement, Angstrom (default 1e-4)
+    --dynmat-file NAME               matrix filename, written by LAMMPS and read by
+                                     vdos_dynmat.py (default dynmat.dat)
+    --dynmat-binary {yes|no}         raw float64 instead of text (default no)
+    --vdos-dynmat-max-frequency FLOAT  REQUIRED with --run-vdos-dynmat 1. DOS grid upper
+                                     limit, in --vdos-dynmat-xunit's unit. No default:
+                                     too low silently truncates
+    --vdos-dynmat-xunit STR          meV | THz | cm-1 | eV (default meV)
+    --vdos-dynmat-bins INT           frequency grid points (default 500)
+    --vdos-dynmat-smearing FLOAT     Gaussian FWHM in xunit; 0 = histogram (default 0)
+    --vdos-dynmat-matrix-style STR   regular | eskm (default regular) — must match the
+                                     dynamical_matrix style in the .input file
+    --vdos-dynmat-normalization STR  phonon (default) or unit_area
+    --vdos-dynmat-weighting STR      vdos_dynmat.py VDOS_DYNMAT_WEIGHTING, SEMICOLON-
+                                       separated species weights from 'unity', 'coherent',
+                                       'incoherent', 'total' (default "unity"). Needs
+                                       --vdos-dynmat-partial yes; refuses H/D systems.
+    --vdos-dynmat-partial {yes|no}   per-element partial DOS (default yes); 'no' halves
+                                     memory and runtime
+    --vdos-dynmat-asr STR            none (default) or simple
+    --vdos-dynmat-output NAME        output basename (default vdos_dynmat)
+
   --ntasks N                    MPI ranks for `mpirun -np` (default: 4)
   --analysis-cpus-per-task N    Sets OMP_NUM_THREADS for dsf.py/rdf_freud.py/
                                 bad_freud.py and VDOS_THREADS for vdos.py (default: 4)
 
-  --force REASON                  Overwrite existing input_files/run/ (stage 1) or an
-                                  existing <run_id>_distribution_analysis/ (stage 2)
-                                  instead of refusing to run. REASON is required (a
-                                  short explanation of why you're overwriting) and is
-                                  logged, with a timestamp and the exact path removed,
-                                  to both stderr and
-                                  jobs/pipeline/lammps_to_analysis/overwrite.log.
+  --force REASON                  Overwrite existing input_files/run/ (stage 1), or redo
+                                  a stage-2 calculation whose output is already in
+                                  <run_id>_distribution_analysis/, instead of refusing to
+                                  run. REASON is required (a short explanation of why
+                                  you're overwriting) and is logged, with a timestamp and
+                                  the exact paths involved, to both stderr and
+                                  overwrite.log in the run directory.
+
+  --clean                         Delete the whole <run_id>_distribution_analysis/
+                                  directory before stage 2, rather than adding to it.
+                                  Off by default. The deletion is logged to
+                                  overwrite.log like --force; pass --force REASON
+                                  alongside it to record why.
 
   -h, --help                    Show this help
+
+RE-RUNNING STAGE 2
+An existing <run_id>_distribution_analysis/ is added to, never replaced. A run
+that asks only for vdos leaves the earlier rdf/bad output untouched and needs
+no --force, because nothing existing is at risk. --force is needed only to REDO
+a calculation whose output is already in the directory, and --clean only to
+throw the directory away and start over. Outputs are date-stamped
+(YYYYMMDD_rdfs.csv), so a forced redo on a later date lands beside the old copy
+instead of replacing it; a redo on the same date replaces it.
+
+KNOWN LIMITATION: adding a calculation to a finished run is awkward here in a
+way it is not under submit_pipeline.sh, which has --skip-trajectory. This script
+always re-runs LAMMPS, so a second invocation in the same run directory hits the
+stage-1 guard and needs --force — and that same --force also waives the stage-2
+repeat check described above, since one flag drives both. Until this script
+grows a --skip-trajectory of its own, run the analysis scripts directly in the
+analysis directory when all you want is one more distribution from a trajectory
+you already have.
 
 All terminal output from this script is also appended to
 submit_pipeline_local.log in the run directory (cwd) each time it's invoked.
@@ -131,11 +224,52 @@ EOF
 }
 
 REPO_ROOT="$HOME/util"
+# The run directory, under the same name submit_pipeline.sh exposes to its conf.
+# This script takes no config file, so it is used here only to put the overwrite
+# log next to the run it describes — the same place submit_pipeline.sh's default
+# LOG_FILE points at, so the two never keep separate records.
+RUN_DIR="$(pwd)"
 DUMP_FILE="dump.lammpstrj"
 DYNAMICS_DUMP_FILE="dynamics.lammpstrj"
 FORCE="0"
 FORCE_REASON=""
-LOG_FILE="$REPO_ROOT/jobs/pipeline/lammps_to_analysis/overwrite.log"
+CLEAN="0"
+LOG_FILE="$RUN_DIR/overwrite.log"
+
+# The output files each calculation writes, WITHOUT the YYYYMMDD_ prefix every
+# script prepends (see _dated() in each .py). Used to tell "this directory
+# already holds an rdf" from "this directory holds only a vdos", so adding a
+# calculation to an existing analysis directory needs no --force but redoing
+# one does. Keep in sync with the OUTPUT_* constants in the .py files.
+outputs_for() {
+  case "$1" in
+    dsf)  echo "sq.csv sq.png dsf.csv dsf.png" ;;
+    rdf)  echo "rdfs.csv rdfs.png nrs.csv nrs.png" ;;
+    bad)  echo "bads.csv bads.png" ;;
+    vdos) echo "vdos.csv vdos.png" ;;
+    msd)  echo "msd.csv msd.png" ;;
+    vdos_dynmat)
+      local b="${VDOS_DYNMAT_OUTPUT:-vdos_dynmat}"
+      echo "$b.csv $b.png ${b}_modes.csv ${b}_character.png" ;;
+  esac
+}
+
+# Input links in a reused analysis directory are usually already there from the
+# earlier run. Refresh a symlink (its target can legitimately change), and
+# refuse to touch a real file — a trajectory someone copied in by hand is data,
+# not a link this script owns.
+link_input() {
+  local target="$1" linkname="$2"
+  if [[ -L "$linkname" ]]; then
+    ln -sfn "$target" "$linkname"
+  elif [[ -e "$linkname" ]]; then
+    echo "Error: $linkname already exists and is not a symlink — refusing to replace it." >&2
+    echo "Move it aside, or rebuild the directory from scratch with --clean." >&2
+    exit 1
+  else
+    ln -s "$target" "$linkname"
+  fi
+}
 
 log_overwrite() {
   local msg
@@ -185,19 +319,28 @@ RUN_RDF="1"
 RUN_BAD="1"
 RUN_VDOS="1"
 RUN_MSD="1"
+RUN_VDOS_DYNMAT="0"
 NTASKS=""
 ANALYSIS_CPUS_PER_TASK=""
 
 RDF_R_MAX=""
 RDF_BINS_VAL=""
+RDF_NORMALIZATION_VAL=""
+RDF_FUNCTIONS_VAL=""
+RDF_RESOLUTION_SIGMA_VAL=""
+RDF_RESOLUTION_MODE_VAL=""
+RDF_LORCH_QMAX_VAL=""
+RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
+RDF_WRIGHT_VAL=""
+RDF_WRIGHT_QMAX_VAL=""
 BAD_ELEMENTS=""
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
 BAD_TRIPLET_CUTOFFS=""
 BAD_BINS_VAL=""
-DSF_DT=""
 DSF_N_FRAMES=""
 DSF_STRIDE=""
+DSF_NEUTRON_WEIGHTING=""
 DSF_WINDOW_SIZE=""
 DSF_Q_MAX=""
 DSF_N_Q_BINS=""
@@ -210,11 +353,35 @@ VDOS_NUM_GRIDS=""
 VDOS_METHOD=""
 VDOS_WINDOW=""
 VDOS_NORMALIZATION=""
+VDOS_WEIGHTING=""
 MSD_N_FRAMES=""
 MSD_STRIDE=""
 MSD_CORR_LENGTH=""
 MSD_CORR_INTERVAL=""
 MSD_FIT_FRACTION=""
+DYNMAT_MIN_STYLE=""
+DYNMAT_MIN_ETOL=""
+DYNMAT_MIN_FTOL=""
+DYNMAT_MIN_MAXITER=""
+DYNMAT_MIN_MAXEVAL=""
+DYNMAT_DISPLACEMENT=""
+DYNMAT_FILE=""
+DYNMAT_BINARY=""
+VDOS_DYNMAT_MAX_FREQUENCY=""
+VDOS_DYNMAT_XUNIT=""
+VDOS_DYNMAT_BINS=""
+VDOS_DYNMAT_SMEARING=""
+VDOS_DYNMAT_MATRIX_STYLE=""
+VDOS_DYNMAT_NORMALIZATION=""
+VDOS_DYNMAT_WEIGHTING=""
+VDOS_DYNMAT_PARTIAL=""
+VDOS_DYNMAT_ASR=""
+VDOS_DYNMAT_OUTPUT=""
+VDOS_DYNMAT_CHARACTER=""
+DYNMAT_REF_TRAJ=""
+VDOS_DYNMAT_BRIDGE_ELEMENT=""
+VDOS_DYNMAT_NEIGHBOR_ELEMENT=""
+VDOS_DYNMAT_BOND_CUTOFF=""
 
 # VDOS_DT used to carry the dt for both scripts; it is now DYNAMICS_DT. Because
 # submit_pipeline.conf is gitignored it does not travel with a pull, so a conf
@@ -246,14 +413,22 @@ while [[ $# -gt 0 ]]; do
     --analysis-cpus-per-task) ANALYSIS_CPUS_PER_TASK="$2"; shift 2 ;;
     --rdf-r-max) RDF_R_MAX="$2"; shift 2 ;;
     --rdf-bins) RDF_BINS_VAL="$2"; shift 2 ;;
+    --rdf-normalization) RDF_NORMALIZATION_VAL="$2"; shift 2 ;;
+    --rdf-functions) RDF_FUNCTIONS_VAL="$2"; shift 2 ;;
+    --rdf-resolution-sigma) RDF_RESOLUTION_SIGMA_VAL="$2"; shift 2 ;;
+    --rdf-resolution-mode) RDF_RESOLUTION_MODE_VAL="$2"; shift 2 ;;
+    --rdf-lorch-qmax) RDF_LORCH_QMAX_VAL="$2"; shift 2 ;;
+    --rdf-atoms-per-formula-unit) RDF_ATOMS_PER_FORMULA_UNIT_VAL="$2"; shift 2 ;;
+    --rdf-wright) RDF_WRIGHT_VAL="$2"; shift 2 ;;
+    --rdf-wright-qmax) RDF_WRIGHT_QMAX_VAL="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
     --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
     --bad-triplet-cutoffs) BAD_TRIPLET_CUTOFFS="$2"; shift 2 ;;
     --bad-bins) BAD_BINS_VAL="$2"; shift 2 ;;
-    --dsf-dt) DSF_DT="$2"; shift 2 ;;
     --dsf-n-frames) DSF_N_FRAMES="$2"; shift 2 ;;
     --dsf-stride) DSF_STRIDE="$2"; shift 2 ;;
+    --dsf-neutron-weighting) DSF_NEUTRON_WEIGHTING="$2"; shift 2 ;;
     --dsf-window-size) DSF_WINDOW_SIZE="$2"; shift 2 ;;
     --dsf-q-max) DSF_Q_MAX="$2"; shift 2 ;;
     --dsf-n-q-bins) DSF_N_Q_BINS="$2"; shift 2 ;;
@@ -266,13 +441,39 @@ while [[ $# -gt 0 ]]; do
     --vdos-method) VDOS_METHOD="$2"; shift 2 ;;
     --vdos-window) VDOS_WINDOW="$2"; shift 2 ;;
     --vdos-normalization) VDOS_NORMALIZATION="$2"; shift 2 ;;
+    --vdos-weighting) VDOS_WEIGHTING="$2"; shift 2 ;;
     --msd-n-frames) MSD_N_FRAMES="$2"; shift 2 ;;
     --msd-stride) MSD_STRIDE="$2"; shift 2 ;;
     --msd-corr-length) MSD_CORR_LENGTH="$2"; shift 2 ;;
     --msd-corr-interval) MSD_CORR_INTERVAL="$2"; shift 2 ;;
     --msd-fit-fraction) MSD_FIT_FRACTION="$2"; shift 2 ;;
+    --run-vdos-dynmat) RUN_VDOS_DYNMAT="$2"; shift 2 ;;
+    --dynmat-min-style) DYNMAT_MIN_STYLE="$2"; shift 2 ;;
+    --dynmat-min-etol) DYNMAT_MIN_ETOL="$2"; shift 2 ;;
+    --dynmat-min-ftol) DYNMAT_MIN_FTOL="$2"; shift 2 ;;
+    --dynmat-min-maxiter) DYNMAT_MIN_MAXITER="$2"; shift 2 ;;
+    --dynmat-min-maxeval) DYNMAT_MIN_MAXEVAL="$2"; shift 2 ;;
+    --dynmat-displacement) DYNMAT_DISPLACEMENT="$2"; shift 2 ;;
+    --dynmat-file) DYNMAT_FILE="$2"; shift 2 ;;
+    --dynmat-binary) DYNMAT_BINARY="$2"; shift 2 ;;
+    --vdos-dynmat-max-frequency) VDOS_DYNMAT_MAX_FREQUENCY="$2"; shift 2 ;;
+    --vdos-dynmat-xunit) VDOS_DYNMAT_XUNIT="$2"; shift 2 ;;
+    --vdos-dynmat-bins) VDOS_DYNMAT_BINS="$2"; shift 2 ;;
+    --vdos-dynmat-smearing) VDOS_DYNMAT_SMEARING="$2"; shift 2 ;;
+    --vdos-dynmat-matrix-style) VDOS_DYNMAT_MATRIX_STYLE="$2"; shift 2 ;;
+    --vdos-dynmat-normalization) VDOS_DYNMAT_NORMALIZATION="$2"; shift 2 ;;
+    --vdos-dynmat-weighting) VDOS_DYNMAT_WEIGHTING="$2"; shift 2 ;;
+    --vdos-dynmat-partial) VDOS_DYNMAT_PARTIAL="$2"; shift 2 ;;
+    --vdos-dynmat-asr) VDOS_DYNMAT_ASR="$2"; shift 2 ;;
+    --vdos-dynmat-output) VDOS_DYNMAT_OUTPUT="$2"; shift 2 ;;
+    --vdos-dynmat-character) VDOS_DYNMAT_CHARACTER="$2"; shift 2 ;;
+    --dynmat-ref-traj) DYNMAT_REF_TRAJ="$2"; shift 2 ;;
+    --vdos-dynmat-bridge-element) VDOS_DYNMAT_BRIDGE_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-neighbor-element) VDOS_DYNMAT_NEIGHBOR_ELEMENT="$2"; shift 2 ;;
+    --vdos-dynmat-bond-cutoff) VDOS_DYNMAT_BOND_CUTOFF="$2"; shift 2 ;;
     --dynamics-dt) DYNAMICS_DT="$2"; shift 2 ;;
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
+    --clean) CLEAN="1"; shift 1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
@@ -314,6 +515,7 @@ check_zero_or_one "$RUN_RDF" --run-rdf
 check_zero_or_one "$RUN_BAD" --run-bad
 check_zero_or_one "$RUN_VDOS" --run-vdos
 check_zero_or_one "$RUN_MSD" --run-msd
+check_zero_or_one "$RUN_VDOS_DYNMAT" --run-vdos-dynmat
 
 # vdos.py and msd.py refuse to guess the parameters that determine their
 # numbers. Catch a missing one here, before anything is submitted or run,
@@ -329,6 +531,12 @@ check_required_analysis_params() {
     [[ -n "$MSD_CORR_LENGTH" ]]   || missing+=("  --msd-corr-length / MSD_CORR_LENGTH             fs; max time lag")
     [[ -n "$MSD_CORR_INTERVAL" ]] || missing+=("  --msd-corr-interval / MSD_CORR_INTERVAL         fs; spacing between reference frames")
     [[ -n "$MSD_FIT_FRACTION" ]]  || missing+=("  --msd-fit-fraction / MSD_FIT_FRACTION           tail fraction used for the D fit")
+  fi
+  # Checked here rather than in stage 2 for the same reason as the others, but it
+  # matters more: the dynamical-matrix run is the expensive part of stage 1, and
+  # discovering a missing grid limit afterwards would waste all of it.
+  if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
+    [[ -n "$VDOS_DYNMAT_MAX_FREQUENCY" ]] || missing+=("  --vdos-dynmat-max-frequency / VDOS_DYNMAT_MAX_FREQUENCY  upper limit of the DOS grid, in VDOS_DYNMAT_XUNIT")
   fi
   if [[ "$RUN_VDOS" == "1" || "$RUN_MSD" == "1" ]]; then
     [[ -n "$DYNAMICS_DT" ]] || missing+=("  --dynamics-dt / DYNAMICS_DT                     fs between dynamics.lammpstrj frames")
@@ -353,6 +561,13 @@ fi
 # Stage 1 setup (unconditional)
 ############################
 
+# Unconditional, unlike submit_pipeline.sh, which can skip straight to stage 2
+# with --skip-trajectory. The consequence is worth knowing: re-running this
+# script in a finished run directory always trips the guard below, so it always
+# needs --force, and that --force is the same flag that waives the stage-2
+# repeat check further down. Adding one distribution to an existing analysis
+# therefore cannot be done here without also re-running LAMMPS and disarming
+# that check. See KNOWN LIMITATION in the usage text above.
 if [[ -e "$STAGE1_DIR/input_files" || -e "$STAGE1_DIR/run" ]]; then
   if [[ "$FORCE" == "1" ]]; then
     log_overwrite "--force ($FORCE_REASON): removing existing $STAGE1_DIR/input_files and/or $STAGE1_DIR/run (run id: $RUN_ID)"
@@ -376,13 +591,43 @@ mkdir -p "$ANALYSIS_PARENT_DIR"
 ANALYSIS_PARENT_DIR="$(cd "$ANALYSIS_PARENT_DIR" && pwd)"
 STAGE2_DIR="$ANALYSIS_PARENT_DIR/${RUN_ID}_distribution_analysis"
 
+# An existing analysis directory is ADDED TO, not replaced: the RUN_* flags pick
+# which calculations run, and a run that only asks for rdf must not destroy the
+# vdos output sitting next to it. Only --clean removes the directory, and only
+# a calculation whose own output is already there needs --force.
+if [[ -e "$STAGE2_DIR" && "$CLEAN" == "1" ]]; then
+  log_overwrite "--clean${FORCE_REASON:+ ($FORCE_REASON)}: removing existing $STAGE2_DIR"
+  rm -rf "$STAGE2_DIR"
+fi
+
 if [[ -e "$STAGE2_DIR" ]]; then
-  if [[ "$FORCE" == "1" ]]; then
-    log_overwrite "--force ($FORCE_REASON): removing existing $STAGE2_DIR"
-    rm -rf "$STAGE2_DIR"
-  else
-    echo "Error: $STAGE2_DIR already exists — refusing to overwrite (use --force to override)." >&2
-    exit 1
+  echo "Adding to existing analysis directory $STAGE2_DIR (use --clean to rebuild it from scratch)."
+  existing_outputs=()
+  for calc in dsf rdf bad vdos msd vdos_dynmat; do
+    run_var="RUN_$(echo "$calc" | tr '[:lower:]' '[:upper:]')"
+    [[ "${!run_var}" == "1" ]] || continue
+    for name in $(outputs_for "$calc"); do
+      # The scripts date-stamp every output, so an earlier run's files are found
+      # by a leading-date glob rather than by exact name.
+      for f in "$STAGE2_DIR"/[0-9]*_"$name"; do
+        [[ -e "$f" ]] && existing_outputs+=("$(basename "$f")")
+      done
+    done
+  done
+
+  if [[ ${#existing_outputs[@]} -gt 0 ]]; then
+    if [[ "$FORCE" == "1" ]]; then
+      log_overwrite "--force ($FORCE_REASON): re-running calculations whose output already exists in $STAGE2_DIR: ${existing_outputs[*]}"
+    else
+      echo "Error: $STAGE2_DIR already holds output for calculations this run would redo:" >&2
+      printf '  %s\n' "${existing_outputs[@]}" >&2
+      echo "Nothing else in that directory is at stake — only the calculations above are repeats." >&2
+      echo "Options: --force REASON to redo them (a run on the same date overwrites the files" >&2
+      echo "listed above; a run on a later date writes new YYYYMMDD_ copies alongside them);" >&2
+      echo "--run-<name> 0 to drop the repeats and add only what is missing; or --clean to" >&2
+      echo "delete the whole analysis directory and start over." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -392,9 +637,18 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/bad_freud.py" \
    "$ANALYSIS_TEMPLATE_DIR/vdos.py" \
    "$ANALYSIS_TEMPLATE_DIR/msd.py" \
+   "$ANALYSIS_TEMPLATE_DIR/vdos_dynmat.py" \
    "$STAGE2_DIR/"
-ln -s "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
-ln -s "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
+link_input "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
+link_input "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
+# The dynamical matrix is consumed read-only like the trajectories. Nothing extra
+# is linked for the atom->element mapping: vdos_dynmat.py takes that from the
+# first frame of $DUMP_FILE, whose atom order is the matrix's row order.
+if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then
+  link_input "$STAGE1_DIR/run/${DYNMAT_FILE:-dynmat.dat}" "$STAGE2_DIR/${DYNMAT_FILE:-dynmat.dat}"
+  _ref="${DYNMAT_REF_TRAJ:-dynmat_ref.lammpstrj}"
+  link_input "$STAGE1_DIR/run/$_ref" "$STAGE2_DIR/$_ref"
+fi
 
 enabled_scripts=""
 [[ "$RUN_DSF" == "1" ]] && enabled_scripts+="dsf.py "
@@ -402,6 +656,7 @@ enabled_scripts=""
 [[ "$RUN_BAD" == "1" ]] && enabled_scripts+="bad_freud.py "
 [[ "$RUN_VDOS" == "1" ]] && enabled_scripts+="vdos.py "
 [[ "$RUN_MSD" == "1" ]] && enabled_scripts+="msd.py "
+[[ "$RUN_VDOS_DYNMAT" == "1" ]] && enabled_scripts+="vdos_dynmat.py "
 enabled_scripts="${enabled_scripts% }"
 
 ############################
@@ -418,7 +673,29 @@ echo "Running LAMMPS locally in $STAGE1_DIR/run ..."
   done
   shopt -u nullglob
 
-  mpirun -np "${NTASKS:-4}" "$LMP_BIN" -log log.lammps -in in.input
+  # Same -var forwarding as jobs/slurm/lammps_submit.slurm: only names that are
+  # actually set are passed, so anything omitted keeps the "variable NAME index
+  # <default>" value in in.input. Empty array when the dynmat block is off, which
+  # makes this line identical to what it was.
+  #
+  # One flag drives both stages: RUN_VDOS_DYNMAT reaches LAMMPS under the name its
+  # input scripts use, RUN_DYNMAT, and gates vdos_dynmat.py in stage 2 below.
+  RUN_DYNMAT="$RUN_VDOS_DYNMAT"
+  DYNMAT_REF_FILE="$DYNMAT_REF_TRAJ"
+  lmp_vars=()
+  for _v in RUN_DYNMAT DYNMAT_MIN_STYLE DYNMAT_MIN_ETOL DYNMAT_MIN_FTOL \
+            DYNMAT_MIN_MAXITER DYNMAT_MIN_MAXEVAL DYNMAT_DISPLACEMENT \
+            DYNMAT_FILE DYNMAT_REF_FILE DYNMAT_BINARY; do
+    if [[ -n "${!_v:-}" ]]; then
+      lmp_vars+=(-var "$_v" "${!_v}")
+      echo "  -var $_v ${!_v}"
+    fi
+  done
+
+  mpirun -np "${NTASKS:-4}" "$LMP_BIN" \
+    -log log.lammps \
+    "${lmp_vars[@]+"${lmp_vars[@]}"}" \
+    -in in.input
 )
 echo "LAMMPS run finished."
 
@@ -433,20 +710,28 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   activate_analysis_env "$VENV"
   export OMP_NUM_THREADS="${ANALYSIS_CPUS_PER_TASK:-4}"
   export VDOS_THREADS="${ANALYSIS_CPUS_PER_TASK:-4}"
-  export TRAJ="$DUMP_FILE" DYNAMICS_TRAJ="$DYNAMICS_DUMP_FILE" RUN_DSF RUN_RDF RUN_BAD RUN_VDOS RUN_MSD
+  export TRAJ="$DUMP_FILE" DYNAMICS_TRAJ="$DYNAMICS_DUMP_FILE" RUN_DSF RUN_RDF RUN_BAD RUN_VDOS RUN_MSD RUN_VDOS_DYNMAT
   [[ -n "$RDF_R_MAX" ]]           && export R_MAX="$RDF_R_MAX"
   [[ -n "$RDF_BINS_VAL" ]]        && export RDF_BINS="$RDF_BINS_VAL"
+  [[ -n "$RDF_NORMALIZATION_VAL" ]] && export RDF_NORMALIZATION="$RDF_NORMALIZATION_VAL"
+  [[ -n "$RDF_FUNCTIONS_VAL" ]]   && export RDF_FUNCTIONS="$RDF_FUNCTIONS_VAL"
+  [[ -n "$RDF_RESOLUTION_SIGMA_VAL" ]] && export RDF_RESOLUTION_SIGMA="$RDF_RESOLUTION_SIGMA_VAL"
+  [[ -n "$RDF_RESOLUTION_MODE_VAL" ]] && export RDF_RESOLUTION_MODE="$RDF_RESOLUTION_MODE_VAL"
+  [[ -n "$RDF_LORCH_QMAX_VAL" ]] && export RDF_LORCH_QMAX="$RDF_LORCH_QMAX_VAL"
+  [[ -n "$RDF_ATOMS_PER_FORMULA_UNIT_VAL" ]] && export RDF_ATOMS_PER_FORMULA_UNIT="$RDF_ATOMS_PER_FORMULA_UNIT_VAL"
+  [[ -n "$RDF_WRIGHT_VAL" ]] && export RDF_WRIGHT="$RDF_WRIGHT_VAL"
+  [[ -n "$RDF_WRIGHT_QMAX_VAL" ]] && export RDF_WRIGHT_QMAX="$RDF_WRIGHT_QMAX_VAL"
   [[ -n "$BAD_ELEMENTS" ]]        && export ELEMENTS="$BAD_ELEMENTS"
   [[ -n "$BAD_R_CUTOFF" ]]        && export R_CUTOFF="$BAD_R_CUTOFF"
   [[ -n "$BAD_R_MINCUT" ]]        && export R_MINCUT="$BAD_R_MINCUT"
   [[ -n "$BAD_TRIPLET_CUTOFFS" ]] && export TRIPLET_CUTOFFS="$BAD_TRIPLET_CUTOFFS"
   [[ -n "$BAD_BINS_VAL" ]]        && export BAD_BINS="$BAD_BINS_VAL"
-  [[ -n "$DSF_DT" ]]              && export DT="$DSF_DT"
-  [[ -n "$DSF_N_FRAMES" ]]        && export N_FRAMES="$DSF_N_FRAMES"
-  [[ -n "$DSF_STRIDE" ]]          && export STRIDE="$DSF_STRIDE"
-  [[ -n "$DSF_WINDOW_SIZE" ]]     && export WINDOW_SIZE="$DSF_WINDOW_SIZE"
-  [[ -n "$DSF_Q_MAX" ]]           && export Q_MAX="$DSF_Q_MAX"
-  [[ -n "$DSF_N_Q_BINS" ]]        && export N_Q_BINS="$DSF_N_Q_BINS"
+  [[ -n "$DSF_N_FRAMES" ]]        && export DSF_N_FRAMES="$DSF_N_FRAMES"
+  [[ -n "$DSF_STRIDE" ]]          && export DSF_STRIDE="$DSF_STRIDE"
+  [[ -n "$DSF_NEUTRON_WEIGHTING" ]] && export DSF_NEUTRON_WEIGHTING="$DSF_NEUTRON_WEIGHTING"
+  [[ -n "$DSF_WINDOW_SIZE" ]]     && export DSF_WINDOW_SIZE="$DSF_WINDOW_SIZE"
+  [[ -n "$DSF_Q_MAX" ]]           && export DSF_Q_MAX="$DSF_Q_MAX"
+  [[ -n "$DSF_N_Q_BINS" ]]        && export DSF_N_Q_BINS="$DSF_N_Q_BINS"
   # vdos.py and msd.py read the same dynamics.lammpstrj but want different
   # settings, so each reads its own prefixed vars and nothing else. DYNAMICS_DT
   # is the one and only value they share: the dt of the trajectory itself.
@@ -460,17 +745,39 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$VDOS_METHOD" ]]           && export VDOS_METHOD="$VDOS_METHOD"
   [[ -n "$VDOS_WINDOW" ]]           && export VDOS_WINDOW="$VDOS_WINDOW"
   [[ -n "$VDOS_NORMALIZATION" ]]    && export VDOS_NORMALIZATION="$VDOS_NORMALIZATION"
+  [[ -n "$VDOS_WEIGHTING" ]]       && export VDOS_WEIGHTING="$VDOS_WEIGHTING"
   [[ -n "$MSD_N_FRAMES" ]]          && export MSD_N_FRAMES="$MSD_N_FRAMES"
   [[ -n "$MSD_STRIDE" ]]            && export MSD_STRIDE="$MSD_STRIDE"
   [[ -n "$MSD_CORR_LENGTH" ]]       && export MSD_CORR_LENGTH="$MSD_CORR_LENGTH"
   [[ -n "$MSD_CORR_INTERVAL" ]]     && export MSD_CORR_INTERVAL="$MSD_CORR_INTERVAL"
   [[ -n "$MSD_FIT_FRACTION" ]]      && export MSD_FIT_FRACTION="$MSD_FIT_FRACTION"
+  # vdos_dynmat.py. DYNMAT_FILE/DYNMAT_BINARY are the same values stage 1 was
+  # given above, so the writer and the reader cannot disagree about the filename
+  # or the text/binary format.
+  [[ -n "$DYNMAT_FILE" ]]               && export DYNMAT_FILE="$DYNMAT_FILE"
+  [[ -n "$DYNMAT_BINARY" ]]             && export DYNMAT_BINARY="$DYNMAT_BINARY"
+  [[ -n "$VDOS_DYNMAT_MAX_FREQUENCY" ]] && export VDOS_DYNMAT_MAX_FREQUENCY="$VDOS_DYNMAT_MAX_FREQUENCY"
+  [[ -n "$VDOS_DYNMAT_XUNIT" ]]         && export VDOS_DYNMAT_XUNIT="$VDOS_DYNMAT_XUNIT"
+  [[ -n "$VDOS_DYNMAT_BINS" ]]          && export VDOS_DYNMAT_BINS="$VDOS_DYNMAT_BINS"
+  [[ -n "$VDOS_DYNMAT_SMEARING" ]]      && export VDOS_DYNMAT_SMEARING="$VDOS_DYNMAT_SMEARING"
+  [[ -n "$VDOS_DYNMAT_MATRIX_STYLE" ]]  && export VDOS_DYNMAT_MATRIX_STYLE="$VDOS_DYNMAT_MATRIX_STYLE"
+  [[ -n "$VDOS_DYNMAT_NORMALIZATION" ]] && export VDOS_DYNMAT_NORMALIZATION="$VDOS_DYNMAT_NORMALIZATION"
+  [[ -n "$VDOS_DYNMAT_WEIGHTING" ]] && export VDOS_DYNMAT_WEIGHTING="$VDOS_DYNMAT_WEIGHTING"
+  [[ -n "$VDOS_DYNMAT_PARTIAL" ]]       && export VDOS_DYNMAT_PARTIAL="$VDOS_DYNMAT_PARTIAL"
+  [[ -n "$VDOS_DYNMAT_ASR" ]]           && export VDOS_DYNMAT_ASR="$VDOS_DYNMAT_ASR"
+  [[ -n "$VDOS_DYNMAT_OUTPUT" ]]        && export VDOS_DYNMAT_OUTPUT="$VDOS_DYNMAT_OUTPUT"
+  [[ -n "$VDOS_DYNMAT_CHARACTER" ]]     && export VDOS_DYNMAT_CHARACTER="$VDOS_DYNMAT_CHARACTER"
+  [[ -n "$DYNMAT_REF_TRAJ" ]]           && export DYNMAT_REF_TRAJ="$DYNMAT_REF_TRAJ"
+  [[ -n "$VDOS_DYNMAT_BRIDGE_ELEMENT" ]]   && export VDOS_DYNMAT_BRIDGE_ELEMENT="$VDOS_DYNMAT_BRIDGE_ELEMENT"
+  [[ -n "$VDOS_DYNMAT_NEIGHBOR_ELEMENT" ]] && export VDOS_DYNMAT_NEIGHBOR_ELEMENT="$VDOS_DYNMAT_NEIGHBOR_ELEMENT"
+  [[ -n "$VDOS_DYNMAT_BOND_CUTOFF" ]]   && export VDOS_DYNMAT_BOND_CUTOFF="$VDOS_DYNMAT_BOND_CUTOFF"
 
   if [[ "$RUN_DSF" == "1" ]]; then echo "--- dsf.py ---"; python dsf.py; fi
   if [[ "$RUN_RDF" == "1" ]]; then echo "--- rdf_freud.py ---"; python rdf_freud.py; fi
   if [[ "$RUN_BAD" == "1" ]]; then echo "--- bad_freud.py ---"; python bad_freud.py; fi
   if [[ "$RUN_VDOS" == "1" ]]; then echo "--- vdos.py ---"; python vdos.py; fi
   if [[ "$RUN_MSD" == "1" ]]; then echo "--- msd.py ---"; python msd.py; fi
+  if [[ "$RUN_VDOS_DYNMAT" == "1" ]]; then echo "--- vdos_dynmat.py ---"; python vdos_dynmat.py; fi
 )
 echo "Distribution analysis finished."
 
@@ -483,7 +790,7 @@ Pipeline completed locally:
 
 $(if [[ -n "$enabled_scripts" ]]; then
   echo "Reminder: any physics config (ELEMENTS, R_CUTOFF, DT, WINDOW_SIZE, CORR_LENGTH, ...) not"
-  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-* flags is using each script's own default —"
+  echo "passed via --rdf-*/--bad-*/--dsf-*/--vdos-*/--msd-*/--vdos-dynmat-* flags is using each script's own default —"
   echo "check $STAGE2_DIR/{${enabled_scripts// /,}} if that's not what you want."
 fi)
 SUMMARY

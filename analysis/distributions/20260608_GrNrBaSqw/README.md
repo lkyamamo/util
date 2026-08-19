@@ -6,7 +6,9 @@ Each script produces independent output and can be run in any order or simultane
 `dsf.py`/`vdos.py`/`msd.py` read a separate, higher-frequency trajectory
 (`dynamics.lammpstrj`) — resolving vibrational frequencies and diffusion
 needs much finer time sampling than structural analysis does. See "All
-scripts — trajectory input" below.
+scripts — trajectory input" below. `vdos_dynmat.py` is the exception: it reads
+no trajectory at all, only the dynamical matrix LAMMPS wrote (plus the first
+frame of `dump.lammpstrj`, for element labels).
 
 ---
 
@@ -14,11 +16,12 @@ scripts — trajectory input" below.
 
 | Script | What it computes | Output files |
 |---|---|---|
-| `rdf_freud.py` | Radial distribution function g(r) and coordination number n(r) for all element pairs | `rdfs.csv`, `rdfs.png`, `nrs.csv`, `nrs.png` |
+| `rdf_freud.py` | Radial distribution function g(r), coordination number n(r), and selectable neutron correlation functions for all element pairs | `rdfs.csv`, `rdfs.png`, `nrs.csv`, `nrs.png`, and `wright.csv`/`.png` when `RDF_WRIGHT=yes` |
 | `bad_freud.py` | Bond angle distribution P(θ) for all A-B-C triplets | `bads.csv`, `bads.png` |
 | `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `sq.png`, `dsf.csv`, `dsf.png` |
 | `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `vdos.png` |
 | `msd.py` | Mean square displacement and self-diffusion coefficient (10⁻⁵ cm²/s) per element | `msd.csv`, `msd.png` |
+| `vdos_dynmat.py` | Vibrational density of states from the LAMMPS dynamical matrix — harmonic, 0 K, no trajectory; optionally the stretch/bend/rock band assignment, participation ratio and boson peak | `vdos_dynmat.csv`, `vdos_dynmat.png`, `vdos_dynmat_modes.csv`, `vdos_dynmat_character.png` |
 
 ---
 
@@ -39,6 +42,7 @@ RUN_RDF=1
 RUN_BAD=1
 RUN_VDOS=1
 RUN_MSD=1
+RUN_VDOS_DYNMAT=0   # defaults off: needs a dynmat.dat from the LAMMPS stage
 ```
 
 ### Locally (all cores)
@@ -57,6 +61,7 @@ python rdf_freud.py
 python bad_freud.py
 python vdos.py
 python msd.py
+python vdos_dynmat.py
 ```
 
 ---
@@ -90,18 +95,89 @@ both dumps from the same production run, at independent frequencies
 
 | Variable | What it controls | Notes |
 |---|---|---|
-| `DUMP_FILE` | Trajectory path | |
-| `R_MAX` | Max r in Å for g(r) | Must be < half the shortest box dimension |
-| `COL_ELEMENT` | Column index of element symbol in `ITEM: ATOMS` | 0-indexed; default layout: `id element x y z` → set to `1` |
-| `COL_X`, `COL_Y`, `COL_Z` | Column indices of x, y, z coordinates | Default: `2, 3, 4` |
+| `DUMP_FILE` | Trajectory path | `$TRAJ` |
+| `R_MAX` | Max r in Å for g(r) | `$R_MAX`; must be < half the shortest box dimension |
+
+Column positions are read from the `ITEM: ATOMS` header line, so there is nothing to set by hand.
+Wrapped coordinates (`x y z`) and a constant atom count are assumed; a triclinic dump aborts with an
+explanation rather than being silently mis-wrapped.
 
 Optional:
 
 | Variable | What it controls | Default |
 |---|---|---|
-| `BINS` | Number of r-bins | `200` |
+| `RDF_BINS` | Number of r-bins | `2000` |
+| `RDF_NORMALIZATION` | Pair-weight convention(s): `unity`, `FZ`, `absolute` | `"FZ;absolute;unity"` |
+| `RDF_FUNCTIONS` | Correlation function(s): `g`, `h`, `D`, `T` | `"g;h;D"` |
+| `RDF_RESOLUTION_SIGMA` | Gaussian resolution broadening in Å, written as `*_broadened` twins; `0` disables | `0.1` |
+| `RDF_RESOLUTION_MODE` | `gaussian` (default) or `lorch` — the neutron-diffraction modification function | `gaussian` |
+| `RDF_LORCH_QMAX` | Å⁻¹; the measurement's Fourier truncation. `Δr` defaults to `π/Q_max` | — |
+| `RDF_ATOMS_PER_FORMULA_UNIT` | Atoms per formula unit (SiO₂ → 3); needed by `formula` and `RDF_WRIGHT` | — |
+| `RDF_WRIGHT` | `yes` writes the extra `wright.csv`/`.png` comparison output | `no` |
+| `RDF_WRIGHT_QMAX` | Å⁻¹; the paper's truncation, e.g. `45.2` | — |
 | `OUTPUT_CSV` | g(r) CSV path; `None` to skip | `"rdfs.csv"` |
 | `OUTPUT_NR_CSV` | n(r) CSV path; `None` to skip | `"nrs.csv"` |
+
+The two list-valued keys are **semicolon-separated**, not comma-separated: `submit_pipeline.sh` passes
+settings through `sbatch --export`, which is itself comma-delimited and silently truncates a value at the
+first embedded comma — so a comma-separated list would reach the cluster as its first entry alone, with no
+error. `bad_freud.py` takes `ELEMENTS="Si;O;H"` for the same reason. A comma in either key is rejected with
+the corrected string in the message.
+
+Every key is `RDF_`-prefixed, env key and Python constant alike, so the analysis it configures is explicit:
+`NORMALIZATION` on its own does not say which distribution it belongs to, and `vdos.py` has its own
+unrelated `VDOS_NORMALIZATION` (`phonon` | `unit_area`) in the same shared environment.
+
+**Conventions.** `RDF_NORMALIZATION` × `RDF_FUNCTIONS` is emitted as a cross product, one column per combination
+named `<function>_<normalization>`. The script prints every column's defining equation, weight sum Σw, and
+asymptotic limits at startup; check a printed limit against the curve rather than trusting the symbol
+(Keen, *J. Appl. Cryst.* **34**, 172 (2001) tabulates why this matters). Columns written before this
+became configurable map as `total → g_unity`, `neutron → g_FZ`, `t → T_FZ`.
+
+*Normalization* — how much each partial contributes, via the pair weight `w_AB` (`f = 2 − δ_AB`):
+
+| key | `w_AB` | Σw | units | what it is |
+|---|---|---|---|---|
+| `unity` | `f c_A c_B` | 1 | — | Every element scatters identically (b = 1) — the name refers to the scattering lengths, not to Σw, since FZ also sums to 1. Not measurable; it's the composition-averaged structure and the b-free baseline the neutron curves depart from. Formerly `total`. |
+| `FZ` | `f c_A c_B b_A b_B / ⟨b⟩²` | 1 | — | Faber–Ziman. Tends to 1 at large r like a partial does, and being dimensionless it superimposes across compositions — at the cost of dividing by a nearly-cancelling sum. |
+| `absolute` | `f c_A c_B b_A b_B / 100` | ⟨b⟩²/100 | barn/sr/atom | No division: the weighted sum in the units a measured differential cross-section carries. The scale is physical, so the excluded-volume plateau lands at −Σw. Stays well conditioned as ⟨b⟩ → 0, so use it for light water (⟨b⟩² = 0.0031 barn) or a null mixture (⟨b⟩ = 0), where FZ is useless. |
+| `formula` | `n f c_A c_B b_A b_B / 100` | n⟨b⟩²/100 | barn/sr/formula-unit | `absolute` re-quoted **per formula unit** rather than per atom, which is what papers on compounds usually do. Since `Σⱼb̄ⱼ = n⟨b⟩` and `ρ⁰ = ρ_atom/n`, Wright's `T⁰ = 4πrρ⁰(Σⱼb̄ⱼ)²` is exactly `n` times the per-atom result. Needs `RDF_ATOMS_PER_FORMULA_UNIT`. |
+
+*Function* — what gets built from those weights and the partials `g_AB`:
+
+| key | definition | what it is |
+|---|---|---|
+| `g` | `Σ w g_AB` | Weighted pair distribution; baseline at Σw. |
+| `h` | `Σ w [g_AB − 1]` | Total correlation function: baseline subtracted first, so peaks sit on zero and the excluded-volume region reads −Σw. **`h_absolute` is Soper's eq. (20)**, the neutron G_n(r). |
+| `D` | `4πrρ Σ w [g_AB − 1]` | Differential correlation function. The 4πr factor offsets the decay of peak amplitude with distance, keeping far-field oscillations legible; oscillates about 0. **`D_FZ` is the PDF community's G(r)**. |
+| `T` | `4πrρ Σ w g_AB` | Total radial distribution function — `D` keeping the bulk baseline, so it climbs as 4πrρΣw. Area under a peak is a coordination number. Not in the default `RDF_FUNCTIONS`. |
+
+**Comparing against a published neutron curve.** `RDF_WRIGHT=yes` writes a separate `<date>_wright.csv`
+and `.png` holding `T(r)` **Lorch-broadened and per formula unit**, plus the `T⁰(r)` baseline it oscillates
+about — built to overlay directly on a measured correlation function:
+
+```bash
+RDF_WRIGHT=yes RDF_WRIGHT_QMAX=45.2 RDF_ATOMS_PER_FORMULA_UNIT=3
+```
+
+It bundles the three choices such a comparison needs — function `T`, per-formula-unit normalization, Lorch
+broadening — so they cannot disagree with each other. Two traps it removes:
+
+- **Per formula unit is a factor of n.** Papers on compounds usually quote the cross-section per SiO₂ while
+  this script works per atom, and `T⁰ = 4πrρ⁰(Σⱼb̄ⱼ)²` with `ρ⁰` in units/Å³ works out to exactly `n` times
+  the per-atom result. That constant is the commonest reason a published curve sits above a calculated one.
+- **`Δr` is not the quoted resolution.** Papers quote the *resulting* peak FWHM; `Δr` inside `M(Q)` is
+  ~1.73× smaller (`π/Q_max`). Passing the quoted number as `Δr` doubles the broadening and makes the kernel
+  double-humped, which the script warns about. It prints the FWHM so you can check it against the text.
+
+**The check worth making:** the printed `T⁰` slope `4πρΣw` must equal the slope of the paper's
+average-density line. It is fixed by composition and density with nothing fitted.
+
+**Two things worth knowing.** `'H'` in `NEUTRON_SCATTERING_LENGTHS` is *deuterium* (b = 6.671 fm), since
+LAMMPS labels both isotopes `H`; every neutron column is therefore for a deuterated sample, and the script
+says so at startup. And `n(r)` columns are named by direction — `O_around_Si` ≈ 4 for silica,
+`Si_around_O` its reciprocal — because freud counts system points around query points, which makes a bare
+`Si-O` label ambiguous.
 
 ---
 
@@ -130,21 +206,65 @@ Optional:
 | Variable | What it controls | Notes |
 |---|---|---|
 | `DUMP_FILE` | Dynamics trajectory path (env var `DYNAMICS_TRAJ`, default `dynamics.lammpstrj`) | Requires `element` column in dump (not numeric type) |
-| `DT` | Time between consecutive dumped frames in **femtoseconds** | e.g. if LAMMPS dumps every 100 steps at 0.5 fs/step → `DT = 50.0` |
-| `N_FRAMES` | Max frames to read | Controls how much of the trajectory is used |
-| `WINDOW_SIZE` | Number of time lags for F(q,t) | Sets frequency resolution: Δω ∝ 1/(WINDOW_SIZE × DT); set equal to `N_FRAMES` to use full trajectory |
+| `DYNAMICS_DT` | Time between consecutive dumped frames in **femtoseconds** | The *same* key `vdos.py` and `msd.py` read — all three analyse `dynamics.lammpstrj`, so its dt is one number. Optional here (defaults to 2.0) and used only on the dynamic path; static S(q) has no time axis |
+| `DSF_N_FRAMES` | `frame_stop`, an **index** into the dump — not a count | Frames used = `DSF_N_FRAMES / DSF_STRIDE`. **Blank or `0` reads the whole trajectory**, matching `vdos.py`/`msd.py`'s `0 = all`; control cost with `DSF_STRIDE` |
+| `DSF_WINDOW_SIZE` | Number of time lags for F(q,t) | Sets frequency resolution: Δν = 1/(2 × WINDOW_SIZE × DT × STRIDE); must cover several periods of the slowest mode |
 
 Optional:
 
 | Variable | What it controls | Default |
 |---|---|---|
-| `STRIDE` | Read every Nth frame | `1` |
-| `Q_MAX` | Max q in Å⁻¹ | `20.0` |
-| `N_Q_BINS` | Radial q-bins after spherical averaging | `200` |
+| `DSF_STRIDE` | Read every Nth frame | `600` |
+| `DSF_Q_MAX` | Max q in Å⁻¹ (static) | `20.0` |
+| `DSF_N_Q_BINS` | Radial q-bins after spherical averaging | `130` |
+| `DSF_WINDOW_STEP`, `DSF_Q_MAX_DYN`, `DSF_N_Q_BINS_DYN`, `DSF_MAX_Q_POINTS_DYN` | Dynamic-only q/window settings | `1`, `4.0`, `25`, `25000` |
 | `COMPUTE_STATIC` | Compute S(q) | `True` |
 | `COMPUTE_DYNAMIC` | Compute S(q,ω) | `True` |
 | `COMPUTE_SELF` | Compute incoherent/self part (slow) | `False` |
+| `DSF_NEUTRON_WEIGHTING` | Emit the neutron-weighted S(q) columns: `yes` or `no` | `yes` |
 | `N_THREADS` | numba thread count; `0` = all cores | `0` |
+
+Every `dsf.py` setting is `DSF_`-prefixed, like `vdos.py`'s `VDOS_*` and `msd.py`'s `MSD_*`. It previously
+read bare `DT`, `N_FRAMES`, `STRIDE`, `Q_MAX`, `N_Q_BINS`, `WINDOW_SIZE`, `WINDOW_STEP`, `Q_MAX_DYN`,
+`N_Q_BINS_DYN` and `MAX_Q_POINTS_DYN` — generic enough to collide with anything else in a shared pipeline
+environment, and requiring `submit_pipeline.sh` to translate them on the way in. Setting one of the old
+names now **aborts with a rename notice** rather than being silently ignored.
+
+The one exception is the frame spacing, which comes from `DYNAMICS_DT` rather than a `DSF_` key: `dsf.py`,
+`vdos.py` and `msd.py` all read `dynamics.lammpstrj`, so its dt is a property of the trajectory and giving
+each script its own copy would only let them disagree about one physical number — which would shift the
+frequency axis of S(q,ω) relative to a VDOS built from the very same frames. The short-lived `DSF_DT` aborts
+with the same notice.
+
+> **The q = 0 spike is removed.** `get_spherical_qpoints` includes the reciprocal-lattice origin, where
+> the Fourier sum degenerates to the particle count: `S_AB(0) = N_A·N_B/N`, so `S_total(0) = N`. On a
+> 5184-atom cell that was a spike of **5184** sitting beside values of order 1 — it dominated every plot and
+> any transform of S(q) while carrying no structural information. It is now dropped on both the static and
+> dynamic paths.
+>
+> This **changes output**: the `q = 0` row is gone, and because dynasor derives its bin edges from the data
+> range, raising the minimum \|q\| from 0 to 2π/L shifts every bin center — values move by up to ~3%. The
+> first bin center is now exactly 2π/L, the smallest wavevector a periodic cell of that size can represent.
+> The physical S(q→0) is the compressibility limit ρk_BTκ_T and is not accessible from a finite cell anyway.
+
+**Which normalization `Sq_neutron` is.** dynasor weights partials as `S_AB → f_A f_B S_AB` with `f = b_coh`
+and sums, with **no division by ⟨b⟩²**. So `Sq_neutron` is the unnormalized weighted sum in fm² — the
+reciprocal-space counterpart of `rdf_freud.py`'s `absolute` convention, *not* of its `FZ`. Compare it
+against `g_absolute`/`h_absolute`, not `g_FZ`. There is no convention selector here yet, because `dsf.py`
+delegates the weighting arithmetic to dynasor rather than owning it.
+
+**Hydrogen is refused**, as in `vdos.py` and `vdos_dynmat.py`, but for a sharper reason: dynasor weights by
+**natural abundance**, so its `H` is protium at `b_coh = −3.7406 fm`, while `rdf_freud.py` treats `H` as
+deuterium at `+6.671 fm`. Those have opposite signs, so S(q) and g(r) — Fourier transform pairs that should
+describe the same sample — would silently disagree on every H-containing term. Run H-bearing systems with
+`DSF_NEUTRON_WEIGHTING=no` to get the unweighted partials and total.
+
+**Every other element agrees**, and `dsf.py` now checks this at runtime against `REFERENCE_B_COH` (a copy of
+`rdf_freud.py`'s table), warning on any drift above 2% — so a future dynasor update cannot change the
+weights underneath you unnoticed. Verified across the shared table: Al, C, Na, P, S, O, Si, N, Mg and Cl
+agree to ≤0.1%; Ni (10.300 vs 10.332) and Zr (7.160 vs 7.119) differ by <1% because NIST tabulates one
+value per element while dynasor sums over isotopes at natural abundance, which is why the tolerance is 2%
+rather than exact.
 
 ---
 
@@ -166,9 +286,50 @@ explanation):
 | `MAX_FREQUENCY_EV` (`VDOS_MAX_FREQUENCY_EV`) | Upper frequency limit of the output grid, in eV (`vacf_cosine_transform` only) | `0.1` |
 | `NUM_GRIDS` (`VDOS_NUM_GRIDS`) | Frequency grid points (`vacf_cosine_transform` only) | `5000` |
 | `WINDOW` (`VDOS_WINDOW`) | `'cosine_lag'`/`'none'` under `vacf_cosine_transform`; `'hann'`/`'none'` under `fft_periodogram` | Matches `METHOD` |
-| `NORMALIZATION` (`VDOS_NORMALIZATION`) | `'phonon'` (mole-fraction-weighted, matches msd.cpp) or `'unit_area'` | `'phonon'` |
+| `VDOS_NORMALIZATION` | Sum rule: `'phonon'` (∫ ≈ 3 per atom, matches msd.cpp) or `'unit_area'` (∫ = 1) | `'phonon'` |
+| `VDOS_WEIGHTING` | Species weighting, semicolon-separated: `unity`, `coherent`, `incoherent`, `total` | `"unity"` |
 | `N_FRAMES`, `STRIDE` (`VDOS_N_FRAMES`, `VDOS_STRIDE`) | Max frames to read / read every Nth frame | `0` (all), `1` |
 | `VDOS_THREADS` | scipy FFT thread count (`fft_periodogram` only); `0` = all cores | `0` |
+
+**Weighting.** `VDOS_WEIGHTING` decides how much each element contributes to a total; one
+`DoS(Total_<weighting>)` column is emitted per entry. It is a *different axis* from
+`VDOS_NORMALIZATION`, which sets the sum rule — weighting is relative species contribution, normalization
+is overall scale.
+
+| key | `w_el` | what it is |
+|---|---|---|
+| `unity` | `c_el` | Mole fractions — no scattering physics. Exactly what this script produced before weighting existed. |
+| `coherent` | `c_el · σ_coh,el / m_el` | |
+| `incoherent` | `c_el · σ_inc,el / m_el` | |
+| `total` | `c_el · (σ_coh,el + σ_inc,el) / m_el` | What a chopper spectrometer collects; the usual generalized-DOS weighting. |
+
+Weights are normalized to Σw = 1, so the `phonon` 3-per-atom sum rule survives and every total stays
+comparable to the unity-weighted one. The resolved per-element weights are printed at startup — check
+them against the curves rather than trusting the column name. For SiO₂: `unity` gives Si 0.333 / O 0.667,
+while `coherent` and `total` give Si 0.127 / O 0.873.
+
+**Why σ/m and not `b`.** Inelastic scattering measures the generalized DOS, in which the one-phonon
+incoherent cross-section carries a factor σ/m per species. That is a different quantity from the coherent
+scattering length that weights diffraction, so `rdf_freud.py`'s and `dsf.py`'s `b`-weighting does not
+transfer here — σ_inc cannot be derived from b_coh at all.
+
+**Hydrogen is refused.** With `H` or `D` present, any weighting other than `unity` exits with an
+explanation instead of a number: protium and deuterium differ by ~21× in σ/m, a LAMMPS dump labels both
+`H`, and under `incoherent` weighting H would carry >99.9% of the weight — so the result would be set
+almost entirely by the species whose treatment is undecided. `unity` still works on those systems.
+
+**Debye–Waller is not applied**, and the startup output says so. At fixed Q it would be a pure per-species
+re-weighting, but Q and energy transfer are kinematically coupled in a real spectrometer while this DOS is
+not Q-resolved, and the harmonic fixed-site assumption behind ⟨u²⟩ fails for diffusing species.
+
+The semicolon separator is required for the same reason as `RDF_NORMALIZATION` — `sbatch --export` is
+comma-delimited and would truncate the value. A comma is rejected with the corrected string.
+
+> **Behavior change:** under `VDOS_NORMALIZATION=unit_area` the total was previously an unweighted sum of
+> the raw per-element curves, which gave every element equal weight regardless of atom count — inconsistent
+> with the `phonon` branch's mole fractions. It is now the same weighted sum as `phonon`. On a 1:2 Si:O
+> test this moved the O:Si peak ratio from 1.00 to 1.96 (up to 32% change in the curve). `phonon` output is
+> unchanged.
 
 ---
 
@@ -236,12 +397,344 @@ pip install scipy     # optional: multi-threaded FFT for vdos.py's fft_periodogr
 
 ---
 
+## How much data is enough, and what it costs
+
+Every parameter table above is about **resolution**. This section is about **statistics and runtime** — a
+run can be perfectly configured for resolution and still return noise, or be converged and take a week.
+
+### Sampling number M
+
+Each script prints, at the end of its run, the number of independent contributions behind its noisiest
+output and the error that implies:
+
+```
+Sampling achieved (relative error ~ 1/sqrt(M), target M >= 1e+03):
+  H-H    first peak 1.63 Å       M =  4.82e+03    1.44%  ok
+  H-Si   first peak 2.26 Å       M =        67   12.22%  LOW
+  limiting: H-Si at 12.22% (LOW)
+```
+
+| M | error | verdict |
+|---|---|---|
+| 10² | 10% | exploratory only |
+| 10³ | 3% | **pass mark** — peak positions, coordination numbers |
+| 10⁴ | 1% | publication / comparison against measured data |
+| 10⁶ | 0.1% | diminishing returns |
+
+`M = (contributors per configuration) × (independent configurations)`, which is **size-invariant**: double
+the atoms and you can halve the frames. Both enter linearly, so either raises M.
+
+| script | M is | contributors |
+|---|---|---|
+| `rdf_freud.py` | pair counts in the first-peak bin (freud's `bin_counts`, exact) | `N_A·N_B/V·4πr²Δr` per frame |
+| `bad_freud.py` | triplet counts per angle bin | triplets per frame |
+| `dsf.py` | q-vectors in the bin × frames | shell multiplicity at that \|q\| |
+| `vdos.py`, `msd.py` | `N_atoms(species) × N_origins` | atoms of that species |
+
+Every partial and species is listed, and the **limiting** one named — it is normally the rarest, and an
+aggregate would hide it. The example above is real: one 134,784-atom frame gives H-H 1.4% but H-Si only
+12%, because Si is 6% of the cell.
+
+### Two ways M lies
+
+**Overlapping VACF windows (`vdos.py`, `msd.py`) — severe.** With `CORR_LENGTH=2000 fs` and
+`CORR_INTERVAL=100 fs`, consecutive origins share 95% of the same trajectory, so averaging them does not
+buy √n. Independent windows are capped at `span/CORR_LENGTH` — a ceiling set by trajectory length that
+shrinking `CORR_INTERVAL` **cannot raise, though it keeps costing runtime**. Both scripts print `M_raw` and
+`M_indep`:
+
+```
+31 time origins over 4.0 ps; only 4 are independent (span / CORR_LENGTH = 4.0 / 1.0 ps)
+Si      16 atoms   M_raw = 496 (4.49%)   M_indep = 64 (12.50%)  LOW
+-> M_raw overstates precision by 2.8x here
+```
+
+To genuinely reduce noise: lengthen the trajectory or add atoms.
+
+**Correlated frames (`rdf_freud.py`, `bad_freud.py`, `dsf.py`) — mild, opposite advice.** Adjacent frames
+hold nearly the same positions, but the many pairs *within* one frame are independent — which is why g(r)
+converges so fast that a single 5000-atom frame already gives ~10⁵ pairs. So prefer **fewer, well-separated
+frames over many adjacent ones**.
+
+### Cost
+
+Measured on a 12-core mac; exponents are what came out, not textbook values.
+
+| script | cost | measured |
+|---|---|---|
+| `rdf_freud.py` | `frames · N · R_MAX³` | **8.2× per `R_MAX` doubling** (8→16 Å) |
+| `bad_freud.py` | `R_CUTOFF⁶` | **16× from 4→6 Å** — coordination ∝ R³, triplets ∝ its square |
+| `dsf.py` | `frames · N · Q_MAX³` | `Q_MAX=20` costs **~10 min on 5184 atoms × 10 frames** |
+| `vdos.py`, `msd.py` | `n_refs · CORR_LENGTH · N` | linear in `1/CORR_INTERVAL` |
+| `vdos_dynmat.py` | `(3N)³` time, `(3N)²` memory | 8× time and 4× memory per doubling of N |
+
+`bad_freud.py`'s R⁶ is the trap: a cutoff set generously "to be safe" is quadratically worse than it looks.
+`dsf.py`'s `Q_MAX=20` default is the single most expensive setting in the pipeline — drop it to 12 while
+iterating for a 4.6× saving.
+
+### Threads: how many are worth asking for
+
+**Not every backend reads `OMP_NUM_THREADS`.** freud (`rdf_freud.py`, `bad_freud.py`) and numba (`dsf.py`
+via dynasor) ignore it; the scripts now call `freud.parallel.set_num_threads()` and the runners export
+`NUMBA_NUM_THREADS`. Measured for `rdf_freud.py` on 134,784 atoms at `R_MAX=6`:
+
+| threads | wall | speedup | core-seconds | parallel efficiency |
+|---|---|---|---|---|
+| 1 | 2.01 s | 1.00× | 2.0 | 100% |
+| 2 | 1.19 s | 1.68× | 2.4 | 84% |
+| **4** | **0.76 s** | **2.65×** | **3.0** | **66%** |
+| 6 | 0.66 s | 3.05× | 3.9 | 51% |
+| 12 | 0.61 s | 3.30× | 7.3 | 28% |
+
+Speedup is real but strongly sub-linear, and core-seconds climb the whole way. **2–4 threads is the
+efficient range**; 12 threads costs 3.6× the CPU of one thread for 3.3× the speed. Each run prints wall
+time, the threads each backend **actually reports** (not what you asked for), and core-seconds, so this is
+checkable on your own hardware.
+
+### What would improve that scaling
+
+Measured by varying one knob at a time (speedup at 8 threads):
+
+| change | speedup | verdict |
+|---|---|---|
+| baseline: `R_MAX=8`, 1 frame, all atoms | 3.37× | — |
+| **4 frames** instead of 1 | 3.39× | **no effect** |
+| 25% of the atoms | 2.26× | worse |
+| `R_MAX=4` | 2.53× | worse |
+| `R_MAX=16` | 3.03× | slightly worse |
+
+**More frames does not improve scaling.** Each frame is its own `compute()` call, so frames multiply the
+work at unchanged efficiency — you get more data for proportionally more time, not better use of cores.
+What helps is **more work per call**: more atoms, or a larger `R_MAX` up to ~8 (past that it goes
+bandwidth-bound).
+
+The consequence: on a big allocation, the way to use the cores is **frame-level parallelism**, not more
+freud threads. Frames are independent and `bin_counts` are additive, so processing frames across worker
+processes and summing the histograms is embarrassingly parallel and would scale far better than handing one
+`compute()` call 64 threads. The script currently loops frames serially in Python.
+
+---
+
 ## Dump Format Requirements
 
 | Script | Element column | Coordinate columns | Notes |
 |---|---|---|---|
-| `rdf_freud.py` | `element` (symbol) or any string | `x y z` (real, Å) | Column indices set manually via `COL_*` |
+| `rdf_freud.py` | `element` (symbol) — **required** | `x y z` (wrapped, real, Å) | Column layout auto-detected from `ITEM: ATOMS` header; orthogonal box and constant atom count required |
 | `bad_freud.py` | `element` (symbol) or any string | `x y z` (real, Å) | Column indices set manually via `COL_*` |
 | `dsf.py` | `element` (symbol) — **required** | `x y z` or `xs ys zs` or `xu yu zu` | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
 | `vdos.py` | `element` (symbol) — **required** | `vx vy vz` (velocities) — **required**; positions not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
 | `msd.py` | `element` (symbol) — **required** | `x y z` (wrapped, real, Å) — **required**; velocities not read | Reads `dynamics.lammpstrj`; column layout auto-detected from `ITEM: ATOMS` header |
+| `vdos_dynmat.py` | `element` (symbol) — **required** | not read | Reads only frame 0 of `dump.lammpstrj`, for the element of each matrix row; the physics comes from `dynmat.dat` |
+
+---
+
+## `vdos_dynmat.py` — VDOS from the dynamical matrix
+
+A second, independent route to the same quantity `vdos.py` produces. `vdos.py`
+measures what the atoms actually did at the simulation temperature; this measures
+the curvature of the potential energy surface at a single minimum.
+
+| | `vdos.py` | `vdos_dynmat.py` |
+|---|---|---|
+| Source | velocity autocorrelation of `dynamics.lammpstrj` | eigenvalues of the force-constant matrix |
+| Temperature | the MD temperature | 0 K (harmonic) |
+| Linewidth | thermal + `1/CORR_LENGTH` resolution limit | discrete modes; width is whatever you set with `SMEARING` |
+| Anharmonicity | included | excluded — peaks sit slightly higher |
+| Cost | reading a long trajectory | 6N force evaluations + a (3N)² diagonalization |
+
+Both write the same CSV column layout, so the two can be overlaid directly. Peak
+positions should agree. Absolute heights will not quite, under `phonon`
+normalization — the two reach "≈3 per atom" by different routes — so use
+`unit_area` on both if you want the heights to line up too.
+
+### Two stages
+
+Enabled with a single pipeline flag, `--run-vdos-dynmat 1`, which drives both:
+
+1. **LAMMPS.** Sets `RUN_DYNMAT=1`, which activates a block at the end of
+   `OH-therm.input` / `b-SiO-therm.input`: minimize the configuration the MD run
+   just finished with, then `dynamical_matrix all regular ${DYNMAT_DISPLACEMENT}
+   file ${DYNMAT_FILE}`. Requires a LAMMPS build with the **PHONON** package —
+   which is why `jobs/slurm/lammps_submit.slurm` now defaults to
+   `lmp_mpi_phonon_2019` (override with `--lmp-bin`).
+2. **Analysis.** `vdos_dynmat.py` reshapes the matrix to (3N, 3N), symmetrizes,
+   diagonalizes, converts eigenvalues to frequencies, and histograms them.
+
+### Why no reference dump is needed
+
+`dynamical_matrix` iterates atoms by global ID, so matrix row `3i+α` is atom
+`i+1`. `dump.lammpstrj` is written with `dump_modify sort id`, so frame 0 lists
+atoms in that same order — and because the matrix is built on the final
+configuration of the run that wrote that dump (same atoms, same IDs, no
+`replicate` in between), the dump's `element` column indexes the matrix rows
+directly. The script checks `9N²` against the dump's atom count and refuses to
+run if they disagree, and checks that the IDs really are `1..N` in order.
+
+### Units
+
+The matrix is mass-weighted, so with `units metal`:
+
+| `dynamical_matrix` style | eigenvalue λ | ν [THz] |
+|---|---|---|
+| `regular` (default) | eV/(Å²·amu) | `sqrt(λ) * 15.6333042` |
+| `eskm` | 1/ps² | `sqrt(λ) / 2π` |
+
+These agree: LAMMPS's own eskm factor is 9648.5, and `sqrt(9648.53)/2π = 15.6333`.
+`VDOS_DYNMAT_MATRIX_STYLE` must match whichever style the `.input` file used —
+it sets this conversion, so a mismatch rescales the whole spectrum.
+
+### Variables
+
+`DYNMAT_*` drive the LAMMPS stage (they reach `in.input` as `-var`);
+`VDOS_DYNMAT_*` drive the Python. All are optional except one.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DYNMAT_MIN_STYLE` | `cg` | `min_style` for the pre-dynmat minimization |
+| `DYNMAT_MIN_ETOL` | `1.0e-12` | `minimize` etol |
+| `DYNMAT_MIN_FTOL` | `1.0e-12` | `minimize` ftol — the one that matters; residual forces become spurious imaginary modes |
+| `DYNMAT_MIN_MAXITER` | `100000` | `minimize` maxiter |
+| `DYNMAT_MIN_MAXEVAL` | `1000000` | `minimize` maxeval |
+| `DYNMAT_DISPLACEMENT` | `0.0001` | finite-difference step, Å |
+| `DYNMAT_FILE` | `dynmat.dat` | matrix filename; one value reaches both stages |
+| `DYNMAT_BINARY` | `no` | `yes` = raw float64 (half the size, no text parse) |
+| `VDOS_DYNMAT_MAX_FREQUENCY` | **required** | DOS grid upper limit, in `XUNIT` |
+| `VDOS_DYNMAT_XUNIT` | `meV` | `meV` \| `THz` \| `cm-1` \| `eV`; sets the plot axis and the unit the two above are read in |
+| `VDOS_DYNMAT_BINS` | `500` | frequency grid points |
+| `VDOS_DYNMAT_SMEARING` | `0` | Gaussian FWHM in `XUNIT`; 0 = plain histogram |
+| `VDOS_DYNMAT_MATRIX_STYLE` | `regular` | must match the `.input` file |
+| `VDOS_DYNMAT_NORMALIZATION` | `phonon` | Sum rule: `phonon` (∫ = 3 per atom) or `unit_area` |
+| `VDOS_DYNMAT_WEIGHTING` | `unity` | Species weighting, semicolon-separated: `unity`, `coherent`, `incoherent`, `total` |
+| `VDOS_DYNMAT_PARTIAL` | `yes` | `no` skips per-element curves, uses `eigvalsh`, halves memory and runtime |
+| `VDOS_DYNMAT_ASR` | `none` | `simple` imposes the acoustic sum rule |
+| `VDOS_DYNMAT_THREADS` | unset | BLAS threads; the pipeline's `OMP_NUM_THREADS` already covers this |
+| `VDOS_DYNMAT_CHARACTER` | `no` | `yes` adds the mode-character analysis below |
+| `DYNMAT_REF_TRAJ` | `dynmat_ref.lammpstrj` | minimized coordinates; one value reaches both stages |
+| `VDOS_DYNMAT_BRIDGE_ELEMENT` | `O` | the bridging atom |
+| `VDOS_DYNMAT_NEIGHBOR_ELEMENT` | `Si` | its two neighbours |
+| `VDOS_DYNMAT_BOND_CUTOFF` | `2.2` | bridge–neighbour max distance, Å |
+| `VDOS_DYNMAT_OUTPUT` | `vdos_dynmat` | output basename |
+
+**Weighting.** `VDOS_DYNMAT_WEIGHTING` works exactly like `vdos.py`'s `VDOS_WEIGHTING` and emits the same
+`DoS(Total_<weighting>)` columns, with the same σ/m physics, the same Σ-normalization, the same refusal of
+H/D-bearing systems, and the same omission of the Debye–Waller factor. Everything but `unity` needs
+`VDOS_DYNMAT_PARTIAL=yes`, since without eigenvectors there are no per-element participations to weight.
+The mass in σ/m comes from `ELEMENT_MASSES` — the masses the dynamical matrix was mass-weighted with — so
+adding an element for weighting means adding it to both `ELEMENT_MASSES` and `NEUTRON_CROSS_SECTIONS`.
+
+The two scripts print the same per-element *shares* for a given composition (SiO₂: `unity` Si 0.333 /
+O 0.667, `coherent` and `total` Si 0.127 / O 0.873), which is the cross-check that they agree — but they
+reach it differently, and the difference is easy to get wrong when reading the code. `vdos.py`'s partials
+are per-element *shapes*, so its weight carries the concentration (`w_el = c_el·σ/m`). `vdos_dynmat.py`'s
+partials already carry it — each integrates to 3·c_el — so its factor is `k_el = σ/m` normalized so
+`Σ k_el·c_el = 1`. Multiplying by another `c_el` here would count concentration twice.
+
+> **Output rename:** the `DoS(Total)` column is now `DoS(Total_unity)`, matching `vdos.py`. Values are
+> unchanged; the reduced DOS `g/ν²` and the mode-character plot still use the unweighted total.
+
+`MAX_FREQUENCY` is required, like `vdos.py`'s `VDOS_MAX_FREQUENCY_EV`, because a
+default that is too low truncates the spectrum silently rather than failing.
+`BINS` only changes smoothness, so it has one.
+
+### Cost
+
+The finite-difference loop is 6N force evaluations and the matrix is (3N)². The
+cell is whatever the MD run used, so at `replicate 6 6 6` (N=5184) that is 31104
+force evaluations and a 15552×15552 matrix: ~1.9 GB in memory, ~2.9 GB as text,
+peaking near 3× that during the diagonalization. Budget the trajectory job's
+`--time` for it and consider `DYNMAT_BINARY="yes"`.
+
+Parallelization: the LAMMPS half is MPI parallel like any other force
+computation, so it scales across the trajectory job's ranks (though LAMMPS
+gathers 9N doubles on *every* rank, so per-rank memory does not fall). The Python
+half is single-node and thread parallel — `np.linalg.eigh` is a threaded LAPACK
+call driven by `OMP_NUM_THREADS`. There is no distributed diagonalization.
+
+### Mode character — what kind of motion each band is
+
+`VDOS_DYNMAT_CHARACTER=yes` adds the standard amorphous-silica band assignment,
+following Bell & Dean and Taraskin & Elliott. At every **bridging** oxygen (one
+with exactly two Si neighbours) the two bond directions r̂₁, r̂₂ define three
+mutually orthogonal directions — two in the Si–O–Si plane, one normal to it:
+
+| direction | definition | motion | band |
+|---|---|---|---|
+| **stretch** | `norm(r̂₁ − r̂₂)`, along Si···Si | one Si–O lengthens as the other shortens | ~1050–1200 cm⁻¹ (130–150 meV) |
+| **bend** | `norm(r̂₁ + r̂₂)`, along the bisector | the Si–O–Si angle opens and closes | ~800 cm⁻¹ (~100 meV) |
+| **rock** | `norm(r̂₁ × r̂₂)`, ⊥ to the plane | O moves out of the Si–O–Si plane | ~400–500 cm⁻¹ (50–60 meV) |
+
+The two in-plane directions are perpendicular for free: `(r̂₁−r̂₂)·(r̂₁+r̂₂) =
+|r̂₁|² − |r̂₂|² = 0` because both are unit vectors — the diagonals of a rhombus.
+So the three form a *complete* basis and each oxygen's displacement splits
+exactly, `|u|² = (u·ŝ)² + (u·b̂)² + (u·r̂)²`.
+
+**Nothing is classified.** Every mode gets three fractions summing to 1, e.g.
+`(0.62, 0.21, 0.17)` — no thresholds, no labels. The bands appear when the DOS is
+weighted by those fractions, which is why `DoS(stretch)+DoS(bend)+DoS(rock)`
+equals `DoS(Total)` exactly.
+
+Three things to know about what the fractions mean:
+
+- Only **bridging-oxygen** motion is in the denominator. Si motion and
+  non-bridging-O motion contribute nothing, so a fraction reads "of the bridging-O
+  motion in this mode, how much is stretch" — not "of the whole mode". The
+  element-partial DOS covers the rest.
+- A 0.5/0.5 mode is genuinely ambiguous between "half the oxygens rocking, half
+  stretching" and "every oxygen at 45°". The per-mode table narrows this; only
+  looking at the eigenvector settles it.
+- Displacements are `u = e/√m`, **not** the eigenvectors. The eigenvectors of a
+  mass-weighted matrix are not displacements, and using them directly would
+  misweight oxygen against silicon throughout.
+
+A **linear** bridge (180°) has no plane: `r̂₁+r̂₂` and `r̂₁×r̂₂` both vanish and
+bend/rock become physically degenerate. Ideal β-cristobalite is exactly this, so
+the script substitutes an arbitrary perpendicular pair and reports how many
+bridges are within 5° of linear. Their *sum* (transverse motion) is still
+meaningful; the split between bend and rock is not. Stretch is unaffected.
+
+Alongside the decomposition you also get:
+
+- **Participation ratio**, `PR(m) = 1/(N Σᵢ|eᵢ|⁴)`, from `1/N` (all motion on one
+  atom) to `1` (every atom moving). In a glass this is half the physics — it is
+  how propagons, diffusons and locons are separated, and how the boson-peak
+  region is identified.
+- **Reduced DOS** `g(ν)/ν²` as a CSV column and plot panel. Debye predicts
+  `g ~ ν²`, so this is flat for a crystal and shows a peak in a glass — the boson
+  peak.
+- A **coordination census**: how many oxygens are 1-, 2-, 3-coordinated, and the
+  mean Si–O–Si angle. In a quenched glass some oxygens are non-bridging, and the
+  census says how much of the structure the decomposition actually covers. Worth
+  reading as a glass-quality check in its own right.
+
+Extra outputs when this is on:
+
+- `<date>_vdos_dynmat_modes.csv` — one row per mode: frequency in all four units,
+  participation ratio, `frac_stretch/bend/rock`, and per-element fractions. This
+  is what makes "which modes are in this peak" answerable.
+- `<date>_vdos_dynmat_character.png` — three panels: character-resolved DOS,
+  participation ratio vs frequency, and the reduced DOS.
+
+It needs `dynmat_ref.lammpstrj`, the coordinates LAMMPS writes immediately after
+`minimize`. The last frame of `dump.lammpstrj` will not do: it predates the
+minimization, and the relaxation rotates exactly the bond directions this
+analysis projects onto.
+
+### Reading the diagnostics
+
+Three zero modes are the acoustic translations and are expected. The script snaps
+modes within one bin width of zero to exactly zero (finite-difference noise
+scatters them across zero, and without this some fall out of range and quietly
+cost the spectrum weight), then reports anything still negative:
+
+```
+  Lowest 6 signed frequencies (meV): 0.0000, 0.0000, 0.0000, 18.5958, 32.1654, 43.4362
+  Modes snapped to zero (|nu| < 1 meV, one bin width): 3  (3 acoustic translations are expected)
+  Imaginary modes: 0
+```
+
+Imaginary modes beyond the acoustic ones mean the minimization did not reach a
+true minimum. Tighten `DYNMAT_MIN_FTOL` or reduce `DYNMAT_DISPLACEMENT` before
+trusting the spectrum. Two other checks worth doing once on a new system: the
+reported `max|D - D.T| / max|D|` should be small, and the spectrum should be
+stable across `DYNMAT_DISPLACEMENT` of 1e-5 to 1e-3 (too small is numerical
+noise, too large samples anharmonicity).
