@@ -118,6 +118,10 @@ RDF_FUNCTIONS="${RDF_FUNCTIONS:-}"                # semicolon list: g | h | D | 
 RDF_RESOLUTION_SIGMA="${RDF_RESOLUTION_SIGMA:-}"  # Å; Gaussian resolution broadening, 0 disables
 RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch
 RDF_LORCH_QMAX="${RDF_LORCH_QMAX:-}"              # Å⁻¹; needed by mode=lorch
+RDF_LORCH_DR="${RDF_LORCH_DR:-}"                  # Å; the parameter INSIDE M(Q), not the
+                                        # resolution a paper quotes. Blank = pi/Q_MAX, the
+                                        # standard Lorch choice — leave it blank unless the
+                                        # paper states this parameter explicitly
 RDF_ATOMS_PER_FORMULA_UNIT="${RDF_ATOMS_PER_FORMULA_UNIT:-}"  # SiO2 -> 3; needed by the
                                         # 'formula' normalization and by RDF_WRIGHT
 # Wright comparison output: one extra pair of files, <date>_wright.csv/.png, holding
@@ -125,6 +129,22 @@ RDF_ATOMS_PER_FORMULA_UNIT="${RDF_ATOMS_PER_FORMULA_UNIT:-}"  # SiO2 -> 3; neede
 # neutron correlation function. Needs QMAX and ATOMS_PER_FORMULA_UNIT above.
 RDF_WRIGHT="${RDF_WRIGHT:-}"            # yes | no (default no)
 RDF_WRIGHT_QMAX="${RDF_WRIGHT_QMAX:-}"  # Å⁻¹; the paper's Fourier truncation, e.g. 45.2
+
+# bad_freud.py — bond angle distributions. These keys are BARE rather than
+# BAD_-prefixed at the script level (the submitters map --bad-elements to
+# ELEMENTS, and so on); the prefix asymmetry is historical.
+#
+# R_CUTOFF is both the physics and the cost knob: set each pair from the FIRST
+# MINIMUM of that pair's g(r), which means running rdf_freud.py first. Cost goes
+# as R^6 — measured 16x going from 4 to 6 A — because coordination grows as R^3
+# and triplets as its square, so a cutoff set generously "to be safe" is
+# quadratically worse than it looks.
+ELEMENTS="${ELEMENTS:-}"                # SEMICOLON list, e.g. "Si;O;H". Never auto-detected
+R_CUTOFF="${R_CUTOFF:-}"                # "El1-El2:value;..." keys sorted alphabetically
+R_MINCUT="${R_MINCUT:-}"                # same format; excludes unphysical close contacts
+TRIPLET_CUTOFFS="${TRIPLET_CUTOFFS:-}"  # pipe-separated per-triplet overrides,
+                                        # label:elA-elB-elC:r_max_ab:r_min_ab:r_max_cb:r_min_cb
+BAD_BINS="${BAD_BINS:-}"                # bins over 0-180 deg; 180 = 1 deg, 360 = 0.5 deg
 
 # vdos.py
 VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
@@ -139,6 +159,8 @@ VDOS_WINDOW="${VDOS_WINDOW:-}"
 VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"      # phonon | unit_area (sum rule)
 VDOS_WEIGHTING="${VDOS_WEIGHTING:-}"              # semicolon list: unity | coherent |
                                                   # incoherent | total (species weight)
+VDOS_PLOT_XUNIT="${VDOS_PLOT_XUNIT:-}"            # meV | THz | cm-1 | eV (plot axis only;
+                                                  # the CSV always carries all four)
 
 # msd.py
 MSD_N_FRAMES="${MSD_N_FRAMES:-}"
@@ -167,6 +189,8 @@ VDOS_DYNMAT_WEIGHTING="${VDOS_DYNMAT_WEIGHTING:-}"        # semicolon list: unit
 VDOS_DYNMAT_PARTIAL="${VDOS_DYNMAT_PARTIAL:-}"              # yes | no
 VDOS_DYNMAT_ASR="${VDOS_DYNMAT_ASR:-}"                      # none | simple
 VDOS_DYNMAT_OUTPUT="${VDOS_DYNMAT_OUTPUT:-}"                # output basename
+VDOS_DYNMAT_THREADS="${VDOS_DYNMAT_THREADS:-}"              # BLAS threads for the eigensolve;
+                                                            # blank = OMP_NUM_THREADS above
 # Mode-character analysis: which motion each band is (rocking / bending /
 # stretching at bridging oxygens), plus participation ratio and g(nu)/nu^2.
 # Needs DYNMAT_REF_TRAJ, the coordinates LAMMPS wrote right after `minimize`.
@@ -184,14 +208,15 @@ for _var in DYNAMICS_DT \
             DSF_MAX_Q_POINTS_DYN DSF_NEUTRON_WEIGHTING \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
             RDF_RESOLUTION_MODE RDF_LORCH_QMAX RDF_ATOMS_PER_FORMULA_UNIT \
-            RDF_WRIGHT RDF_WRIGHT_QMAX \
+            RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR \
+            ELEMENTS R_CUTOFF R_MINCUT TRIPLET_CUTOFFS BAD_BINS \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
-            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \
+            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING VDOS_PLOT_XUNIT \
             MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION \
             DYNMAT_FILE DYNMAT_BINARY \
             VDOS_DYNMAT_MAX_FREQUENCY VDOS_DYNMAT_XUNIT VDOS_DYNMAT_BINS \
             VDOS_DYNMAT_SMEARING VDOS_DYNMAT_MATRIX_STYLE VDOS_DYNMAT_NORMALIZATION VDOS_DYNMAT_WEIGHTING \
-            VDOS_DYNMAT_PARTIAL VDOS_DYNMAT_ASR VDOS_DYNMAT_OUTPUT \
+            VDOS_DYNMAT_PARTIAL VDOS_DYNMAT_ASR VDOS_DYNMAT_OUTPUT VDOS_DYNMAT_THREADS \
             VDOS_DYNMAT_CHARACTER DYNMAT_REF_TRAJ VDOS_DYNMAT_BRIDGE_ELEMENT \
             VDOS_DYNMAT_NEIGHBOR_ELEMENT VDOS_DYNMAT_BOND_CUTOFF; do
     if [ -n "${!_var}" ]; then
