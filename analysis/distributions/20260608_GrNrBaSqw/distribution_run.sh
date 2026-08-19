@@ -127,6 +127,15 @@ RDF_BINS="${RDF_BINS:-}"                # number of r-bins
 RDF_NORMALIZATION="${RDF_NORMALIZATION:-}"        # semicolon list: unity | FZ | absolute
 RDF_FUNCTIONS="${RDF_FUNCTIONS:-}"                # semicolon list: g | h | D | T
 RDF_RESOLUTION_SIGMA="${RDF_RESOLUTION_SIGMA:-}"  # Å; Gaussian resolution broadening, 0 disables
+RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch
+RDF_LORCH_QMAX="${RDF_LORCH_QMAX:-}"              # Å⁻¹; needed by mode=lorch
+RDF_ATOMS_PER_FORMULA_UNIT="${RDF_ATOMS_PER_FORMULA_UNIT:-}"  # SiO2 -> 3; needed by the
+                                        # 'formula' normalization and by RDF_WRIGHT
+# Wright comparison output: one extra pair of files, <date>_wright.csv/.png, holding
+# T(r) Lorch-broadened and per formula unit — built to overlay directly on a published
+# neutron correlation function. Needs QMAX and ATOMS_PER_FORMULA_UNIT above.
+RDF_WRIGHT="${RDF_WRIGHT:-}"            # yes | no (default no)
+RDF_WRIGHT_QMAX="${RDF_WRIGHT_QMAX:-}"  # Å⁻¹; the paper's Fourier truncation, e.g. 45.2
 
 # vdos.py
 VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
@@ -185,6 +194,8 @@ for _var in DYNAMICS_DT \
             DSF_WINDOW_SIZE DSF_WINDOW_STEP DSF_Q_MAX_DYN DSF_N_Q_BINS_DYN \
             DSF_MAX_Q_POINTS_DYN DSF_NEUTRON_WEIGHTING \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
+            RDF_RESOLUTION_MODE RDF_LORCH_QMAX RDF_ATOMS_PER_FORMULA_UNIT \
+            RDF_WRIGHT RDF_WRIGHT_QMAX \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
             VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \
             MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION \

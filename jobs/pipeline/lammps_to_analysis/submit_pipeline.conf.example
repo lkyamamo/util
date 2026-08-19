@@ -237,6 +237,31 @@ ANALYSIS_NODELIST=""
 #                      neutron G_n(r); D with FZ is the PDF community's G(r).
 #                      Empty leaves the script defaults, "FZ;absolute;unity"
 #                      and "g;h;D".
+#   RDF_RESOLUTION_MODE_VAL   gaussian (default) | lorch. 'lorch' reproduces the
+#                      modification function neutron glass diffraction uses,
+#                      M(Q)=sin(dr Q)/(dr Q) truncated at Q_max, whose cosine
+#                      transform is convolved with the correlation function. It
+#                      matches a Gaussian in WIDTH but not in shape - the Lorch
+#                      kernel has negative side lobes a Gaussian cannot produce.
+#   RDF_LORCH_QMAX_VAL The measurement's Fourier truncation, A^-1. dr defaults to
+#                      pi/Q_max, the standard Lorch choice. Papers quote the
+#                      RESULTING resolution (the peak FWHM), which is ~1.73x
+#                      smaller than dr - the script prints the FWHM so you can
+#                      check it against the text rather than guessing.
+#   RDF_ATOMS_PER_FORMULA_UNIT_VAL
+#                      Atoms in the formula unit the paper quotes per (SiO2 -> 3).
+#                      Needed by the 'formula' normalization and by RDF_WRIGHT.
+#   RDF_WRIGHT_VAL     yes | no. Writes an EXTRA output, <date>_wright.csv/.png:
+#                      T(r) Lorch-broadened and per formula unit, built to overlay
+#                      directly on a published neutron correlation function,
+#                      together with the T0(r) baseline it oscillates about.
+#                      Bundles function + normalization + broadening so the three
+#                      cannot disagree. Needs the two keys above.
+#   RDF_WRIGHT_QMAX_VAL  A^-1; the paper's truncation, e.g. 45.2 for Wright's
+#                      vitreous-silica work.
+#                      Check after running: the printed T0 slope 4*pi*rho*Sum(w)
+#                      must equal the slope of the paper's average-density line.
+#                      It is fixed by composition and density, so nothing is fitted.
 #   RDF_RESOLUTION_SIGMA_VAL  Gaussian resolution broadening in A; 0 disables
 #                      (script default 0.1). Match it to the instrument you are
 #                      comparing against — Soper used ~0.1 A. Without it,
@@ -248,6 +273,11 @@ RDF_BINS_VAL="800"
 RDF_NORMALIZATION_VAL=""
 RDF_FUNCTIONS_VAL=""
 RDF_RESOLUTION_SIGMA_VAL=""
+RDF_RESOLUTION_MODE_VAL=""
+RDF_LORCH_QMAX_VAL=""
+RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
+RDF_WRIGHT_VAL=""
+RDF_WRIGHT_QMAX_VAL=""
 
 # -----------------------------------------------------------------------------
 # bad_freud.py — bond angle distributions. Reads dump.lammpstrj.

@@ -63,6 +63,20 @@ Optional:
                                     e.g. "g;h;D" (h with absolute is Soper's G_n(r))
     --rdf-resolution-sigma FLOAT  rdf_freud.py RDF_RESOLUTION_SIGMA (Å), Gaussian
                                     resolution broadening; 0 disables (default 0.1)
+    --rdf-resolution-mode STR     rdf_freud.py RDF_RESOLUTION_MODE: 'gaussian' (default)
+                                    or 'lorch' (the neutron-diffraction modification
+                                    function; needs --rdf-lorch-qmax)
+    --rdf-lorch-qmax FLOAT        rdf_freud.py RDF_LORCH_QMAX (A^-1), the Fourier
+                                    truncation of the measurement being compared to
+    --rdf-atoms-per-formula-unit INT
+                                  rdf_freud.py RDF_ATOMS_PER_FORMULA_UNIT (SiO2 -> 3),
+                                    needed by the 'formula' normalization and --rdf-wright
+    --rdf-wright {yes|no}         rdf_freud.py RDF_WRIGHT. Writes an extra
+                                    <date>_wright.csv/.png: T(r) Lorch-broadened and per
+                                    formula unit, built to overlay directly on a published
+                                    neutron correlation function. Needs --rdf-wright-qmax
+                                    and --rdf-atoms-per-formula-unit
+    --rdf-wright-qmax FLOAT       rdf_freud.py RDF_WRIGHT_QMAX (A^-1), e.g. 45.2
     --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
     --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
                                     entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
@@ -314,6 +328,11 @@ RDF_BINS_VAL=""
 RDF_NORMALIZATION_VAL=""
 RDF_FUNCTIONS_VAL=""
 RDF_RESOLUTION_SIGMA_VAL=""
+RDF_RESOLUTION_MODE_VAL=""
+RDF_LORCH_QMAX_VAL=""
+RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
+RDF_WRIGHT_VAL=""
+RDF_WRIGHT_QMAX_VAL=""
 BAD_ELEMENTS=""
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
@@ -397,6 +416,11 @@ while [[ $# -gt 0 ]]; do
     --rdf-normalization) RDF_NORMALIZATION_VAL="$2"; shift 2 ;;
     --rdf-functions) RDF_FUNCTIONS_VAL="$2"; shift 2 ;;
     --rdf-resolution-sigma) RDF_RESOLUTION_SIGMA_VAL="$2"; shift 2 ;;
+    --rdf-resolution-mode) RDF_RESOLUTION_MODE_VAL="$2"; shift 2 ;;
+    --rdf-lorch-qmax) RDF_LORCH_QMAX_VAL="$2"; shift 2 ;;
+    --rdf-atoms-per-formula-unit) RDF_ATOMS_PER_FORMULA_UNIT_VAL="$2"; shift 2 ;;
+    --rdf-wright) RDF_WRIGHT_VAL="$2"; shift 2 ;;
+    --rdf-wright-qmax) RDF_WRIGHT_QMAX_VAL="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
     --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
@@ -692,6 +716,11 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$RDF_NORMALIZATION_VAL" ]] && export RDF_NORMALIZATION="$RDF_NORMALIZATION_VAL"
   [[ -n "$RDF_FUNCTIONS_VAL" ]]   && export RDF_FUNCTIONS="$RDF_FUNCTIONS_VAL"
   [[ -n "$RDF_RESOLUTION_SIGMA_VAL" ]] && export RDF_RESOLUTION_SIGMA="$RDF_RESOLUTION_SIGMA_VAL"
+  [[ -n "$RDF_RESOLUTION_MODE_VAL" ]] && export RDF_RESOLUTION_MODE="$RDF_RESOLUTION_MODE_VAL"
+  [[ -n "$RDF_LORCH_QMAX_VAL" ]] && export RDF_LORCH_QMAX="$RDF_LORCH_QMAX_VAL"
+  [[ -n "$RDF_ATOMS_PER_FORMULA_UNIT_VAL" ]] && export RDF_ATOMS_PER_FORMULA_UNIT="$RDF_ATOMS_PER_FORMULA_UNIT_VAL"
+  [[ -n "$RDF_WRIGHT_VAL" ]] && export RDF_WRIGHT="$RDF_WRIGHT_VAL"
+  [[ -n "$RDF_WRIGHT_QMAX_VAL" ]] && export RDF_WRIGHT_QMAX="$RDF_WRIGHT_QMAX_VAL"
   [[ -n "$BAD_ELEMENTS" ]]        && export ELEMENTS="$BAD_ELEMENTS"
   [[ -n "$BAD_R_CUTOFF" ]]        && export R_CUTOFF="$BAD_R_CUTOFF"
   [[ -n "$BAD_R_MINCUT" ]]        && export R_MINCUT="$BAD_R_MINCUT"

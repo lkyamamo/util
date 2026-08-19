@@ -16,7 +16,7 @@ frame of `dump.lammpstrj`, for element labels).
 
 | Script | What it computes | Output files |
 |---|---|---|
-| `rdf_freud.py` | Radial distribution function g(r), coordination number n(r), and selectable neutron correlation functions for all element pairs | `rdfs.csv`, `rdfs.png`, `nrs.csv`, `nrs.png` |
+| `rdf_freud.py` | Radial distribution function g(r), coordination number n(r), and selectable neutron correlation functions for all element pairs | `rdfs.csv`, `rdfs.png`, `nrs.csv`, `nrs.png`, and `wright.csv`/`.png` when `RDF_WRIGHT=yes` |
 | `bad_freud.py` | Bond angle distribution P(θ) for all A-B-C triplets | `bads.csv`, `bads.png` |
 | `dsf.py` | Static structure factor S(q) and dynamic structure factor S(q,ω) | `sq.csv`, `sq.png`, `dsf.csv`, `dsf.png` |
 | `vdos.py` | Vibrational density of states (aligned with `analysis/dynamics/src/msd.cpp` by default) | `vdos.csv`, `vdos.png` |
@@ -110,6 +110,11 @@ Optional:
 | `RDF_NORMALIZATION` | Pair-weight convention(s): `unity`, `FZ`, `absolute` | `"FZ;absolute;unity"` |
 | `RDF_FUNCTIONS` | Correlation function(s): `g`, `h`, `D`, `T` | `"g;h;D"` |
 | `RDF_RESOLUTION_SIGMA` | Gaussian resolution broadening in Å, written as `*_broadened` twins; `0` disables | `0.1` |
+| `RDF_RESOLUTION_MODE` | `gaussian` (default) or `lorch` — the neutron-diffraction modification function | `gaussian` |
+| `RDF_LORCH_QMAX` | Å⁻¹; the measurement's Fourier truncation. `Δr` defaults to `π/Q_max` | — |
+| `RDF_ATOMS_PER_FORMULA_UNIT` | Atoms per formula unit (SiO₂ → 3); needed by `formula` and `RDF_WRIGHT` | — |
+| `RDF_WRIGHT` | `yes` writes the extra `wright.csv`/`.png` comparison output | `no` |
+| `RDF_WRIGHT_QMAX` | Å⁻¹; the paper's truncation, e.g. `45.2` | — |
 | `OUTPUT_CSV` | g(r) CSV path; `None` to skip | `"rdfs.csv"` |
 | `OUTPUT_NR_CSV` | n(r) CSV path; `None` to skip | `"nrs.csv"` |
 
@@ -136,6 +141,7 @@ became configurable map as `total → g_unity`, `neutron → g_FZ`, `t → T_FZ`
 | `unity` | `f c_A c_B` | 1 | — | Every element scatters identically (b = 1) — the name refers to the scattering lengths, not to Σw, since FZ also sums to 1. Not measurable; it's the composition-averaged structure and the b-free baseline the neutron curves depart from. Formerly `total`. |
 | `FZ` | `f c_A c_B b_A b_B / ⟨b⟩²` | 1 | — | Faber–Ziman. Tends to 1 at large r like a partial does, and being dimensionless it superimposes across compositions — at the cost of dividing by a nearly-cancelling sum. |
 | `absolute` | `f c_A c_B b_A b_B / 100` | ⟨b⟩²/100 | barn/sr/atom | No division: the weighted sum in the units a measured differential cross-section carries. The scale is physical, so the excluded-volume plateau lands at −Σw. Stays well conditioned as ⟨b⟩ → 0, so use it for light water (⟨b⟩² = 0.0031 barn) or a null mixture (⟨b⟩ = 0), where FZ is useless. |
+| `formula` | `n f c_A c_B b_A b_B / 100` | n⟨b⟩²/100 | barn/sr/formula-unit | `absolute` re-quoted **per formula unit** rather than per atom, which is what papers on compounds usually do. Since `Σⱼb̄ⱼ = n⟨b⟩` and `ρ⁰ = ρ_atom/n`, Wright's `T⁰ = 4πrρ⁰(Σⱼb̄ⱼ)²` is exactly `n` times the per-atom result. Needs `RDF_ATOMS_PER_FORMULA_UNIT`. |
 
 *Function* — what gets built from those weights and the partials `g_AB`:
 
@@ -145,6 +151,27 @@ became configurable map as `total → g_unity`, `neutron → g_FZ`, `t → T_FZ`
 | `h` | `Σ w [g_AB − 1]` | Total correlation function: baseline subtracted first, so peaks sit on zero and the excluded-volume region reads −Σw. **`h_absolute` is Soper's eq. (20)**, the neutron G_n(r). |
 | `D` | `4πrρ Σ w [g_AB − 1]` | Differential correlation function. The 4πr factor offsets the decay of peak amplitude with distance, keeping far-field oscillations legible; oscillates about 0. **`D_FZ` is the PDF community's G(r)**. |
 | `T` | `4πrρ Σ w g_AB` | Total radial distribution function — `D` keeping the bulk baseline, so it climbs as 4πrρΣw. Area under a peak is a coordination number. Not in the default `RDF_FUNCTIONS`. |
+
+**Comparing against a published neutron curve.** `RDF_WRIGHT=yes` writes a separate `<date>_wright.csv`
+and `.png` holding `T(r)` **Lorch-broadened and per formula unit**, plus the `T⁰(r)` baseline it oscillates
+about — built to overlay directly on a measured correlation function:
+
+```bash
+RDF_WRIGHT=yes RDF_WRIGHT_QMAX=45.2 RDF_ATOMS_PER_FORMULA_UNIT=3
+```
+
+It bundles the three choices such a comparison needs — function `T`, per-formula-unit normalization, Lorch
+broadening — so they cannot disagree with each other. Two traps it removes:
+
+- **Per formula unit is a factor of n.** Papers on compounds usually quote the cross-section per SiO₂ while
+  this script works per atom, and `T⁰ = 4πrρ⁰(Σⱼb̄ⱼ)²` with `ρ⁰` in units/Å³ works out to exactly `n` times
+  the per-atom result. That constant is the commonest reason a published curve sits above a calculated one.
+- **`Δr` is not the quoted resolution.** Papers quote the *resulting* peak FWHM; `Δr` inside `M(Q)` is
+  ~1.73× smaller (`π/Q_max`). Passing the quoted number as `Δr` doubles the broadening and makes the kernel
+  double-humped, which the script warns about. It prints the FWHM so you can check it against the text.
+
+**The check worth making:** the printed `T⁰` slope `4πρΣw` must equal the slope of the paper's
+average-density line. It is fixed by composition and density with nothing fitted.
 
 **Two things worth knowing.** `'H'` in `NEUTRON_SCATTERING_LENGTHS` is *deuterium* (b = 6.671 fm), since
 LAMMPS labels both isotopes `H`; every neutron column is therefore for a deuterated sample, and the script
