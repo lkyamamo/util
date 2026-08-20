@@ -52,8 +52,13 @@ A composite figure survives only where the combination *is* the result, and each
 reads as one: `wright_composite.png` (T(r) broadened, raw and baseline together),
 `character_composite.png` (stretch/bend/rock against the total — a band assignment is made by
 reading them against each other), and the `all_curves.png` / `all_species.png` overlays in
-`vdos`, `dsf` and `msd`. Reference lines are *not* split off: the `g(r) = 1` line and Wright's
-`T⁰(r)` baseline stay drawn on the curve they belong to.
+`vdos`, `dsf` and `msd`.
+
+**No reference lines are drawn.** An individual plot carries its curve and nothing else — no
+`g(r) = 1` line, no baseline under `T(r)`. Wright's `T⁰(r)` is a quantity in its own right and
+gets its own file, since its slope `4πρΣw` is the check the comparison turns on. The asymptotic
+limit each convention column should approach is *printed* by the convention table at startup
+rather than drawn, which is the check that actually catches a wrong normalization.
 
 ---
 

@@ -776,8 +776,8 @@ def build_conventions(partial_results, elements, concentrations, rho_mean,
     Build every requested (function, normalization) column from the partials.
 
     Returns (results, meta) where results is {label: (r, y)} and meta is
-    {label: {...}} carrying the defining equation, Σw, asymptotic limits, units,
-    and the y value of the plot's reference line (None for no line).
+    {label: {...}} carrying the defining equation, Σw, asymptotic limits and
+    units.  The limits are printed rather than drawn: see plot_rdfs().
     """
     r = next(iter(partial_results.values()))[0]
     results, meta = {}, {}
@@ -798,7 +798,6 @@ def build_conventions(partial_results, elements, concentrations, rho_mean,
                 'limit_0':   {'g': '0', 'h': f'{-sum_w:.4f}', 'D': '0', 'T': '0'}[func],
                 'limit_inf': {'g': f'{sum_w:.4f}', 'h': '0', 'D': '0 (oscillates)',
                               'T': f'4πrρ·{sum_w:.4f}'}[func],
-                'reference': {'g': sum_w, 'h': 0.0, 'D': 0.0, 'T': None}[func],
             }
 
     if not results:
@@ -1007,10 +1006,10 @@ def plot_wright(columns, r, info):
     The Wright comparison, as individual curves plus the one composite that is
     itself the result.
 
-    T0(r) is drawn on the individual T(r) panels as a dashed line rather than
-    being split off: it is the baseline the curve oscillates about, in the same
-    role as the g(r) = 1 line elsewhere, not a second quantity.  It also gets
-    its own file, since its slope is the check the comparison turns on.
+    Each individual plot carries its own curve and nothing else.  T0(r) is a
+    quantity in its own right here — its slope 4πρΣw is the check the whole
+    comparison turns on — so it gets a file rather than being drawn over the
+    others, and the composite is where the three are seen together.
     """
     title = (f"Wright comparison — Lorch Q$_{{max}}$={info['q_max']:g} Å⁻¹, "
              f"FWHM {info['fwhm']:.3f} Å")
@@ -1019,7 +1018,6 @@ def plot_wright(columns, r, info):
                         ('T_wright_unbroadened', 'wright_unbroadened')):
         fig, ax, st = new_plot()
         ax.plot(r, columns[name], color=st['color'], linewidth=st['linewidth'])
-        ax.plot(r, columns['T0_baseline'], color='0.4', linestyle='--', linewidth=1.0)
         print(f"  {save_plot(fig, ax, label, 'r (Å)', WRIGHT_YLABEL, title=title)}")
 
     fig, ax, st = new_plot()
@@ -1051,18 +1049,16 @@ def plot_rdfs(results, meta):
     """
     One PNG per partial and per convention column.
 
-    meta carries each column's units and reference level, which is why these
-    cannot share an axis in the first place: a partial is a dimensionless g(r)
-    about 1, while h_absolute is barn/sr/atom about 0.  The reference line is
-    drawn on the curve it belongs to, not split into a file of its own.
+    meta carries each column's units, which is why these cannot share an axis in
+    the first place: a partial is a dimensionless g(r) about 1, while h_absolute
+    is barn/sr/atom about 0.  Nothing but the curve is drawn — the asymptotic
+    limits each column should approach are printed by print_convention_table()
+    instead, which is the check that actually catches a wrong normalization.
     """
     for name, (r, g) in results.items():
         fig, ax, st = new_plot()
         ax.plot(r, g, color=st['color'], linewidth=st['linewidth'])
-        m         = meta.get(name)
-        reference = 1.0 if m is None else m['reference']       # partials: g(r) -> 1
-        if reference is not None:
-            ax.axhline(reference, color='gray', linestyle='--', linewidth=0.8)
+        m      = meta.get(name)
         ylabel = 'g(r)' if m is None else (f"{name} ({m['units']})" if m['units'] else name)
         save_plot(fig, ax, name, 'r (Å)', ylabel, title=name)
     print(f"{len(results)} g(r) plot(s) written to {PLOT_DIR}/")
