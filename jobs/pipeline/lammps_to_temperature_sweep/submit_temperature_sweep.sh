@@ -579,6 +579,7 @@ BOX_LENGTH=""
 if [[ "$N_DIELECTRIC" -gt 0 || "$SKIP_CASCADE" != "1" ]]; then
   if [[ -n "$STARTING_STRUCTURE" ]]; then
     BOX_LENGTH="$(python3 "$GENERATE_SCRIPT" \
+      --repo-root "$REPO_ROOT" \
       --start-data "$STARTING_STRUCTURE" \
       --replicate "$REPLICATE" \
       --density "$DENSITY" \
@@ -682,6 +683,7 @@ else
   echo ""
   echo "--- Generating the cascade input ---"
   gen_args=(
+    --repo-root "$REPO_ROOT"
     --start-data "$STARTING_STRUCTURE"
     --replicate "$REPLICATE"
     --density "$DENSITY"

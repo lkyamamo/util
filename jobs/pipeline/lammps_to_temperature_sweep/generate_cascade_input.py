@@ -36,17 +36,55 @@ import argparse
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-GENERAL = REPO_ROOT / "analysis" / "general"
-if str(GENERAL) not in sys.path:
-    sys.path.insert(0, str(GENERAL))
-
-# The density solve is not reimplemented here — analysis/general already has
-# it, and box_size.py's constants are the ones the rest of the repo uses.
-from box_size import AMU_TO_G, cubic_dimension_A  # noqa: E402
-from box_size_from_data import read_lammps_data  # noqa: E402
+# Where this file sits in the checkout, used only as the default --repo-root
+# for standalone runs. submit_temperature_sweep.sh passes --repo-root
+# explicitly, so the pipeline never depends on this script's depth in the tree.
+DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 DEFAULT_PREAMBLE = Path(__file__).resolve().parent / "OH-cascade-preamble.input"
+
+
+def load_box_size_helpers(repo_root):
+    """Import the density-solve helpers from <repo_root>/analysis/general/.
+
+    Imported here rather than at module scope for two reasons: the repo root
+    is a runtime argument (the driver knows it and passes it, instead of this
+    script guessing from __file__), and a checkout without analysis/general/
+    should say which directory it looked in rather than raise a bare
+    ModuleNotFoundError naming a module the reader has never heard of.
+
+    The density solve is not reimplemented here — analysis/general already has
+    it, and box_size.py's constants are the ones the rest of the repo uses.
+    """
+    general = Path(repo_root) / "analysis" / "general"
+    missing = [
+        name for name in ("box_size.py", "box_size_from_data.py")
+        if not (general / name).is_file()
+    ]
+    if missing:
+        paths = " ".join(f"analysis/general/{name}" for name in missing)
+        raise SystemExit(
+            f"Error: cannot find the density-solve helpers under {general}\n"
+            f"  missing: {', '.join(missing)}\n"
+            f"  repo root: {repo_root}\n"
+            f"\n"
+            f"Both files are tracked, so a checkout missing one has lost it\n"
+            f"locally. Restore it in that checkout with:\n"
+            f"    cd {repo_root} && git checkout -- {paths}\n"
+            f"\n"
+            f"Note that box_size_from_data.py imports box_size.py, so a checkout\n"
+            f"without box_size.py cannot run either of them — this is not specific\n"
+            f"to the sweep pipeline. Or pass --repo-root pointing at a complete\n"
+            f"checkout."
+        )
+
+    if str(general) not in sys.path:
+        sys.path.insert(0, str(general))
+
+    from box_size import AMU_TO_G, cubic_dimension_A
+    from box_size_from_data import read_lammps_data
+
+    return AMU_TO_G, cubic_dimension_A, read_lammps_data
 
 # Fixed by OH-cascade-preamble.input's pair_coeff line. Not configurable: see
 # the header of that file.
@@ -64,6 +102,8 @@ def parse_args():
         description="Generate the temperature-cascade LAMMPS input.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    p.add_argument("--repo-root", default=str(DEFAULT_REPO_ROOT),
+                   help="util checkout holding analysis/general/ (the density solve)")
     p.add_argument("--start-data", required=True,
                    help="Starting structure .data file (read for atom counts)")
     p.add_argument("--out", required=True, help="Where to write the input")
@@ -164,8 +204,9 @@ def parse_preamble_masses(preamble_text):
     return masses
 
 
-def solve_box_length(start_data, replicate, density, preamble_masses):
+def solve_box_length(start_data, replicate, density, preamble_masses, repo_root):
     """Cube edge (Angstrom) giving `density` g/cc for the replicated cell."""
+    AMU_TO_G, cubic_dimension_A, read_lammps_data = load_box_size_helpers(repo_root)
     info = read_lammps_data(start_data)
     nx, ny, nz = replicate
     n_cells = nx * ny * nz
@@ -287,7 +328,7 @@ def main():
     preamble_masses = parse_preamble_masses(preamble_text)
     replicate = parse_replicate(args.replicate)
     box_length = solve_box_length(
-        args.start_data, replicate, args.density, preamble_masses
+        args.start_data, replicate, args.density, preamble_masses, args.repo_root
     )
 
     if args.print_box_length:
