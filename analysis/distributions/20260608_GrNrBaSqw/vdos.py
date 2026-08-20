@@ -138,11 +138,11 @@ OUTPUT
              column naming follows msd.cpp's dos.dat (Freq(meV), DoS(<el>)),
              with THz/cm-1/eV as extras. The plain DoS(Total) this script wrote
              before weighting existed is now DoS(Total_unity), unchanged.
-- <date>_vdos/ — ONE PNG PER CURVE: <element>.png per species and
-  Total_<weighting>.png per requested weighting, plus all_curves.png, the
-  overlay kept because a partial is read against the total it belongs to.
-  The directory is created by the runner, not by this script; set
-  VDOS_PLOT_DIR= (empty) to write only the CSV.
+
+This script writes NO plots. Figures come from the plotting pipeline
+(jobs/pipeline/plotting/plot_pipeline.sh), which reads the CSVs above and
+writes one PNG per quantity. Run it in this directory, or let the analysis
+runner call it via RUN_PLOTS=1.
 
 Not replicated from msd.cpp: real-space MSD (a different quantity; use a
 dedicated script if needed) and the charge-weighted current-current spectrum
@@ -151,7 +151,7 @@ not part of this generic pipeline).
 
 DEPENDENCIES
 ------------
-  pip install numpy matplotlib
+  pip install numpy
   pip install scipy   # optional: multi-threaded FFT via VDOS_THREADS (fft_periodogram only)
 
 COLUMN LAYOUT
@@ -171,13 +171,9 @@ cancels out of the normalization either method uses.
 """
 
 import os
-import re
 from datetime import date
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # =============================================================================
 # CONFIGURATION — edit these variables between runs
@@ -299,21 +295,7 @@ PLOT_XUNIT = _env("VDOS_PLOT_XUNIT", "meV" if METHOD == "vacf_cosine_transform" 
 # Output files (set to None to skip writing)
 OUTPUT_CSV  = "vdos.csv"
 
-# ---- Plot output ---------------------------------------------------------
-# Directory every PNG is written into, one curve per file.  A BASENAME; the
-# YYYYMMDD_ prefix is added below like every other output.  Empty disables
-# plotting and the CSV is still written.  Created by the runner
-# (distribution_run.sh / distribution_submit.slurm), not by this script.
-VDOS_PLOT_DIR  = os.environ.get("VDOS_PLOT_DIR", "vdos")
-# 'analysis' (default) or 'publication'; see PLOT_STYLES after the config block.
-# Distinct from VDOS_PLOT_XUNIT above, which chooses the x axis, not the look.
-PLOT_STYLE     = _env("VDOS_PLOT_STYLE", "analysis")
-PLOT_STYLE_KEY = "VDOS_PLOT_STYLE"
-PLOT_DIR_KEY   = "VDOS_PLOT_DIR"
-SCRIPT_NAME    = "vdos.py"
 
-# Plot appearance
-PLOT_DPI = 150
 
 # =============================================================================
 # END CONFIGURATION
@@ -324,90 +306,6 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_CSV  = _dated(OUTPUT_CSV)
-PLOT_DIR    = _dated(VDOS_PLOT_DIR) if VDOS_PLOT_DIR else None
-
-# =============================================================================
-# Plot output — one quantity per file
-# =============================================================================
-# Every curve is written as its own PNG into PLOT_DIR; nothing is packed into a
-# subplot grid.  A composite survives only where the combination *is* the
-# result — Wright's T(r) against the baseline it oscillates about, the mode
-# character decomposition, the species overlays — and those are named so they
-# read as composites rather than as one more quantity.
-#
-# PLOT_DIR is created by the runner (distribution_run.sh /
-# distribution_submit.slurm), never by this script: a missing directory means
-# the run was wired wrong, and quietly creating it would hide that.
-
-PLOT_STYLES = {
-    # 'analysis'    — titled and fully labelled, for reading a run.
-    # 'publication' — heavy lines and spines, large bold labels, no y ticks.
-    #                 This is the styling the separate *_plot.py pass used to
-    #                 apply; it is a config choice now, not a second script.
-    'analysis':    dict(figsize=(7.0, 4.5), linewidth=1.5, color='C0', spine_lw=0.8,
-                        weight='normal', label_fs=12, tick_fs=10,
-                        tick_len=4, tick_w=1.0, yticks=True, titles=True),
-    'publication': dict(figsize=(4.0, 3.0), linewidth=3.0, color='steelblue', spine_lw=2.0,
-                        weight='bold', label_fs=20, tick_fs=14,
-                        tick_len=6, tick_w=2.0, yticks=False, titles=False),
-}
-
-
-def plot_style():
-    if PLOT_STYLE not in PLOT_STYLES:
-        raise ValueError(
-            f"Unknown {PLOT_STYLE_KEY}={PLOT_STYLE!r}; use one of {list(PLOT_STYLES)}.")
-    return PLOT_STYLES[PLOT_STYLE]
-
-
-def check_plot_dir():
-    """
-    True if plots should be written.  PLOT_DIR must already exist — see the note
-    above on why this refuses to create it.
-    """
-    if PLOT_DIR is None:
-        return False
-    if not os.path.isdir(PLOT_DIR):
-        raise SystemExit(
-            f"{SCRIPT_NAME}: plot directory {PLOT_DIR!r} does not exist.\n"
-            f"  The runner creates it; running this script by hand, create it first:\n"
-            f"      mkdir -p {PLOT_DIR}\n"
-            f"  Or set {PLOT_DIR_KEY}= (empty) to skip plotting and write only the CSVs.")
-    return True
-
-
-def new_plot():
-    """A single-axes figure in the configured style."""
-    st = plot_style()
-    return plt.subplots(figsize=st['figsize']) + (st,)
-
-
-def save_plot(fig, ax, name, xlabel, ylabel, title=None, legend=False):
-    """
-    Finish one figure and write it as PLOT_DIR/<name>.png.
-
-    `name` becomes the filename, so anything a path cannot carry is substituted
-    rather than left to mangle the path silently.
-    """
-    st = plot_style()
-    ax.set_xlabel(xlabel, fontsize=st['label_fs'], fontweight=st['weight'])
-    ax.set_ylabel(ylabel, fontsize=st['label_fs'], fontweight=st['weight'])
-    if title and st['titles']:
-        ax.set_title(title)
-    ax.tick_params(axis='x', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
-    if st['yticks']:
-        ax.tick_params(axis='y', labelsize=st['tick_fs'], length=st['tick_len'], width=st['tick_w'])
-    else:
-        ax.yaxis.set_ticks([])
-    if legend:
-        ax.legend(fontsize=8 if st['titles'] else 10)
-    for spine in ax.spines.values():
-        spine.set_linewidth(st['spine_lw'])
-    fig.tight_layout()
-    path = os.path.join(PLOT_DIR, f"{re.sub(r'[^A-Za-z0-9._+-]', '_', name)}.png")
-    fig.savefig(path, dpi=PLOT_DPI)
-    plt.close(fig)
-    return path
 
 try:
     import scipy.fft as _fft
@@ -936,36 +834,7 @@ def save_csv(results, freq_by_unit, filename):
     print(f"Data table saved to {filename}")
 
 
-def plot_vdos(results, freq_by_unit, xunit=PLOT_XUNIT):
-    """
-    One PNG per curve, plus the overlay.
-
-    The overlay stays because a partial DOS is read against the total it sums
-    into — where a band sits relative to the whole is the thing being judged —
-    while the individual panels are what a band edge gets measured off.
-    """
-    if xunit not in FREQ_UNIT_LABELS:
-        raise ValueError(f"Unknown PLOT_XUNIT={xunit!r}; use one of {list(FREQ_UNIT_LABELS)}.")
-    x = freq_by_unit[xunit]
-    ylabel = ('DOS (phonon-normalized)' if VDOS_NORMALIZATION == 'phonon'
-              else 'VDOS (unit-area normalized)')
-
-    for label, curve in results.items():
-        fig, ax, st = new_plot()
-        ax.plot(x, curve, color=st['color'], linewidth=st['linewidth'])
-        save_plot(fig, ax, label, FREQ_UNIT_LABELS[xunit], ylabel, title=f'VDOS  {label}')
-
-    fig, ax, st = new_plot()
-    for label, curve in results.items():
-        ax.plot(x, curve, label=label, linewidth=1.5 if label.startswith('total_') else 1.0)
-    save_plot(fig, ax, 'all_curves', FREQ_UNIT_LABELS[xunit], ylabel,
-              title='VDOS, all curves', legend=True)
-    print(f"{len(results) + 1} VDOS plot(s) written to {PLOT_DIR}/")
-
-
 if __name__ == '__main__':
-    # A missing plot directory is a wiring error: catch it before the parse.
-    plots = check_plot_dir()
     print(f"Reading trajectory: {DUMP_FILE}")
     print(f"  N_FRAMES={N_FRAMES or 'all'}, STRIDE={STRIDE}, TIME_UNIT={TIME_UNIT} fs")
     print(f"  METHOD={METHOD}, WINDOW={WINDOW}, VDOS_NORMALIZATION={VDOS_NORMALIZATION}")
@@ -1036,5 +905,4 @@ if __name__ == '__main__':
 
     if OUTPUT_CSV is not None:
         save_csv(results, freq_by_unit, OUTPUT_CSV)
-    if plots:
-        plot_vdos(results, freq_by_unit)
+

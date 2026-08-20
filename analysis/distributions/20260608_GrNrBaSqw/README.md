@@ -23,24 +23,50 @@ frame of `dump.lammpstrj`, for element labels).
 | `msd.py` | Mean square displacement and self-diffusion coefficient (10⁻⁵ cm²/s) per element | `msd.csv`, `<date>_msd/` |
 | `vdos_dynmat.py` | Vibrational density of states from the LAMMPS dynamical matrix — harmonic, 0 K, no trajectory; optionally the stretch/bend/rock band assignment, participation ratio and boson peak | `vdos_dynmat.csv`, `vdos_dynmat_modes.csv`, `<date>_vdos_dynmat/` |
 
-### Plots: one file per quantity
+### Plots: a separate pipeline
 
-Every calculation writes **one PNG per quantity** into its own dated directory —
-`<date>_rdf/`, `<date>_bad/`, `<date>_dsf/`, `<date>_vdos/`, `<date>_msd/`,
-`<date>_vdos_dynmat/` — instead of packing curves into a subplot grid. A single
-g(r), band or angle distribution is then a file you can drop straight into a
-document without cropping.
+**These scripts write CSVs and nothing else.** Every figure comes from the
+plotting pipeline, `jobs/pipeline/plotting/plot_pipeline.sh`, which reads those
+CSVs and writes **one PNG per quantity** into its own directory — `<date>_rdf/`,
+`<date>_bad/`, `<date>_dsf/`, `<date>_vdos/`, `<date>_msd/`,
+`<date>_vdos_dynmat/`. A single g(r), band or angle distribution is then a file
+you can drop straight into a document.
 
-**The runners create those directories**, not the scripts. `distribution_run.sh` and
-`distribution_submit.slurm` `mkdir -p` each one just before invoking its calculation, and the
-scripts stop with the name they expected if it is missing — a missing directory is a wiring
-error, and inventing it silently would hide that. Running a script by hand, create the
-directory first; the error message gives the exact command.
+Splitting the stages means a figure can be restyled, re-unit'd or redrawn
+without recomputing anything, and there is exactly one place in the repo that
+draws. It also means a plot can never disagree with the table it came from: if a
+curve is not in a CSV, it cannot be drawn.
 
-Two keys per calculation, where **an empty value is meaningful** rather than "use the default":
+```bash
+# after an analysis, in its directory
+~/util/jobs/pipeline/plotting/plot_pipeline.sh
 
-| Key | Effect |
-|---|---|
+# or automatically, at the end of the analysis run
+RUN_PLOTS=1 ./distribution_run.sh          # the default
+```
+
+**The date comes from the CSV, not from today.** Plotting `20260813_bads.csv`
+writes `20260813_bad/`, so figures stay married to the data that produced them.
+
+**Config resolution.** `plot_pipeline.sh` reads `plot_pipeline.conf` from the
+analysis directory if there is one, and otherwise the tracked default beside the
+script in the util checkout. Copy the default into an analysis directory to give
+that one run its own look — style, format, frequency axis, which calculations —
+without editing anything tracked. The file it used is printed on every run.
+
+`PLOT_STYLE=publication` is the styling the old `rdf_freud_plot.py` /
+`bad_freud_plot.py` pass applied; those scripts are gone, and the style now
+covers all six calculations rather than two.
+
+**No reference lines are drawn.** An individual plot carries its curve and
+nothing else — no `g(r) = 1` line, no baseline under `T(r)`. The asymptotic
+limit each convention column should approach is *printed* by the convention
+table at startup rather than drawn, which is the check that actually catches a
+wrong normalization. A composite is written only where the combination is itself
+the result (`wright_composite.png`, `character_composite.png`, the
+`all_curves` / `all_species` overlays), and is named so it reads as one.
+
+---|---|
 | `<CALC>_PLOT_DIR` | Directory basename; the `YYYYMMDD_` prefix is added by both the runner and the script. **Empty disables plotting** for that calculation, leaving only its CSV. Through `submit_pipeline.sh` spell it `none`, since blank there already means "leave the default in effect". |
 | `<CALC>_PLOT_STYLE` | `analysis` (default: titled, labelled, y ticks) or `publication` (heavy lines and spines, large bold labels, no y ticks). |
 
@@ -150,7 +176,7 @@ Optional:
 | `RDF_RESOLUTION_MODE` | `gaussian` (default) or `lorch` — the neutron-diffraction modification function | `gaussian` |
 | `RDF_LORCH_QMAX` | Å⁻¹; the measurement's Fourier truncation. `Δr` defaults to `π/Q_max` | — |
 | `RDF_ATOMS_PER_FORMULA_UNIT` | Atoms per formula unit (SiO₂ → 3); needed by `formula` and `RDF_WRIGHT` | — |
-| `RDF_WRIGHT` | `yes` writes the extra `wright.csv`/`.png` comparison output | `no` |
+| `RDF_WRIGHT` | `yes` writes the extra `wright.csv` comparison output | `no` |
 | `RDF_WRIGHT_QMAX` | Å⁻¹; the paper's truncation, e.g. `45.2` | — |
 | `OUTPUT_CSV` | g(r) CSV path; `None` to skip | `"rdfs.csv"` |
 | `OUTPUT_NR_CSV` | n(r) CSV path; `None` to skip | `"nrs.csv"` |
@@ -191,9 +217,9 @@ became configurable map as `total → g_unity`, `neutron → g_FZ`, `t → T_FZ`
 
 **Comparing against a published neutron curve.** `RDF_WRIGHT=yes` writes a separate `<date>_wright.csv`
 holding `T(r)` **Lorch-broadened and per formula unit**, plus the `T⁰(r)` baseline it oscillates
-about — built to overlay directly on a measured correlation function. The plots land in
-`<date>_rdf/` as `wright.png`, `wright_unbroadened.png`, `wright_T0_baseline.png` and
-`wright_composite.png`:
+about — built to overlay directly on a measured correlation function. The plotting pipeline turns
+that CSV into `wright.png`, `wright_unbroadened.png`, `wright_T0_baseline.png` and
+`wright_composite.png` in `<date>_rdf/`:
 
 ```bash
 RDF_WRIGHT=yes RDF_WRIGHT_QMAX=45.2 RDF_ATOMS_PER_FORMULA_UNIT=3
@@ -750,9 +776,10 @@ Extra outputs when this is on:
 - `<date>_vdos_dynmat_modes.csv` — one row per mode: frequency in all four units,
   participation ratio, `frac_stretch/bend/rock`, and per-element fractions. This
   is what makes "which modes are in this peak" answerable.
-- In `<date>_vdos_dynmat/`: `character_stretch.png`, `character_bend.png`,
-  `character_rock.png` and `character_total.png` separately, `character_composite.png`
-  with all four together, plus `participation_ratio.png` and `reduced_dos.png`.
+- `DoS(stretch)`, `DoS(bend)` and `DoS(rock)` columns in the main CSV, and a
+  `g/nu^2` reduced-DOS column. The plotting pipeline draws each as its own PNG in
+  `<date>_vdos_dynmat/`, plus `character_composite.png` with all four together,
+  `participation_ratio.png` from the modes table, and `reduced_dos.png`.
 
 It needs `dynmat_ref.lammpstrj`, the coordinates LAMMPS writes immediately after
 `minimize`. The last frame of `dump.lammpstrj` will not do: it predates the

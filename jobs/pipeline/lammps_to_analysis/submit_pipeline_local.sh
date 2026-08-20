@@ -78,24 +78,20 @@ Optional:
                                     and --rdf-atoms-per-formula-unit
     --rdf-wright-qmax FLOAT       rdf_freud.py RDF_WRIGHT_QMAX (A^-1), e.g. 45.2
 
-    Plot output — every calculation writes ONE PNG PER QUANTITY into its own
-    dated directory (<date>_rdf/, <date>_bad/, <date>_dsf/, <date>_vdos/,
-    <date>_msd/, <date>_vdos_dynmat/) rather than packing curves into a subplot
-    grid. distribution_run.sh creates the directories. Composites survive only
-    where the combination is itself the result: the Wright overlay, the
-    mode-character decomposition, and the species overlays.
-    --<calc>-plot-dir STR         Directory BASENAME for that calculation's plots
-                                    (rdf, bad, dsf, vdos, msd, vdos-dynmat). The
-                                    YYYYMMDD_ prefix is added downstream. Pass the
-                                    literal 'none' to write no plots for that
-                                    calculation and keep only its CSV.
-    --<calc>-plot-style STR       'analysis' (default: titled, labelled, y ticks)
-                                    or 'publication' (heavy lines and spines, large
-                                    bold labels, no y ticks). This replaces the old
-                                    rdf_freud_plot.py / bad_freud_plot.py second
-                                    pass, which is gone.
-    --vdos-plot-xunit STR         vdos.py VDOS_PLOT_XUNIT: meV | THz | cm-1 | eV.
-                                    Plot x axis only; the CSV always carries all four
+    Plotting is its own stage. The analysis scripts write CSVs only; figures come
+    from jobs/pipeline/plotting/plot_pipeline.sh, which reads those CSVs and
+    writes one PNG per quantity into <date>_rdf/, <date>_bad/ and so on. How they
+    look — style, format, frequency axis, which calculations — is set in
+    plot_pipeline.conf, not here, so figures can be redrawn without recomputing.
+    --run-plots {0|1}             Run the plotting stage after the analysis
+                                    (default 1). 0 computes only; run
+                                    plot_pipeline.sh in the analysis directory
+                                    later to draw.
+    --plot-pipeline PATH          plot_pipeline.sh to use
+                                    (default: <repo>/jobs/pipeline/plotting/plot_pipeline.sh)
+    --plot-config PATH            A plot_pipeline.conf copied into the analysis
+                                    directory, so that run's figures differ from
+                                    the tracked default without editing it
     --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
     --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
                                     entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
@@ -262,14 +258,14 @@ LOG_FILE="$RUN_DIR/overwrite.log"
 # one does. Keep in sync with the OUTPUT_* constants in the .py files.
 outputs_for() {
   case "$1" in
-    dsf)  echo "sq.csv dsf.csv dsf" ;;
-    rdf)  echo "rdfs.csv nrs.csv rdf" ;;
-    bad)  echo "bads.csv bad" ;;
-    vdos) echo "vdos.csv vdos" ;;
-    msd)  echo "msd.csv msd" ;;
+    dsf)  echo "sq.csv dsf.csv" ;;
+    rdf)  echo "rdfs.csv nrs.csv" ;;
+    bad)  echo "bads.csv" ;;
+    vdos) echo "vdos.csv" ;;
+    msd)  echo "msd.csv" ;;
     vdos_dynmat)
       local b="${VDOS_DYNMAT_OUTPUT:-vdos_dynmat}"
-      echo "$b.csv ${b}_modes.csv $b" ;;
+      echo "$b.csv ${b}_modes.csv" ;;
   esac
 }
 
@@ -352,19 +348,9 @@ RDF_LORCH_QMAX_VAL=""
 RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
 RDF_WRIGHT_VAL=""
 RDF_WRIGHT_QMAX_VAL=""
-RDF_PLOT_DIR_VAL=""
-RDF_PLOT_STYLE_VAL=""
-BAD_PLOT_DIR_VAL=""
-BAD_PLOT_STYLE_VAL=""
-DSF_PLOT_DIR=""
-DSF_PLOT_STYLE=""
-VDOS_PLOT_XUNIT=""
-VDOS_PLOT_DIR=""
-VDOS_PLOT_STYLE=""
-MSD_PLOT_DIR=""
-MSD_PLOT_STYLE=""
-VDOS_DYNMAT_PLOT_DIR=""
-VDOS_DYNMAT_PLOT_STYLE=""
+RUN_PLOTS="1"
+PLOT_PIPELINE="$REPO_ROOT/jobs/pipeline/plotting/plot_pipeline.sh"
+PLOT_CONFIG=""
 BAD_ELEMENTS=""
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
@@ -453,19 +439,9 @@ while [[ $# -gt 0 ]]; do
     --rdf-atoms-per-formula-unit) RDF_ATOMS_PER_FORMULA_UNIT_VAL="$2"; shift 2 ;;
     --rdf-wright) RDF_WRIGHT_VAL="$2"; shift 2 ;;
     --rdf-wright-qmax) RDF_WRIGHT_QMAX_VAL="$2"; shift 2 ;;
-    --rdf-plot-dir) RDF_PLOT_DIR_VAL="$2"; shift 2 ;;
-    --rdf-plot-style) RDF_PLOT_STYLE_VAL="$2"; shift 2 ;;
-    --bad-plot-dir) BAD_PLOT_DIR_VAL="$2"; shift 2 ;;
-    --bad-plot-style) BAD_PLOT_STYLE_VAL="$2"; shift 2 ;;
-    --dsf-plot-dir) DSF_PLOT_DIR="$2"; shift 2 ;;
-    --dsf-plot-style) DSF_PLOT_STYLE="$2"; shift 2 ;;
-    --vdos-plot-xunit) VDOS_PLOT_XUNIT="$2"; shift 2 ;;
-    --vdos-plot-dir) VDOS_PLOT_DIR="$2"; shift 2 ;;
-    --vdos-plot-style) VDOS_PLOT_STYLE="$2"; shift 2 ;;
-    --msd-plot-dir) MSD_PLOT_DIR="$2"; shift 2 ;;
-    --msd-plot-style) MSD_PLOT_STYLE="$2"; shift 2 ;;
-    --vdos-dynmat-plot-dir) VDOS_DYNMAT_PLOT_DIR="$2"; shift 2 ;;
-    --vdos-dynmat-plot-style) VDOS_DYNMAT_PLOT_STYLE="$2"; shift 2 ;;
+    --run-plots) RUN_PLOTS="$2"; shift 2 ;;
+    --plot-pipeline) PLOT_PIPELINE="$2"; shift 2 ;;
+    --plot-config) PLOT_CONFIG="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
     --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
@@ -684,6 +660,18 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/msd.py" \
    "$ANALYSIS_TEMPLATE_DIR/vdos_dynmat.py" \
    "$STAGE2_DIR/"
+
+# A plot config placed in the analysis directory is what plot_pipeline.sh picks
+# up ahead of its own tracked default, so this is how one run's figures are made
+# to differ without editing anything tracked.
+if [[ -n "$PLOT_CONFIG" ]]; then
+  if [[ ! -f "$PLOT_CONFIG" ]]; then
+    echo "Error: --plot-config file not found: $PLOT_CONFIG" >&2
+    exit 1
+  fi
+  cp "$PLOT_CONFIG" "$STAGE2_DIR/plot_pipeline.conf"
+  echo "Plot config: $PLOT_CONFIG -> $STAGE2_DIR/plot_pipeline.conf"
+fi
 link_input "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
 link_input "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 # The dynamical matrix is consumed read-only like the trajectories. Nothing extra
@@ -767,29 +755,8 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$RDF_WRIGHT_VAL" ]] && export RDF_WRIGHT="$RDF_WRIGHT_VAL"
   [[ -n "$RDF_WRIGHT_QMAX_VAL" ]] && export RDF_WRIGHT_QMAX="$RDF_WRIGHT_QMAX_VAL"
 
-  # Plot output. Each calculation writes one PNG per quantity into its own dated
-  # directory, created by distribution_run.sh. The DIR keys take a basename (the
-  # YYYYMMDD_ prefix is added downstream) or the literal 'none' to write no plots
-  # for that calculation. 'none' has to be spelled out because a blank value
-  # already means "leave the default in effect" for every other key here.
-  export_plot_dir() {   # $1 = env name, $2 = configured value
-    [[ -z "$2" ]] && return 0
-    [[ "$2" == "none" ]] && { export "$1="; return 0; }
-    export "$1=$2"
-  }
-  export_plot_dir RDF_PLOT_DIR         "$RDF_PLOT_DIR_VAL"
-  export_plot_dir BAD_PLOT_DIR         "$BAD_PLOT_DIR_VAL"
-  export_plot_dir DSF_PLOT_DIR         "$DSF_PLOT_DIR"
-  export_plot_dir VDOS_PLOT_DIR        "$VDOS_PLOT_DIR"
-  export_plot_dir MSD_PLOT_DIR         "$MSD_PLOT_DIR"
-  export_plot_dir VDOS_DYNMAT_PLOT_DIR "$VDOS_DYNMAT_PLOT_DIR"
-  [[ -n "$RDF_PLOT_STYLE_VAL" ]]         && export RDF_PLOT_STYLE="$RDF_PLOT_STYLE_VAL"
-  [[ -n "$BAD_PLOT_STYLE_VAL" ]]         && export BAD_PLOT_STYLE="$BAD_PLOT_STYLE_VAL"
-  [[ -n "$DSF_PLOT_STYLE" ]]             && export DSF_PLOT_STYLE
-  [[ -n "$VDOS_PLOT_STYLE" ]]            && export VDOS_PLOT_STYLE
-  [[ -n "$VDOS_PLOT_XUNIT" ]]            && export VDOS_PLOT_XUNIT
-  [[ -n "$MSD_PLOT_STYLE" ]]             && export MSD_PLOT_STYLE
-  [[ -n "$VDOS_DYNMAT_PLOT_STYLE" ]]     && export VDOS_DYNMAT_PLOT_STYLE
+  export RUN_PLOTS
+  [[ -n "$PLOT_PIPELINE" ]] && export PLOT_PIPELINE
   [[ -n "$BAD_ELEMENTS" ]]        && export ELEMENTS="$BAD_ELEMENTS"
   [[ -n "$BAD_R_CUTOFF" ]]        && export R_CUTOFF="$BAD_R_CUTOFF"
   [[ -n "$BAD_R_MINCUT" ]]        && export R_MINCUT="$BAD_R_MINCUT"

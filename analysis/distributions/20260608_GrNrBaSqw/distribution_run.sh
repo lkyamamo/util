@@ -33,6 +33,15 @@ RUN_MSD="${RUN_MSD:-1}"
 # with RUN_DYNMAT=1 — so unlike the others this defaults to off.
 RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 
+# Turn the CSVs above into figures, as a separate stage (see the Plot section at
+# the end). 1 by default: plotting is cheap next to the analysis, and a run with
+# no figures is rarely what anyone wanted. Set 0 to compute only, then plot later
+# by running plot_pipeline.sh in this directory — that is the point of the split.
+RUN_PLOTS="${RUN_PLOTS:-1}"
+# The plotting pipeline in the util checkout. Override if your checkout is not
+# at $HOME/util, the same way ANALYSIS_TEMPLATE_DIR is set for the analysis code.
+PLOT_PIPELINE="${PLOT_PIPELINE:-$HOME/util/jobs/pipeline/plotting/plot_pipeline.sh}"
+
 ############################
 # Thread count
 ############################
@@ -68,22 +77,11 @@ echo "Threads: $OMP_NUM_THREADS"
 # submitters (submit_pipeline.sh / submit_pipeline_local.sh) can drive this
 # script without their settings being clobbered by the edits here.
 #
-# PLOT OUTPUT. Every script writes one PNG per quantity into its own dated
-# directory — <date>_rdf/, <date>_bad/, <date>_dsf/, <date>_vdos/, <date>_msd/,
-# <date>_vdos_dynmat/ — rather than packing curves into a subplot grid. THIS
-# RUNNER CREATES THOSE DIRECTORIES; the scripts refuse to, so that a missing one
-# is reported as the wiring error it is instead of being silently invented.
-#
-# Two keys per calculation, and unlike everything else here an empty value is
-# meaningful rather than "use the script default":
-#   *_PLOT_DIR    directory basename; the YYYYMMDD_ prefix is added by both this
-#                 runner and the script. EMPTY DISABLES PLOTTING for that
-#                 calculation, leaving only its CSV.
-#   *_PLOT_STYLE  'analysis' (default; titled, labelled, y ticks) or
-#                 'publication' (heavy lines and spines, large bold labels, no
-#                 y ticks). This is the styling the separate rdf_freud_plot.py /
-#                 bad_freud_plot.py pass used to apply; it is a setting now, and
-#                 those two scripts are gone.
+# PLOTS are not made here. The .py scripts write CSVs only; figures come from
+# jobs/pipeline/plotting/plot_pipeline.sh, run as a separate stage at the end of
+# this script when RUN_PLOTS=1. Its own plot_pipeline.conf controls how they
+# look — style, format, which calculations, the frequency axis — so none of
+# that appears among the analysis parameters below.
 # vdos.py and msd.py read the same dynamics.lammpstrj but want different
 # settings — VDOS needs a short CORR_LENGTH for frequency resolution, MSD a
 # long one to reach the diffusive regime — so each has its own prefixed
@@ -136,10 +134,6 @@ DSF_MAX_Q_POINTS_DYN="${DSF_MAX_Q_POINTS_DYN:-}"  # prune target; 0 = no pruning
 # therefore REFUSES to neutron-weight an H- or D-bearing system; set this to
 # 'no' there to get the unweighted partials and total instead.
 DSF_NEUTRON_WEIGHTING="${DSF_NEUTRON_WEIGHTING:-}"  # yes | no
-DSF_PLOT_DIR="${DSF_PLOT_DIR-dsf}"                  # both S(q) and S(q,w) plots land here
-DSF_PLOT_STYLE="${DSF_PLOT_STYLE-analysis}"         # analysis | publication
-
-# rdf_freud.py
 R_MAX="${R_MAX:-}"                      # Å; max r. Must be < half the shortest box edge
 RDF_BINS="${RDF_BINS:-}"                # number of r-bins
 RDF_NORMALIZATION="${RDF_NORMALIZATION:-}"        # semicolon list: unity | FZ | absolute
@@ -158,10 +152,6 @@ RDF_ATOMS_PER_FORMULA_UNIT="${RDF_ATOMS_PER_FORMULA_UNIT:-}"  # SiO2 -> 3; neede
 # neutron correlation function. Needs QMAX and ATOMS_PER_FORMULA_UNIT above.
 RDF_WRIGHT="${RDF_WRIGHT:-}"            # yes | no (default no)
 RDF_WRIGHT_QMAX="${RDF_WRIGHT_QMAX:-}"  # Å⁻¹; the paper's Fourier truncation, e.g. 45.2
-RDF_PLOT_DIR="${RDF_PLOT_DIR-rdf}"      # g(r), n(r) and the wright curves land here
-RDF_PLOT_STYLE="${RDF_PLOT_STYLE-analysis}"       # analysis | publication
-
-# bad_freud.py — bond angle distributions. These keys are BARE rather than
 # BAD_-prefixed at the script level (the submitters map --bad-elements to
 # ELEMENTS, and so on); the prefix asymmetry is historical.
 #
@@ -176,10 +166,6 @@ R_MINCUT="${R_MINCUT:-}"                # same format; excludes unphysical close
 TRIPLET_CUTOFFS="${TRIPLET_CUTOFFS:-}"  # pipe-separated per-triplet overrides,
                                         # label:elA-elB-elC:r_max_ab:r_min_ab:r_max_cb:r_min_cb
 BAD_BINS="${BAD_BINS:-}"                # bins over 0-180 deg; 180 = 1 deg, 360 = 0.5 deg
-BAD_PLOT_DIR="${BAD_PLOT_DIR-bad}"      # one PNG per triplet lands here
-BAD_PLOT_STYLE="${BAD_PLOT_STYLE-analysis}"       # analysis | publication
-
-# vdos.py
 VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
 VDOS_STRIDE="${VDOS_STRIDE:-}"
 VDOS_CORR_LENGTH="${VDOS_CORR_LENGTH:-}"          # REQUIRED. fs; VACF max lag. Sets the
@@ -192,22 +178,12 @@ VDOS_WINDOW="${VDOS_WINDOW:-}"
 VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"      # phonon | unit_area (sum rule)
 VDOS_WEIGHTING="${VDOS_WEIGHTING:-}"              # semicolon list: unity | coherent |
                                                   # incoherent | total (species weight)
-VDOS_PLOT_XUNIT="${VDOS_PLOT_XUNIT:-}"            # meV | THz | cm-1 | eV (plot axis only;
-                                                  # the CSV always carries all four)
-VDOS_PLOT_DIR="${VDOS_PLOT_DIR-vdos}"             # one PNG per curve lands here
-VDOS_PLOT_STYLE="${VDOS_PLOT_STYLE-analysis}"     # analysis | publication
-
-# msd.py
 MSD_N_FRAMES="${MSD_N_FRAMES:-}"
 MSD_STRIDE="${MSD_STRIDE:-}"
 MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"            # REQUIRED. fs; max time lag. Also sets the
                                                   # diffusion fit window, so D depends on it
 MSD_CORR_INTERVAL="${MSD_CORR_INTERVAL:-}"        # REQUIRED. fs; spacing between reference frames
 MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"          # REQUIRED. tail fraction used for the D fit
-MSD_PLOT_DIR="${MSD_PLOT_DIR-msd}"                # one PNG per species lands here
-MSD_PLOT_STYLE="${MSD_PLOT_STYLE-analysis}"       # analysis | publication
-
-# vdos_dynmat.py — the harmonic counterpart to vdos.py. It reads the dynamical
 # matrix LAMMPS wrote (not a trajectory), plus the first frame of $TRAJ for the
 # per-atom element labels. DYNMAT_FILE/DYNMAT_BINARY must match what the LAMMPS
 # stage used, which submit_pipeline.sh guarantees by sending both stages the same
@@ -236,11 +212,6 @@ DYNMAT_REF_TRAJ="${DYNMAT_REF_TRAJ:-}"                      # default dynmat_ref
 VDOS_DYNMAT_BRIDGE_ELEMENT="${VDOS_DYNMAT_BRIDGE_ELEMENT:-}"      # default O
 VDOS_DYNMAT_NEIGHBOR_ELEMENT="${VDOS_DYNMAT_NEIGHBOR_ELEMENT:-}"  # default Si
 VDOS_DYNMAT_BOND_CUTOFF="${VDOS_DYNMAT_BOND_CUTOFF:-}"      # Angstrom, default 2.2
-VDOS_DYNMAT_PLOT_DIR="${VDOS_DYNMAT_PLOT_DIR-vdos_dynmat}"  # DOS, character, PR and
-                                                            # reduced-DOS plots land here
-VDOS_DYNMAT_PLOT_STYLE="${VDOS_DYNMAT_PLOT_STYLE-analysis}" # analysis | publication
-
-# Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
 for _var in DYNAMICS_DT \
             DSF_N_FRAMES DSF_STRIDE DSF_Q_MAX DSF_N_Q_BINS \
@@ -251,7 +222,7 @@ for _var in DYNAMICS_DT \
             RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR \
             ELEMENTS R_CUTOFF R_MINCUT TRIPLET_CUTOFFS BAD_BINS \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
-            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING VDOS_PLOT_XUNIT \
+            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \
             MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION \
             DYNMAT_FILE DYNMAT_BINARY \
             VDOS_DYNMAT_MAX_FREQUENCY VDOS_DYNMAT_XUNIT VDOS_DYNMAT_BINS \
@@ -266,22 +237,7 @@ for _var in DYNAMICS_DT \
 done
 unset _var
 
-# The plot keys are exported unconditionally, unlike everything above, because
-# empty is a real setting here: it means "write no plots for this calculation".
-# Skipping an empty one would let the .py fall back to its own default directory
-# name, which this runner has not created — turning "no plots please" into a
-# hard error.
-export RDF_PLOT_DIR RDF_PLOT_STYLE BAD_PLOT_DIR BAD_PLOT_STYLE \
-       DSF_PLOT_DIR DSF_PLOT_STYLE VDOS_PLOT_DIR VDOS_PLOT_STYLE \
-       MSD_PLOT_DIR MSD_PLOT_STYLE VDOS_DYNMAT_PLOT_DIR VDOS_DYNMAT_PLOT_STYLE
 
-# The YYYYMMDD_ prefix here must match the one each .py adds via its _dated()
-# helper. A run that straddles midnight is the one case they can disagree, and
-# the script then stops with the directory name it wanted.
-make_plot_dir() {
-    [ -z "$1" ] && return 0          # plotting disabled for this calculation
-    mkdir -p "$(date +%Y%m%d)_$1"
-}
 
 ############################
 # Load environment
@@ -295,31 +251,26 @@ source /home1/lkyamamo/venv/struc_analysis/bin/activate
 
 if [ "$RUN_DSF" -eq 1 ]; then
     echo "--- dsf.py ---"
-    make_plot_dir "$DSF_PLOT_DIR"
     python dsf.py
 fi
 
 if [ "$RUN_RDF" -eq 1 ]; then
     echo "--- rdf_freud.py ---"
-    make_plot_dir "$RDF_PLOT_DIR"
     python rdf_freud.py
 fi
 
 if [ "$RUN_BAD" -eq 1 ]; then
     echo "--- bad_freud.py ---"
-    make_plot_dir "$BAD_PLOT_DIR"
     python bad_freud.py
 fi
 
 if [ "$RUN_VDOS" -eq 1 ]; then
     echo "--- vdos.py ---"
-    make_plot_dir "$VDOS_PLOT_DIR"
     python vdos.py
 fi
 
 if [ "$RUN_MSD" -eq 1 ]; then
     echo "--- msd.py ---"
-    make_plot_dir "$MSD_PLOT_DIR"
     python msd.py
 fi
 
@@ -327,6 +278,27 @@ fi
 # LAPACK call, so OMP_NUM_THREADS above is what parallelizes it.
 if [ "$RUN_VDOS_DYNMAT" -eq 1 ]; then
     echo "--- vdos_dynmat.py ---"
-    make_plot_dir "$VDOS_DYNMAT_PLOT_DIR"
     python vdos_dynmat.py
+fi
+
+############################
+# Plot
+############################
+
+# Figures are a separate stage: the .py scripts above write CSVs only, and
+# jobs/pipeline/plotting/plot_pipeline.sh turns those into one PNG per quantity.
+# Keeping them apart means a figure can be restyled, re-unit'd or redrawn
+# without recomputing anything, and there is exactly one place that draws.
+#
+# The plotting pipeline reads plot_pipeline.conf from THIS directory if there is
+# one, and otherwise the tracked default next to plot_pipeline.sh. Drop a copy
+# in here to give one analysis its own look.
+if [ "$RUN_PLOTS" -eq 1 ]; then
+    echo "--- plot_pipeline.sh ---"
+    if [ -x "$PLOT_PIPELINE" ]; then
+        "$PLOT_PIPELINE" "$PWD"
+    else
+        echo "Skipping plots: $PLOT_PIPELINE not found or not executable." >&2
+        echo "Set PLOT_PIPELINE to jobs/pipeline/plotting/plot_pipeline.sh in the util checkout." >&2
+    fi
 fi
