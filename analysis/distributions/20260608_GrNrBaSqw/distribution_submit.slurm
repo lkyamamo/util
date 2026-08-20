@@ -128,8 +128,14 @@ RDF_BINS="${RDF_BINS:-}"                # number of r-bins
 RDF_NORMALIZATION="${RDF_NORMALIZATION:-}"        # semicolon list: unity | FZ | absolute
 RDF_FUNCTIONS="${RDF_FUNCTIONS:-}"                # semicolon list: g | h | D | T
 RDF_RESOLUTION_SIGMA="${RDF_RESOLUTION_SIGMA:-}"  # Å; Gaussian resolution broadening, 0 disables
-RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch
+RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch |
+                                        # modified_lorch (Soper eq. 60: a uniform
+                                        # sphere smeared in r space, never negative)
 RDF_LORCH_QMAX="${RDF_LORCH_QMAX:-}"              # Å⁻¹; needed by mode=lorch
+RDF_MODIFIED_LORCH_DELTA="${RDF_MODIFIED_LORCH_DELTA:-}"  # Å; radius of the smearing
+                                        # sphere for mode=modified_lorch. NOT the
+                                        # resolution: FWHM = sqrt(2)*Δ, so divide a
+                                        # quoted FWHM by 1.4142 to get it
 RDF_LORCH_DR="${RDF_LORCH_DR:-}"                  # Å; the parameter INSIDE M(Q), not the
                                         # resolution a paper quotes. Blank = pi/Q_MAX, the
                                         # standard Lorch choice — leave it blank unless the
@@ -208,7 +214,7 @@ for _var in DYNAMICS_DT \
             DSF_MAX_Q_POINTS_DYN DSF_NEUTRON_WEIGHTING \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
             RDF_RESOLUTION_MODE RDF_LORCH_QMAX RDF_ATOMS_PER_FORMULA_UNIT \
-            RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR \
+            RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR RDF_MODIFIED_LORCH_DELTA \
             ELEMENTS R_CUTOFF R_MINCUT TRIPLET_CUTOFFS BAD_BINS \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
             VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \

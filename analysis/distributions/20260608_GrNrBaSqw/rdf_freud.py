@@ -89,6 +89,19 @@ whose cosine transform is the real-space peak function convolved with the
 correlation function. dr defaults to pi/Q_max, the standard Lorch choice that
 places M's first zero at the truncation.
 
+RDF_RESOLUTION_MODE=modified_lorch with RDF_MODIFIED_LORCH_DELTA is Soper's
+eq. (60): instead of a window in Q space, smear g(r) in r space with a uniform
+sphere of radius D,
+
+    L'(r, D) = 3/(4 pi D^3)   |r| <= D,   0 above
+
+applied as a true 3D convolution. Being a top hat in real space it is everywhere
+non-negative, so unlike the Q-space Lorch window it cannot push a correlation
+function negative between peaks; the trade is that it corresponds to no actual
+measurement's truncation, so it smooths rather than reproduces an instrument.
+Its resolution is FWHM = sqrt(2) D, so D is 1.41x SMALLER than a quoted
+resolution — divide, do not substitute.
+
 Papers quote the RESULTING resolution (the FWHM of that peak function) rather
 than dr, and the two differ by ~1.73x: Q_max = 45.2 gives dr = 0.0695 and
 FWHM = 0.120 A. Passing the quoted resolution as dr instead doubles the
@@ -217,10 +230,16 @@ RDF_RESOLUTION_SIGMA = float(os.environ.get("RDF_RESOLUTION_SIGMA", "0.1"))
 # the correlation function. A Gaussian matches its WIDTH but not its shape: the
 # Lorch kernel has negative side lobes (~-9% of peak) that a Gaussian cannot
 # reproduce, which matters between and beside strong peaks.
+# 'modified_lorch' is Soper's eq. (60): rather than windowing in Q space, smear
+# g(r) in r space with a uniform sphere of radius Δ, L' = 3/(4πΔ³) for |r| <= Δ.
+# It is a 3D top hat, so it is everywhere non-negative — it cannot drive a
+# correlation function negative between peaks the way the Q-space Lorch window's
+# side lobes can — at the price of not corresponding to any real truncation.
 RDF_RESOLUTION_MODE = os.environ.get("RDF_RESOLUTION_MODE", "gaussian")
-if RDF_RESOLUTION_MODE not in ("gaussian", "lorch"):
+if RDF_RESOLUTION_MODE not in ("gaussian", "lorch", "modified_lorch"):
     raise ValueError(
-        f"Unknown RDF_RESOLUTION_MODE={RDF_RESOLUTION_MODE!r}; use 'gaussian' or 'lorch'.")
+        f"Unknown RDF_RESOLUTION_MODE={RDF_RESOLUTION_MODE!r}; use 'gaussian', "
+        f"'lorch' or 'modified_lorch'.")
 RDF_LORCH_QMAX = float(os.environ.get("RDF_LORCH_QMAX", "0") or 0)   # Å⁻¹
 # The parameter INSIDE M(Q) = sin(dr Q)/(dr Q). Defaults to the standard Lorch
 # choice pi/Q_max, which puts M's first zero exactly at the truncation so the
@@ -230,6 +249,16 @@ RDF_LORCH_QMAX = float(os.environ.get("RDF_LORCH_QMAX", "0") or 0)   # Å⁻¹
 # 0.120 A, which is the number his text quotes. Setting this to the quoted
 # resolution instead is the easy mistake, and it doubles the broadening.
 RDF_LORCH_DR = float(os.environ.get("RDF_LORCH_DR", "0") or 0)       # Å; 0 = pi/Q_max
+# Radius of the smearing sphere for 'modified_lorch', in Angstroms. NOT the
+# resolution: the resulting FWHM is sqrt(2)*Δ, so a paper quoting 0.12 Å wants
+# Δ = 0.0849. The same trap as RDF_LORCH_DR above, with a different factor.
+RDF_MODIFIED_LORCH_DELTA = float(os.environ.get("RDF_MODIFIED_LORCH_DELTA", "0") or 0)
+if RDF_RESOLUTION_MODE == "modified_lorch" and RDF_MODIFIED_LORCH_DELTA <= 0:
+    raise ValueError(
+        "RDF_RESOLUTION_MODE=modified_lorch needs RDF_MODIFIED_LORCH_DELTA (Å), the "
+        "radius of the smearing sphere in Soper eq. (60). The resolution it produces "
+        "is sqrt(2) x that, so divide a quoted FWHM by 1.4142 to get it.")
+
 if RDF_RESOLUTION_MODE == "lorch":
     if RDF_LORCH_QMAX <= 0:
         raise ValueError(
@@ -742,6 +771,86 @@ def apply_lorch(r, y, delta_r, q_max, chunk=512):
     return out
 
 
+def modified_lorch_kernel(r_block, r_grid, delta):
+    """
+    The radial kernel K(r, r') for Soper's modified Lorch function, eq. (60):
+
+        L'(r, Δ) = 3/(4πΔ³)   |r| <= Δ
+                 = 0          |r| >  Δ
+
+    a uniform sphere of radius Δ and unit volume integral. Unlike the standard
+    Lorch function this is applied in r space, not as a window in Q space, so it
+    is a genuine 3D convolution rather than a 1D one.
+
+    For spherically symmetric f and L' the 3D convolution collapses to a single
+    radial integral,
+
+        (f * L')(r) = (2π/r) ∫ dr' r' f(r') ∫_{|r-r'|}^{r+r'} du u L'(u)
+
+    and with L' constant out to Δ the inner integral is elementary:
+
+        r (f * L')(r) = 3/(4Δ³) ∫ dr' [r' f(r')] K(r, r')
+        K(r, r')      = min(r + r', Δ)² − min(|r − r'|, Δ)²
+
+    The two min()s are what carry the geometry: when |r − r'| >= Δ the shells do
+    not overlap and K is identically zero, so no separate cutoff is needed. This
+    was checked against direct 3D quadrature (agreement to ~1e-10) and against
+    the requirement that a constant convolve to itself.
+    """
+    return (np.minimum(r_block + r_grid, delta) ** 2
+            - np.minimum(np.abs(r_block - r_grid), delta) ** 2)
+
+
+def apply_modified_lorch(r, y, delta, r_weighted, chunk=512):
+    """
+    Convolve one column with the uniform sphere of Soper eq. (60).
+
+    r_weighted says whether the column already carries a factor of r, because
+    the convolution acts on the underlying 3D radial function and not on the
+    plotted curve:
+
+      D(r) and T(r) are 4πrρ × (a 3D function), so the r and the constant pass
+      straight through the integral and the column is convolved as it stands.
+      g(r) and h(r) are the 3D function itself, so they are multiplied by r
+      going in and divided by r coming out.
+
+    Getting that backwards changes the answer without changing its shape enough
+    to notice, which is why it is an explicit argument rather than a guess.
+
+    Note the same edge behaviour as apply_lorch(): the integral wants r' out to
+    r + Δ, so the last Δ of the grid is computed from a truncated integrand and
+    droops. Read the broadened curve only out to R_MAX − Δ.
+    """
+    if delta <= 0:
+        raise ValueError("modified Lorch needs a positive Δ.")
+    dr_grid = r[1] - r[0]
+    g = y if r_weighted else r * y
+    out = np.empty_like(y)
+    for start in range(0, len(r), chunk):
+        stop = min(start + chunk, len(r))
+        kernel = modified_lorch_kernel(r[start:stop, None], r[None, :], delta)
+        out[start:stop] = kernel @ g * dr_grid
+    out *= 3.0 / (4.0 * delta ** 3)
+    return out if r_weighted else out / r
+
+
+def modified_lorch_fwhm(delta):
+    """
+    Real-space resolution of eq. (60), for checking against a quoted number.
+
+    Far from the origin the sphere smears a shell by its own projection onto one
+    axis, p(x) = 3(Δ² − x²)/(4Δ³), a parabola on [−Δ, Δ]. Half maximum sits at
+    x = Δ/√2, so
+
+        FWHM = √2 Δ ≈ 1.4142 Δ
+
+    Confirmed numerically against a delta shell put through the full radial
+    convolution. Δ is therefore NOT the resolution — it is about 1.41x smaller,
+    the same trap as the standard Lorch function's Δr.
+    """
+    return np.sqrt(2.0) * delta
+
+
 def lorch_fwhm(delta_r, q_max):
     """
     FWHM of the resulting peak function — the number papers actually quote as
@@ -757,21 +866,38 @@ def lorch_fwhm(delta_r, q_max):
     return 2 * half.max(), bool(x[np.argmax(p)] > 1e-3)
 
 
-def broaden(results, meta, sigma, dr, mode='gaussian', delta_r=0.0, q_max=0.0):
+def broaden(results, meta, sigma, dr, mode='gaussian', delta_r=0.0, q_max=0.0,
+            delta=0.0):
     """
     Add a *_broadened twin of every convention column, so modeled peaks are not
     sharper than measured ones purely for instrumental reasons.  Mutates both
     dicts.
 
-    'gaussian' is the generic stand-in (Soper used ~0.1 Å).  'lorch' reproduces
-    the modification function neutron glass diffraction actually uses; it matches
-    a Gaussian in width but has negative side lobes a Gaussian cannot produce.
+    'gaussian'        the generic stand-in (Soper used ~0.1 Å).
+    'lorch'           the modification function neutron glass diffraction
+                      actually uses: a window in Q space, cosine-transformed to
+                      a 1D peak function. Matches a Gaussian in width but has
+                      negative side lobes a Gaussian cannot produce.
+    'modified_lorch'  Soper eq. (60): a uniform sphere of radius Δ convolved in
+                      r space instead of a window applied in Q space. Being a 3D
+                      top hat it is strictly non-negative — no side lobes at all
+                      — so it cannot push a correlation function negative
+                      between peaks the way 'lorch' can. The cost is that it has
+                      no Q-space counterpart, so it does not correspond to any
+                      particular measurement's truncation.
     """
     if mode == 'gaussian' and sigma <= 0:
         return
     for label in list(results):
         r, y = results[label]
-        if mode == 'lorch':
+        if mode == 'modified_lorch':
+            # D and T carry an explicit factor of r; g and h do not. See
+            # apply_modified_lorch().
+            r_weighted = label.split('_')[0] in ('D', 'T')
+            wide = apply_modified_lorch(r, y, delta, r_weighted)
+            note = (f"⊗ modified Lorch (Soper eq. 60) Δ={delta:.4f} Å "
+                    f"-> resolution FWHM {modified_lorch_fwhm(delta):.4f} Å")
+        elif mode == 'lorch':
             wide = apply_lorch(r, y, delta_r, q_max)
             fwhm, double = lorch_fwhm(delta_r, q_max)
             note = (f"⊗ Lorch Δr={delta_r:.4f} Å, Q_max={q_max} Å⁻¹ "
@@ -962,7 +1088,8 @@ if __name__ == '__main__':
     )
     r_grid = next(iter(gr_results.values()))[0]
     broaden(conventions, meta, RDF_RESOLUTION_SIGMA, r_grid[1] - r_grid[0],
-            mode=RDF_RESOLUTION_MODE, delta_r=RDF_LORCH_DR, q_max=RDF_LORCH_QMAX)
+            mode=RDF_RESOLUTION_MODE, delta_r=RDF_LORCH_DR, q_max=RDF_LORCH_QMAX,
+            delta=RDF_MODIFIED_LORCH_DELTA)
     print_convention_table(meta)
     gr_results.update(conventions)
 

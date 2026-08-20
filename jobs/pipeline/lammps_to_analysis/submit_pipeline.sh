@@ -75,6 +75,11 @@ Optional:
                                     e.g. "g;h;D" (h with absolute is Soper's G_n(r))
     --rdf-resolution-sigma FLOAT  rdf_freud.py RDF_RESOLUTION_SIGMA (Å), Gaussian
                                     resolution broadening; 0 disables, default 0.1
+    --rdf-modified-lorch-delta FLOAT
+                                  rdf_freud.py RDF_MODIFIED_LORCH_DELTA (A), the radius
+                                    of the smearing sphere for resolution-mode
+                                    'modified_lorch' (Soper eq. 60). NOT the resolution:
+                                    FWHM = sqrt(2)*delta, so divide a quoted FWHM by 1.4142
     --rdf-resolution-mode STR     rdf_freud.py RDF_RESOLUTION_MODE: 'gaussian' (default)
                                     or 'lorch' (the neutron-diffraction modification
                                     function; needs --rdf-lorch-qmax)
@@ -396,6 +401,7 @@ RDF_FUNCTIONS_VAL="${RDF_FUNCTIONS_VAL:-}"
 RDF_RESOLUTION_SIGMA_VAL="${RDF_RESOLUTION_SIGMA_VAL:-}"
 RDF_RESOLUTION_MODE_VAL="${RDF_RESOLUTION_MODE_VAL:-}"
 RDF_LORCH_QMAX_VAL="${RDF_LORCH_QMAX_VAL:-}"
+RDF_MODIFIED_LORCH_DELTA_VAL="${RDF_MODIFIED_LORCH_DELTA_VAL:-}"
 RDF_ATOMS_PER_FORMULA_UNIT_VAL="${RDF_ATOMS_PER_FORMULA_UNIT_VAL:-}"
 RDF_WRIGHT_VAL="${RDF_WRIGHT_VAL:-}"
 RDF_WRIGHT_QMAX_VAL="${RDF_WRIGHT_QMAX_VAL:-}"
@@ -490,6 +496,7 @@ while [[ $# -gt 0 ]]; do
     --rdf-resolution-sigma) RDF_RESOLUTION_SIGMA_VAL="$2"; shift 2 ;;
     --rdf-resolution-mode) RDF_RESOLUTION_MODE_VAL="$2"; shift 2 ;;
     --rdf-lorch-qmax) RDF_LORCH_QMAX_VAL="$2"; shift 2 ;;
+    --rdf-modified-lorch-delta) RDF_MODIFIED_LORCH_DELTA_VAL="$2"; shift 2 ;;
     --rdf-atoms-per-formula-unit) RDF_ATOMS_PER_FORMULA_UNIT_VAL="$2"; shift 2 ;;
     --rdf-wright) RDF_WRIGHT_VAL="$2"; shift 2 ;;
     --rdf-wright-qmax) RDF_WRIGHT_QMAX_VAL="$2"; shift 2 ;;
@@ -782,6 +789,7 @@ export_vars="ALL,TRAJ=$DUMP_FILE,DYNAMICS_TRAJ=$DYNAMICS_DUMP_FILE,RUN_DSF=$RUN_
 [[ -n "$RDF_RESOLUTION_SIGMA_VAL" ]] && export_vars+=",RDF_RESOLUTION_SIGMA=$RDF_RESOLUTION_SIGMA_VAL"
 [[ -n "$RDF_RESOLUTION_MODE_VAL" ]] && export_vars+=",RDF_RESOLUTION_MODE=$RDF_RESOLUTION_MODE_VAL"
 [[ -n "$RDF_LORCH_QMAX_VAL" ]] && export_vars+=",RDF_LORCH_QMAX=$RDF_LORCH_QMAX_VAL"
+[[ -n "$RDF_MODIFIED_LORCH_DELTA_VAL" ]] && export_vars+=",RDF_MODIFIED_LORCH_DELTA=$RDF_MODIFIED_LORCH_DELTA_VAL"
 [[ -n "$RDF_ATOMS_PER_FORMULA_UNIT_VAL" ]] && export_vars+=",RDF_ATOMS_PER_FORMULA_UNIT=$RDF_ATOMS_PER_FORMULA_UNIT_VAL"
 [[ -n "$RDF_WRIGHT_VAL" ]] && export_vars+=",RDF_WRIGHT=$RDF_WRIGHT_VAL"
 [[ -n "$RDF_WRIGHT_QMAX_VAL" ]] && export_vars+=",RDF_WRIGHT_QMAX=$RDF_WRIGHT_QMAX_VAL"
