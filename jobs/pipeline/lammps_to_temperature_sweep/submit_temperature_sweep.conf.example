@@ -33,18 +33,18 @@
 # OH-cascade-preamble.input, dielectric-production.input, the aggregators, the
 # slurm templates) is read from the checkout.
 #
-# Leave as-is if the script is still in the checkout, or if your checkout is
-# at $HOME/util. Set it to a path when you have copied the script somewhere
-# else and $HOME/util is not the checkout you want (a worktree, a clone on
-# /scratch1). The script errors out immediately if it cannot find the pipeline
-# files there.
+# Set to the checkout on the cluster, so a script copied into a sweep
+# directory anywhere finds the pipeline files without further configuration.
+# Change it for a different checkout (a worktree, a clone on /scratch1, a
+# laptop). The script errors out immediately, naming the path it looked for,
+# if the pipeline files are not there.
 #
-# "${REPO_ROOT:-}" rather than "": this line runs ABOVE the paths below that
-# expand $REPO_ROOT, so assigning an empty string here would blank it out
-# before they use it. This form leaves the script's resolved value in place
-# when you have not chosen one. Replacing the whole thing with a literal path
-# works exactly as you would expect.
-REPO_ROOT="${REPO_ROOT:-}"
+# This is a literal rather than "${REPO_ROOT:-}" (the form that would defer to
+# whatever the script auto-detects) because a fixed path is one less thing to
+# get wrong. Note that it also governs the $REPO_ROOT paths further down this
+# file — the assignment is read top to bottom, so those pick up whatever is
+# set here, and the conf's paths can never disagree with the pipeline's.
+REPO_ROOT="/home1/lkyamamo/util"
 
 # ---------------------------------------------------------------------------
 # General input

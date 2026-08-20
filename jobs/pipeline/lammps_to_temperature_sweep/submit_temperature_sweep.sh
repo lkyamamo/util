@@ -39,13 +39,18 @@ pipeline needs — generate_cascade_input.py, OH-cascade-preamble.input,
 dielectric-production.input, the aggregators, and the slurm templates — is
 read from the util checkout, found via REPO_ROOT:
 
-  1. REPO_ROOT set to a literal path in the conf — set this when you have
-     copied the script out of the checkout and $HOME/util is not the one you
-     want. It governs the conf's own $REPO_ROOT paths too, so the two cannot
-     disagree.
+  1. REPO_ROOT set to a literal path in the conf. The shipped conf sets
+     /home1/lkyamamo/util, so a copied script finds the pipeline files with
+     no further configuration. This also governs the conf's own $REPO_ROOT
+     paths, so the two cannot disagree.
   2. Otherwise REPO_ROOT exported in the environment.
   3. Otherwise, if this script is still sitting in the checkout, that checkout.
   4. Otherwise $HOME/util.
+
+     Only 1 applies with the shipped conf. Blank the conf line (or write
+     REPO_ROOT="${REPO_ROOT:-}") to fall through to 2-4, which is what you
+     want on a machine where the checkout is somewhere else — a laptop, or a
+     worktree you are testing from.
 
 If REPO_ROOT is wrong the script says so and exits before creating anything.
 
