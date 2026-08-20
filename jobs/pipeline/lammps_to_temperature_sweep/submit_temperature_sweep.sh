@@ -224,14 +224,19 @@ INTERACTIVE="0"
 SKIP_CASCADE="0"
 DRY_RUN="0"
 STAGGER_SECONDS="5"
-REPO_ROOT="$HOME/util"
 FORCE="0"
 FORCE_REASON=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Derived from this script's own location (<repo>/jobs/pipeline/<this dir>),
+# not hardcoded to $HOME/util, so a worktree or a checkout on /scratch1 uses
+# its OWN slurm templates and analysis scripts. Hardcoding it while resolving
+# everything else from SCRIPT_DIR would silently mix two checkouts together.
+# Export REPO_ROOT before running, or set it in the .conf, to override.
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+
 LOG_FILE="$SCRIPT_DIR/overwrite.log"
-CASCADE_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_cascade_submit.slurm"
-DIELECTRIC_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_dielectric_submit.slurm"
 GENERATE_SCRIPT="$SCRIPT_DIR/generate_cascade_input.py"
 PREAMBLE_FILE="$SCRIPT_DIR/OH-cascade-preamble.input"
 DIELECTRIC_INPUT="$SCRIPT_DIR/dielectric-production.input"
@@ -319,6 +324,12 @@ ANALYSIS_CONSTRAINT=""; ANALYSIS_NODELIST=""
 
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
+
+# Resolved AFTER the conf is sourced so a conf that sets REPO_ROOT actually
+# moves these too. Computing them earlier would pin them to the derived root
+# and quietly ignore the override.
+CASCADE_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_cascade_submit.slurm"
+DIELECTRIC_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_dielectric_submit.slurm"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
