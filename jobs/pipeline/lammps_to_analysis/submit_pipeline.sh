@@ -317,7 +317,7 @@ outputs_for() {
     rdf)  echo "rdfs.csv rdfs.png nrs.csv nrs.png" ;;
     bad)  echo "bads.csv bads.png" ;;
     vdos) echo "vdos.csv vdos.png" ;;
-    msd)  echo "msd.csv msd.png" ;;
+    msd)  echo "msd.csv diffusion.csv msd.png" ;;
     vdos_dynmat)
       local b="${VDOS_DYNMAT_OUTPUT:-vdos_dynmat}"
       echo "$b.csv $b.png ${b}_modes.csv ${b}_character.png" ;;

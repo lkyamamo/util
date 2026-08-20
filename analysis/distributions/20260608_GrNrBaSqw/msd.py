@@ -66,16 +66,18 @@ Elements are combined into a total via a mole-fraction-weighted average
 quantity, unlike vdos.py's phonon-DOS convention, so no extra normalization
 is needed.
 
-As a convenience, a self-diffusion coefficient is estimated per element (and
-total) via the 3D Einstein relation MSD(t) = 6*D*t, linear-fit over the last
-FIT_FRACTION of the correlation window (the early, non-diffusive/ballistic
-part of MSD(t) is excluded from the fit) and printed — not written to the
-CSV, since it's a derived summary rather than part of the MSD(t) curve.
+A self-diffusion coefficient is estimated per element (and total) via the 3D
+Einstein relation MSD(t) = 6*D*t, linear-fit over the last FIT_FRACTION of the
+correlation window (the early, non-diffusive/ballistic part of MSD(t) is
+excluded from the fit). It is printed, and written to its own small CSV — it
+is a derived summary rather than part of the MSD(t) curve, so it gets a
+separate file rather than a column in msd.csv.
 
 OUTPUT
 ------
-- msd.csv — time_fs, then MSD_<element> per element and MSD_total (Å²)
-- msd.png — all curves overlaid on one axes  (set OUTPUT_PLOT=None to skip)
+- msd.csv       — time_fs, then MSD_<element> per element and MSD_total (Å²)
+- diffusion.csv — label, D (1e-5 cm²/s) per element and total
+- msd.png       — all curves overlaid on one axes  (set OUTPUT_PLOT=None to skip)
 
 DEPENDENCIES
 ------------
@@ -220,6 +222,12 @@ FIT_FRACTION = float(_FIT_FRACTION_ENV)
 
 # Output files (set to None to skip writing)
 OUTPUT_CSV  = "msd.csv"
+# The Einstein-relation diffusion coefficients, as a table rather than only as
+# printed text. The temperature-sweep pipeline
+# (jobs/pipeline/lammps_to_temperature_sweep/) aggregates D across
+# temperatures and reads this file; a regex over stdout would break the first
+# time someone reformats a print statement.
+OUTPUT_DIFFUSION_CSV = "diffusion.csv"
 OUTPUT_PLOT = "msd.png"
 
 # Plot appearance
@@ -234,6 +242,7 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_CSV  = _dated(OUTPUT_CSV)
+OUTPUT_DIFFUSION_CSV = _dated(OUTPUT_DIFFUSION_CSV)
 OUTPUT_PLOT = _dated(OUTPUT_PLOT)
 
 # 1 Angstrom^2/fs = 1e-16 cm^2 / 1e-15 s = 0.1 cm^2/s = 1e4 x(1e-5 cm^2/s)
@@ -410,6 +419,22 @@ def save_csv(results, time_fs, filename):
     print(f"Data table saved to {filename}")
 
 
+def save_diffusion_csv(D, filename):
+    """Save {label: D} to a two-column CSV, elements first and 'total' last.
+
+    Same label order as save_csv's columns. The unit is in the header rather
+    than left implicit: D here is in 1e-5 cm^2/s (see
+    estimate_diffusion_coefficients), and a bare 'D' column would be read as
+    cm^2/s by anyone who did not open this file.
+    """
+    order = [el for el in D if el != 'total'] + ['total']
+    with open(filename, 'w') as f:
+        f.write('label,D_1e-5_cm2_s\n')
+        for label in order:
+            f.write(f'{label},{D[label]:.6f}\n')
+    print(f"Diffusion coefficients saved to {filename}")
+
+
 def plot_msd(results, time_fs, filename):
     fig, ax = plt.subplots(figsize=(8, 5))
     for label, curve in results.items():
@@ -470,5 +495,7 @@ if __name__ == '__main__':
 
     if OUTPUT_CSV is not None:
         save_csv(results, time_fs, OUTPUT_CSV)
+    if OUTPUT_DIFFUSION_CSV is not None:
+        save_diffusion_csv(D, OUTPUT_DIFFUSION_CSV)
     if OUTPUT_PLOT is not None:
         plot_msd(results, time_fs, OUTPUT_PLOT)

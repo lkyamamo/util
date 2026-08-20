@@ -28,7 +28,10 @@ date
 RUN_DIR=$SLURM_SUBMIT_DIR
 INPUT_DIR="$(cd "$RUN_DIR/../input_files" && pwd)"
 
-export lmp="/home1/lkyamamo/executables/lammps/lmp_mpi_shock_2019"
+# Overridable via LMP_BIN (sbatch --export), matching lammps_submit.slurm and
+# lammps_cascade_submit.slurm. Unset leaves the previous hardcoded default in
+# effect, so existing callers are unaffected.
+export lmp="${LMP_BIN:-/home1/lkyamamo/executables/lammps/lmp_mpi_shock_2019}"
 
 echo "Run directory (cwd for LAMMPS): $RUN_DIR"
 echo "Input files symlinked from: $INPUT_DIR"

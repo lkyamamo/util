@@ -1,0 +1,58 @@
+# OH-cascade-preamble.input — fixed system header for the temperature-sweep
+# cascade (jobs/pipeline/lammps_to_temperature_sweep/).
+#
+# generate_cascade_input.py copies this file through VERBATIM, except for the
+# two placeholders below, and then appends the deform-to-density block and the
+# descending temperature cascade. The result is written to
+# <sweep_dir>/input_files/in.input.
+#
+# This is a fixed constant, NOT a user-supplied template: the system is always
+# O and H with these masses and these pair coefficients, and the cascade
+# generator hardcodes "dump_modify ... element O H" to match. There is
+# deliberately no --preamble flag. The only things that vary are:
+#
+#   @REPLICATE@  the supercell size (--replicate, default "6 6 6"). This is
+#                also what the density solve scales the unit-cell atom counts
+#                by, so the two can never disagree.
+#   @SEED@       the velocity seed (--seed).
+#
+# The potential is symlinked into input_files/ as OH.usc by
+# submit_temperature_sweep.sh (--potential-file / --potential-link-name), the
+# same way submit_pipeline.sh does it. The pair_coeff line below is fixed, so
+# the driver rejects a --potential-link-name that isn't OH.usc rather than
+# letting LAMMPS fail after the job has already been queued.
+#
+# The masses here — NOT the ones in start.data — are what the density solve
+# must use. ICE_CUBIC.data declares H as 1.0; LAMMPS integrates the 1.00784
+# below. Using the data file's value moves the 1 g/cc cube edge from 37.2514 A
+# to 37.2406 A. generate_cascade_input.py parses the "mass" lines out of this
+# file for exactly that reason.
+
+echo            both
+units           metal
+dimension       3
+boundary        p p p
+processors      * * *
+atom_style      atomic
+
+read_data       start.data
+replicate       @REPLICATE@
+
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+mass 1 15.9994  # O
+mass 2 1.00784  # H
+
+pair_style      usc
+pair_coeff  * * OH.usc O H
+
+#cg relax
+thermo_style    custom step temp pe ke etotal press vol
+thermo          50
+min_style       cg
+minimize        1.0e-8 1.0e-8 5000 10000
+
+reset_timestep  0
+
+velocity        all create 10.0 @SEED@ mom yes rot yes dist gaussian

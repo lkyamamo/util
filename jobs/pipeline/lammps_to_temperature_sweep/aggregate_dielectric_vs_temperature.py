@@ -2,13 +2,18 @@
 """
 Combine per-temperature dielectric_submit.slurm summaries into one CSV.
 
-Each --entry TEMPERATURE:SUMMARY_FILE points at a dipole_output/summary.txt
+Each --entry CELSIUS:KELVIN:SUMMARY_FILE points at a dipole_output/summary.txt
 written by dielectric_submit.slurm (the teed stdout of 2.dipole_std.py),
 which ends with a line of the form:
 
     eps_x =    12.345678, eps_y =    12.345678, eps_z =    12.345678, eps_total =    12.345678
 
-Usage: called by submit_dielectric_pipeline.sh — not run standalone.
+Both temperature scales are carried through to the CSV: Celsius is what the
+sweep was requested in and what the T<C>/ directories are named after, Kelvin
+is what LAMMPS ran at and what divides 2.dipole_std.py's prefactor. Emitting
+only one would force every reader to redo the conversion.
+
+Usage: called by submit_temperature_sweep.sh — not run standalone.
 """
 
 import argparse
@@ -26,7 +31,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
         "--entry", action="append", required=True,
-        metavar="TEMPERATURE:SUMMARY_FILE",
+        metavar="CELSIUS:KELVIN:SUMMARY_FILE",
         help="Repeatable. One per temperature.",
     )
     p.add_argument("--output", required=True)
@@ -52,16 +57,21 @@ def main():
     rows = []
     errors = []
     for entry in args.entry:
-        temperature_str, _, summary_path = entry.partition(":")
-        if not summary_path:
-            errors.append(f"Malformed --entry (expected TEMPERATURE:PATH): {entry}")
+        parts = entry.split(":")
+        if len(parts) != 3:
+            errors.append(
+                f"Malformed --entry (expected CELSIUS:KELVIN:PATH): {entry}"
+            )
             continue
+        celsius_str, kelvin_str, summary_path = parts
         try:
             eps_x, eps_y, eps_z, eps_total = parse_summary(summary_path)
         except (OSError, ValueError) as e:
             errors.append(f"{entry}: {e}")
             continue
-        rows.append((float(temperature_str), eps_x, eps_y, eps_z, eps_total))
+        rows.append(
+            (float(celsius_str), float(kelvin_str), eps_x, eps_y, eps_z, eps_total)
+        )
 
     if errors:
         for e in errors:
@@ -72,7 +82,10 @@ def main():
 
     with open(args.output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["temperature", "eps_x", "eps_y", "eps_z", "eps_total"])
+        writer.writerow(
+            ["temperature_C", "temperature_K",
+             "eps_x", "eps_y", "eps_z", "eps_total"]
+        )
         writer.writerows(rows)
 
     print(f"Wrote {len(rows)} row(s) to {args.output}")
