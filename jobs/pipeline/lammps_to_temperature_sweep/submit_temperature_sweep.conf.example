@@ -1,23 +1,50 @@
 # submit_temperature_sweep.conf.example — template for
 # submit_temperature_sweep.conf.
 #
-# submit_temperature_sweep.sh refuses to run unless
-# submit_temperature_sweep.conf exists next to it (same directory). Copy this
-# file to submit_temperature_sweep.conf and edit the values below for your
-# setup:
+# submit_temperature_sweep.sh reads its conf from ITS OWN directory and
+# refuses to run without one. The intended workflow is to copy the script and
+# this file together into an empty sweep directory:
 #
-#   cp submit_temperature_sweep.conf.example submit_temperature_sweep.conf
+#   mkdir -p .../sweeps/water-OH-0001 && cd .../sweeps/water-OH-0001
+#   cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.sh .
+#   cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.conf.example \
+#      submit_temperature_sweep.conf
 #
-# submit_temperature_sweep.conf is gitignored — it holds your own local paths
-# and should not be committed. This file (the .example) is the tracked template.
+# The sweep then carries the exact script and settings it ran with, next to
+# its results. Running the script in place from the checkout works identically.
+#
+# In the checkout, submit_temperature_sweep.conf is gitignored — it holds your
+# own local paths. This file (the .example) is the tracked template.
 #
 # Every value here is just a default: any of submit_temperature_sweep.sh's
 # flags overrides the corresponding variable below for that one invocation. Run
 # submit_temperature_sweep.sh --help for what each variable/flag controls.
 #
-# This file is sourced as bash, so $REPO_ROOT (set by
-# submit_temperature_sweep.sh before sourcing this file) and normal bash
-# quoting rules are available.
+# This file is sourced as bash, so normal bash quoting works. $REPO_ROOT is
+# available below and expands to the checkout the pipeline files come from —
+# including the REPO_ROOT you set in this file, since the script reads that
+# value first and only then sources this file for real.
+
+# ---------------------------------------------------------------------------
+# Where the util checkout is
+#
+# Only submit_temperature_sweep.sh and this conf get copied into a sweep
+# directory; everything else the pipeline needs (generate_cascade_input.py,
+# OH-cascade-preamble.input, dielectric-production.input, the aggregators, the
+# slurm templates) is read from the checkout.
+#
+# Leave as-is if the script is still in the checkout, or if your checkout is
+# at $HOME/util. Set it to a path when you have copied the script somewhere
+# else and $HOME/util is not the checkout you want (a worktree, a clone on
+# /scratch1). The script errors out immediately if it cannot find the pipeline
+# files there.
+#
+# "${REPO_ROOT:-}" rather than "": this line runs ABOVE the paths below that
+# expand $REPO_ROOT, so assigning an empty string here would blank it out
+# before they use it. This form leaves the script's resolved value in place
+# when you have not chosen one. Replacing the whole thing with a literal path
+# works exactly as you would expect.
+REPO_ROOT="${REPO_ROOT:-}"
 
 # ---------------------------------------------------------------------------
 # General input

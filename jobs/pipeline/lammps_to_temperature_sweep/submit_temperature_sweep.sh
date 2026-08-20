@@ -20,15 +20,37 @@ usage() {
   cat <<'EOF'
 Usage: submit_temperature_sweep.sh [options]
 
-Run from inside a sweep directory, whose name is the sweep id (e.g. cd
-.../sweeps/water-OH-0001 && /path/to/submit_temperature_sweep.sh ...).
+Run from inside a sweep directory, whose name is the sweep id. Copy this
+script and its conf into an empty directory and run it there:
 
-Requires submit_temperature_sweep.conf next to this script (same directory),
-which sets defaults for every parameter below — the script refuses to run
-without it. Copy submit_temperature_sweep.conf.example to
-submit_temperature_sweep.conf and edit it for your setup;
-submit_temperature_sweep.conf itself is gitignored since it holds your own
-local paths. Any flag below overrides its config value for that one
+    mkdir -p .../sweeps/water-OH-0001 && cd .../sweeps/water-OH-0001
+    cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.sh .
+    cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.conf.example \
+       submit_temperature_sweep.conf
+    $EDITOR submit_temperature_sweep.conf
+    ./submit_temperature_sweep.sh --diffusion-temperatures "5;25;45" --dry-run
+
+The sweep then carries the exact script and settings it was run with, next
+to its own results. Running the script in place from the util checkout works
+identically — nothing about the two cases differs.
+
+Only the conf is read from this script's own directory. Everything else the
+pipeline needs — generate_cascade_input.py, OH-cascade-preamble.input,
+dielectric-production.input, the aggregators, and the slurm templates — is
+read from the util checkout, found via REPO_ROOT:
+
+  1. REPO_ROOT set to a literal path in the conf — set this when you have
+     copied the script out of the checkout and $HOME/util is not the one you
+     want. It governs the conf's own $REPO_ROOT paths too, so the two cannot
+     disagree.
+  2. Otherwise REPO_ROOT exported in the environment.
+  3. Otherwise, if this script is still sitting in the checkout, that checkout.
+  4. Otherwise $HOME/util.
+
+If REPO_ROOT is wrong the script says so and exits before creating anything.
+
+The conf sets defaults for every parameter below — the script refuses to run
+without one. Any flag below overrides its config value for that one
 invocation.
 
 TEMPERATURES ARE IN CELSIUS. They are converted to Kelvin for LAMMPS and for
@@ -227,22 +249,15 @@ STAGGER_SECONDS="5"
 FORCE="0"
 FORCE_REASON=""
 
+# Where THIS copy of the script lives. The .conf is always read from here, so
+# the intended workflow works with no extra flags:
+#
+#   cp submit_temperature_sweep.sh submit_temperature_sweep.conf <empty dir>/
+#   cd <empty dir> && ./submit_temperature_sweep.sh ...
+#
+# Running it in place from the util checkout works the same way — in that case
+# "here" just happens to be the checkout.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Derived from this script's own location (<repo>/jobs/pipeline/<this dir>),
-# not hardcoded to $HOME/util, so a worktree or a checkout on /scratch1 uses
-# its OWN slurm templates and analysis scripts. Hardcoding it while resolving
-# everything else from SCRIPT_DIR would silently mix two checkouts together.
-# Export REPO_ROOT before running, or set it in the .conf, to override.
-REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
-
-LOG_FILE="$SCRIPT_DIR/overwrite.log"
-GENERATE_SCRIPT="$SCRIPT_DIR/generate_cascade_input.py"
-PREAMBLE_FILE="$SCRIPT_DIR/OH-cascade-preamble.input"
-DIELECTRIC_INPUT="$SCRIPT_DIR/dielectric-production.input"
-AGGREGATE_TEMPLATE="$SCRIPT_DIR/aggregate_submit.slurm"
-AGGREGATE_DIELECTRIC_SCRIPT="$SCRIPT_DIR/aggregate_dielectric_vs_temperature.py"
-AGGREGATE_DIFFUSION_SCRIPT="$SCRIPT_DIR/aggregate_diffusion_vs_temperature.py"
 
 # The preamble's pair_coeff line names this file; --potential-link-name must
 # match it or LAMMPS fails on a missing potential after the job has queued.
@@ -297,11 +312,14 @@ parse_temp_list() {
 
 # All defaults live in submit_temperature_sweep.conf next to this script, not
 # in the script itself, so personal paths never need to be committed. Every key
-# is pre-declared so an older conf still works under set -u.
+# is pre-declared below so an older conf still works under set -u.
 CONFIG_FILE="$SCRIPT_DIR/submit_temperature_sweep.conf"
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "Error: required config file not found: $CONFIG_FILE" >&2
-  echo "Copy $SCRIPT_DIR/submit_temperature_sweep.conf.example to $CONFIG_FILE and edit it for your setup." >&2
+  echo "This script reads its config from its own directory, so copy BOTH files together:" >&2
+  echo "  cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.sh ." >&2
+  echo "  cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.conf.example submit_temperature_sweep.conf" >&2
+  echo "then edit submit_temperature_sweep.conf for this sweep." >&2
   exit 1
 fi
 
@@ -322,14 +340,66 @@ DIELECTRIC_CONSTRAINT=""; DIELECTRIC_NODELIST=""
 ANALYSIS_NODES=""; ANALYSIS_TIME=""; ANALYSIS_JOB_NAME=""
 ANALYSIS_CONSTRAINT=""; ANALYSIS_NODELIST=""
 
+############################
+# Where the rest of the pipeline lives
+#
+# This script is meant to be COPIED, with its conf, into a sweep directory —
+# so its own location says nothing about where the other pipeline files are.
+# Everything except the conf is resolved from the util checkout:
+#
+#   1. REPO_ROOT exported in the environment, if set.
+#   2. REPO_ROOT set in the conf — the reliable way to point a copied script
+#      at a specific checkout.
+#   3. Otherwise, if this script IS still sitting in the checkout (its
+#      siblings are beside it), that checkout — so running it in place needs
+#      no configuration at all.
+#   4. Otherwise $HOME/util.
+#
+# A fallback is seeded BEFORE the conf is sourced, and the conf gets the last
+# word. The shipped conf writes
+#
+#     REPO_ROOT="${REPO_ROOT:-}"
+#
+# which keeps the seeded value, so paths further down it can be written as
+# "$REPO_ROOT/starting-structures/..." and land in the same checkout the
+# pipeline files come from. Replacing that with a literal path overrides the
+# seed, and — because it is one assignment read top to bottom — the literal is
+# then what those paths use too. Either way REPO_ROOT has exactly one value,
+# and the conf's paths can never disagree with the pipeline's.
+############################
+
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  if [[ -f "$SCRIPT_DIR/generate_cascade_input.py" ]]; then
+    REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+  else
+    REPO_ROOT="$HOME/util"
+  fi
+fi
+
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
 
-# Resolved AFTER the conf is sourced so a conf that sets REPO_ROOT actually
-# moves these too. Computing them earlier would pin them to the derived root
-# and quietly ignore the override.
+PIPELINE_DIR="$REPO_ROOT/jobs/pipeline/lammps_to_temperature_sweep"
+
 CASCADE_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_cascade_submit.slurm"
 DIELECTRIC_TEMPLATE="$REPO_ROOT/jobs/slurm/lammps_dielectric_submit.slurm"
+LOG_FILE="$PIPELINE_DIR/overwrite.log"
+GENERATE_SCRIPT="$PIPELINE_DIR/generate_cascade_input.py"
+PREAMBLE_FILE="$PIPELINE_DIR/OH-cascade-preamble.input"
+DIELECTRIC_INPUT="$PIPELINE_DIR/dielectric-production.input"
+AGGREGATE_TEMPLATE="$PIPELINE_DIR/aggregate_submit.slurm"
+AGGREGATE_DIELECTRIC_SCRIPT="$PIPELINE_DIR/aggregate_dielectric_vs_temperature.py"
+AGGREGATE_DIFFUSION_SCRIPT="$PIPELINE_DIR/aggregate_diffusion_vs_temperature.py"
+
+# Fail here, with the path that was wrong, rather than midway through creating
+# directories — a copied script pointed at a bad REPO_ROOT should say so before
+# it has done anything.
+if [[ ! -f "$GENERATE_SCRIPT" ]]; then
+  echo "Error: cannot find the pipeline files under REPO_ROOT=$REPO_ROOT" >&2
+  echo "  expected: $GENERATE_SCRIPT" >&2
+  echo "Set REPO_ROOT in $CONFIG_FILE to your util checkout." >&2
+  exit 1
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
