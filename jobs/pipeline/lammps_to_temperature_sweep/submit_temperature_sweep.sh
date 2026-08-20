@@ -188,6 +188,10 @@ Other:
                                     (default: <repo>/simulation/lammps/20260617_dielectric_multi_traj)
   --msd-template-dir DIR           MSD scripts to copy into stage 3
                                     (default: <repo>/analysis/distributions/20260608_GrNrBaSqw)
+  --venv PATH                      Virtualenv to activate before the density
+                                    solve and the aggregators, which need numpy
+                                    and ase (default: from the conf). Empty
+                                    uses whatever python is already on PATH.
   --lmp-bin PATH                   LAMMPS executable for both the cascade and
                                     the dielectric production stage (default:
                                     empty — each SLURM template's own default,
@@ -328,6 +332,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   exit 1
 fi
 
+VENV_PATH=""
 STARTING_STRUCTURE=""; POTENTIAL_FILE=""; POTENTIAL_LINK_NAME=""; LMP_BIN=""
 ANALYSIS_PARENT_DIR=""; ANALYSIS_TEMPLATE_DIR=""; MSD_TEMPLATE_DIR=""
 DIFFUSION_TEMPERATURES=""; DIELECTRIC_TEMPERATURES=""
@@ -412,6 +417,7 @@ while [[ $# -gt 0 ]]; do
     --potential-file) POTENTIAL_FILE="$2"; shift 2 ;;
     --potential-link-name) POTENTIAL_LINK_NAME="$2"; shift 2 ;;
     --lmp-bin) LMP_BIN="$2"; shift 2 ;;
+    --venv) VENV_PATH="$2"; shift 2 ;;
     --analysis-parent-dir) ANALYSIS_PARENT_DIR="$2"; shift 2 ;;
     --analysis-template-dir) ANALYSIS_TEMPLATE_DIR="$2"; shift 2 ;;
     --msd-template-dir) MSD_TEMPLATE_DIR="$2"; shift 2 ;;
@@ -469,6 +475,15 @@ while [[ $# -gt 0 ]]; do
     *) echo "Unknown argument: $1" >&2; usage; exit 1 ;;
   esac
 done
+
+# The density solve (numpy via box_size.py, ase via box_size_from_data.py) runs
+# in this shell, before anything is submitted, so the venv has to be active
+# here — distribution_submit.slurm and dielectric_submit.slurm activate it
+# themselves inside their jobs. After the argument loop so --venv applies.
+if [[ -n "$VENV_PATH" ]]; then
+  # shellcheck source=/dev/null
+  source "$VENV_PATH/bin/activate"
+fi
 
 SWEEP_DIR="$(pwd)"
 SWEEP_ID="$(basename "$SWEEP_DIR")"
@@ -578,7 +593,7 @@ fi
 BOX_LENGTH=""
 if [[ "$N_DIELECTRIC" -gt 0 || "$SKIP_CASCADE" != "1" ]]; then
   if [[ -n "$STARTING_STRUCTURE" ]]; then
-    BOX_LENGTH="$(python3 "$GENERATE_SCRIPT" \
+    BOX_LENGTH="$(python "$GENERATE_SCRIPT" \
       --repo-root "$REPO_ROOT" \
       --start-data "$STARTING_STRUCTURE" \
       --replicate "$REPLICATE" \
@@ -699,7 +714,7 @@ else
     --out "$INPUT_DIR/in.input"
   )
   [[ -n "$MELT_TEMPERATURE" ]] && gen_args+=(--melt-temperature "$MELT_TEMPERATURE")
-  python3 "$GENERATE_SCRIPT" "${gen_args[@]}"
+  python "$GENERATE_SCRIPT" "${gen_args[@]}"
 
   ln -s "$(realpath "$STARTING_STRUCTURE")" "$INPUT_DIR/start.data"
   ln -s "$(realpath "$POTENTIAL_FILE")" "$INPUT_DIR/$POTENTIAL_LINK_NAME"
@@ -944,7 +959,7 @@ run_aggregate_interactive() {
     [[ -n "$line" ]] && entry_args+=(--entry "$line")
   done < "$entries"
   [[ "${#entry_args[@]}" -eq 0 ]] && return 0
-  python3 "$script" "${entry_args[@]}" --output "$output"
+  python "$script" "${entry_args[@]}" --output "$output"
 }
 
 submit_aggregate() {
@@ -961,7 +976,7 @@ submit_aggregate() {
   aggregate_jobid="$(cd "$SWEEP_DIR" && sbatch --parsable --dependency="$dependency" \
     "${BEGIN_ARGS[@]+"${BEGIN_ARGS[@]}"}" \
     --job-name="${name}-aggregate" \
-    --export="ALL,ENTRIES_FILE=$entries,OUTPUT_CSV=$output,AGGREGATE_SCRIPT=$script" \
+    --export="ALL,ENTRIES_FILE=$entries,OUTPUT_CSV=$output,AGGREGATE_SCRIPT=$script,VENV_PATH=$VENV_PATH" \
     "$AGGREGATE_TEMPLATE")"
   echo "  ${name} aggregation job id: $aggregate_jobid"
 }

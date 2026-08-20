@@ -47,37 +47,15 @@ DEFAULT_PREAMBLE = Path(__file__).resolve().parent / "OH-cascade-preamble.input"
 def load_box_size_helpers(repo_root):
     """Import the density-solve helpers from <repo_root>/analysis/general/.
 
-    Imported here rather than at module scope for two reasons: the repo root
-    is a runtime argument (the driver knows it and passes it, instead of this
-    script guessing from __file__), and a checkout without analysis/general/
-    should say which directory it looked in rather than raise a bare
-    ModuleNotFoundError naming a module the reader has never heard of.
+    Imported here rather than at module scope so the repo root can be a runtime
+    argument — the driver knows it and passes --repo-root, instead of this
+    script guessing from its own depth in the tree.
 
     The density solve is not reimplemented here — analysis/general already has
     it, and box_size.py's constants are the ones the rest of the repo uses.
+    They need numpy and ase; the driver activates the venv that has them.
     """
     general = Path(repo_root) / "analysis" / "general"
-    missing = [
-        name for name in ("box_size.py", "box_size_from_data.py")
-        if not (general / name).is_file()
-    ]
-    if missing:
-        paths = " ".join(f"analysis/general/{name}" for name in missing)
-        raise SystemExit(
-            f"Error: cannot find the density-solve helpers under {general}\n"
-            f"  missing: {', '.join(missing)}\n"
-            f"  repo root: {repo_root}\n"
-            f"\n"
-            f"Both files are tracked, so a checkout missing one has lost it\n"
-            f"locally. Restore it in that checkout with:\n"
-            f"    cd {repo_root} && git checkout -- {paths}\n"
-            f"\n"
-            f"Note that box_size_from_data.py imports box_size.py, so a checkout\n"
-            f"without box_size.py cannot run either of them — this is not specific\n"
-            f"to the sweep pipeline. Or pass --repo-root pointing at a complete\n"
-            f"checkout."
-        )
-
     if str(general) not in sys.path:
         sys.path.insert(0, str(general))
 

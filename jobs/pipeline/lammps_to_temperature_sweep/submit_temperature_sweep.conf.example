@@ -64,6 +64,12 @@ POTENTIAL_LINK_NAME="OH.usc"
 # at must be built with pair_style usc; the cascade needs no optional package
 # beyond that.
 LMP_BIN=""
+# Virtualenv activated before the density solve (which this driver runs itself,
+# before submitting anything) and before the aggregators. Assumed to have
+# everything they need — numpy, ase. Same venv distribution_submit.slurm and
+# dielectric_submit.slurm activate. Leave empty to use whatever python is
+# already on PATH.
+VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
 ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/finalized-modifications/analysis"
 ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/simulation/lammps/20260617_dielectric_multi_traj"
 MSD_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
