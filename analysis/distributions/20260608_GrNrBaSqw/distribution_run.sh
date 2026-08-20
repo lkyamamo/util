@@ -141,7 +141,10 @@ RDF_FUNCTIONS="${RDF_FUNCTIONS:-}"                # semicolon list: g | h | D | 
 RDF_RESOLUTION_SIGMA="${RDF_RESOLUTION_SIGMA:-}"  # Å; Gaussian resolution broadening, 0 disables
 RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch |
                                         # modified_lorch (Soper eq. 60: a uniform
-                                        # sphere smeared in r space, never negative)
+                                        # sphere smeared in r space, never negative;
+                                        # meant for h, whose baseline is already
+                                        # subtracted so the grid ending at R_MAX
+                                        # costs the convolution nothing)
 RDF_LORCH_QMAX="${RDF_LORCH_QMAX:-}"              # Å⁻¹; needed by mode=lorch
 RDF_MODIFIED_LORCH_DELTA="${RDF_MODIFIED_LORCH_DELTA:-}"  # Å; radius of the smearing
                                         # sphere for mode=modified_lorch. NOT the

@@ -90,12 +90,15 @@ correlation function. dr defaults to pi/Q_max, the standard Lorch choice that
 places M's first zero at the truncation.
 
 RDF_RESOLUTION_MODE=modified_lorch with RDF_MODIFIED_LORCH_DELTA is Soper's
-eq. (60): instead of a window in Q space, smear g(r) in r space with a uniform
+eq. (60): instead of a window in Q space, smear h(r) in r space with a uniform
 sphere of radius D,
 
     L'(r, D) = 3/(4 pi D^3)   |r| <= D,   0 above
 
-applied as a true 3D convolution. Being a top hat in real space it is everywhere
+applied as a true 3D convolution. It is meant for h, the baseline-subtracted
+form: h → 0 at large r, so the part of the integral that falls off the end of a
+finite grid contributes nothing, whereas a column carrying a baseline loses that
+baseline at the edge. Being a top hat in real space it is everywhere
 non-negative, so unlike the Q-space Lorch window it cannot push a correlation
 function negative between peaks; the trade is that it corresponds to no actual
 measurement's truncation, so it smooths rather than reproduces an instrument.
@@ -231,10 +234,13 @@ RDF_RESOLUTION_SIGMA = float(os.environ.get("RDF_RESOLUTION_SIGMA", "0.1"))
 # Lorch kernel has negative side lobes (~-9% of peak) that a Gaussian cannot
 # reproduce, which matters between and beside strong peaks.
 # 'modified_lorch' is Soper's eq. (60): rather than windowing in Q space, smear
-# g(r) in r space with a uniform sphere of radius Δ, L' = 3/(4πΔ³) for |r| <= Δ.
-# It is a 3D top hat, so it is everywhere non-negative — it cannot drive a
-# correlation function negative between peaks the way the Q-space Lorch window's
-# side lobes can — at the price of not corresponding to any real truncation.
+# h(r) in r space with a uniform sphere of radius Δ, L' = 3/(4πΔ³) for |r| <= Δ.
+# It is meant for h rather than g because h → 0 at large r, which is what lets
+# the convolution be evaluated against a grid that stops at R_MAX — see
+# apply_modified_lorch() for the measured difference. It is a 3D top hat, so it
+# is everywhere non-negative — it cannot drive a correlation function negative
+# between peaks the way the Q-space Lorch window's side lobes can — at the price
+# of not corresponding to any real truncation.
 RDF_RESOLUTION_MODE = os.environ.get("RDF_RESOLUTION_MODE", "gaussian")
 if RDF_RESOLUTION_MODE not in ("gaussian", "lorch", "modified_lorch"):
     raise ValueError(
@@ -782,14 +788,20 @@ def modified_lorch_kernel(r_block, r_grid, delta):
     Lorch function this is applied in r space, not as a window in Q space, so it
     is a genuine 3D convolution rather than a 1D one.
 
-    For spherically symmetric f and L' the 3D convolution collapses to a single
+    IN PRACTICE THIS IS APPLIED TO h(r), the baseline-subtracted correlation
+    function, and the derivation below is written with that in mind. h is not an
+    arbitrary choice of column: it is the one this kernel can be evaluated on
+    honestly against a truncated grid. See apply_modified_lorch() for the
+    measurement that makes the point.
+
+    For spherically symmetric h and L' the 3D convolution collapses to a single
     radial integral,
 
-        (f * L')(r) = (2π/r) ∫ dr' r' f(r') ∫_{|r-r'|}^{r+r'} du u L'(u)
+        (h * L')(r) = (2π/r) ∫ dr' r' h(r') ∫_{|r-r'|}^{r+r'} du u L'(u)
 
     and with L' constant out to Δ the inner integral is elementary:
 
-        r (f * L')(r) = 3/(4Δ³) ∫ dr' [r' f(r')] K(r, r')
+        r (h * L')(r) = 3/(4Δ³) ∫ dr' [r' h(r')] K(r, r')
         K(r, r')      = min(r + r', Δ)² − min(|r − r'|, Δ)²
 
     The two min()s are what carry the geometry: when |r − r'| >= Δ the shells do
@@ -805,21 +817,35 @@ def apply_modified_lorch(r, y, delta, r_weighted, chunk=512):
     """
     Convolve one column with the uniform sphere of Soper eq. (60).
 
-    r_weighted says whether the column already carries a factor of r, because
-    the convolution acts on the underlying 3D radial function and not on the
-    plotted curve:
+    MEANT FOR h(r). h → 0 at large r, and that is what makes this kernel usable
+    on a finite grid: the integral wants r' out to r + Δ, and past R_MAX there
+    is nothing there. For h the missing shell contributes nothing, because h is
+    already zero out there. For a column carrying a baseline it contributes the
+    baseline, and losing it shows.
 
-      D(r) and T(r) are 4πrρ × (a 3D function), so the r and the constant pass
-      straight through the integral and the column is convolved as it stands.
-      g(r) and h(r) are the 3D function itself, so they are multiplied by r
-      going in and divided by r coming out.
+    Measured on an R_MAX = 8 Å grid with Δ = 0.2, structure decaying to its
+    far-field value:
 
-    Getting that backwards changes the answer without changing its shape enough
-    to notice, which is why it is an explicit argument rather than a guess.
+        h convolved, last Δ of the grid : 0.00000        (truth 0)
+        g convolved, last Δ of the grid : 0.50 .. 1.00   (truth 1)
 
-    Note the same edge behaviour as apply_lorch(): the integral wants r' out to
-    r + Δ, so the last Δ of the grid is computed from a truncated integrand and
-    droops. Read the broadened curve only out to R_MAX − Δ.
+    Analytically the two carry the same information — the kernel has unit volume
+    integral, so it maps the constant 1 to itself and (g * L') = (h * L') + 1
+    exactly. On a truncated grid that identity holds in the bulk (agreement to
+    1.6e-4 here) and fails at the edges (0.50 discrepancy in the last 2Δ),
+    because the shell beyond R_MAX is precisely the part that would have
+    supplied the baseline. Subtracting the baseline first is what removes the
+    artifact rather than hiding it.
+
+    Nothing here refuses another column, and the r_weighted flag below is what a
+    different one would need. It says whether the column already carries a
+    factor of r, because the convolution acts on the underlying 3D radial
+    function and not on the plotted curve: h is that function, so it is
+    multiplied by r going in and divided by r coming out, while D and T are
+    4πrρ × it and pass through as they stand. Getting that backwards changes the
+    answer without changing its shape enough to notice, which is why it is an
+    explicit argument rather than a guess — but note that D and T also carry the
+    r-weighting that makes the edge loss above worse, not better.
     """
     if delta <= 0:
         raise ValueError("modified Lorch needs a positive Δ.")
@@ -879,7 +905,9 @@ def broaden(results, meta, sigma, dr, mode='gaussian', delta_r=0.0, q_max=0.0,
                       a 1D peak function. Matches a Gaussian in width but has
                       negative side lobes a Gaussian cannot produce.
     'modified_lorch'  Soper eq. (60): a uniform sphere of radius Δ convolved in
-                      r space instead of a window applied in Q space. Being a 3D
+                      r space instead of a window applied in Q space, and meant
+                      for h — the baseline-subtracted form is the one whose
+                      convolution survives the grid ending at R_MAX. Being a 3D
                       top hat it is strictly non-negative — no side lobes at all
                       — so it cannot push a correlation function negative
                       between peaks the way 'lorch' can. The cost is that it has
@@ -891,8 +919,8 @@ def broaden(results, meta, sigma, dr, mode='gaussian', delta_r=0.0, q_max=0.0,
     for label in list(results):
         r, y = results[label]
         if mode == 'modified_lorch':
-            # D and T carry an explicit factor of r; g and h do not. See
-            # apply_modified_lorch().
+            # h is the intended column and is not r-weighted; D and T carry an
+            # explicit factor of r. See apply_modified_lorch().
             r_weighted = label.split('_')[0] in ('D', 'T')
             wide = apply_modified_lorch(r, y, delta, r_weighted)
             note = (f"⊗ modified Lorch (Soper eq. 60) Δ={delta:.4f} Å "

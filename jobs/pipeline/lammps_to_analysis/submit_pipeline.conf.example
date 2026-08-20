@@ -251,8 +251,12 @@ ANALYSIS_NODELIST=""
 #                      and cannot drive a correlation function negative between
 #                      peaks the way the Q-space Lorch side lobes can. It matches
 #                      no real truncation, so it smooths rather than reproduces an
-#                      instrument. NOT the resolution: FWHM = sqrt(2)*D, so divide
-#                      a quoted FWHM by 1.4142 to get D.
+#                      instrument. Intended for h: h -> 0 at large r, so the part
+#                      of the convolution that falls off the end of the grid at
+#                      R_MAX contributes nothing, while a column still carrying
+#                      its baseline loses that baseline over the last D.
+#                      NOT the resolution: FWHM = sqrt(2)*D, so divide a quoted
+#                      FWHM by 1.4142 to get D.
 #   RDF_LORCH_QMAX_VAL The measurement's Fourier truncation, A^-1. dr defaults to
 #                      pi/Q_max, the standard Lorch choice. Papers quote the
 #                      RESULTING resolution (the peak FWHM), which is ~1.73x
