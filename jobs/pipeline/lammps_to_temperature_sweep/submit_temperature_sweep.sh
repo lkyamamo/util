@@ -204,6 +204,25 @@ Other:
                                     rejected up front rather than failing inside
                                     LAMMPS after the job has queued.
 
+  --resume                         Re-submit a sweep that died partway, keeping
+                                  what already finished. The dielectric
+                                  production picks up at the first chunk that
+                                  did not complete (its state is checkpointed
+                                  after every chunk), and the dipole calc picks
+                                  up from its per-rank checkpoints. MSD is
+                                  simply recomputed — it reads a finished
+                                  trajectory in one pass and has no partial
+                                  state.
+
+                                  The cascade is NOT restartable: it is a single
+                                  job, so if it did not finish, --resume refuses
+                                  and you re-run it with --force. A cascade that
+                                  DID finish is reused as-is.
+
+                                  Safe to run when nothing actually failed —
+                                  every stage that is already complete detects
+                                  that and exits immediately.
+
   --skip-cascade                   Skip stage 1 and assume cascade/ already has
                                   the thermalized_T<C>.data and
                                   dynamics_T<C>.lammpstrj files this sweep needs.
@@ -253,6 +272,7 @@ EOF
 
 INTERACTIVE="0"
 SKIP_CASCADE="0"
+RESUME="0"
 DRY_RUN="0"
 STAGGER_SECONDS="5"
 FORCE="0"
@@ -469,6 +489,7 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE="1"; FORCE_REASON="$2"; shift 2 ;;
     --interactive) INTERACTIVE="1"; shift 1 ;;
     --skip-cascade) SKIP_CASCADE="1"; shift 1 ;;
+    --resume) RESUME="1"; shift 1 ;;
     --dry-run) DRY_RUN="1"; shift 1 ;;
     --stagger-seconds) STAGGER_SECONDS="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -544,6 +565,23 @@ if [[ "$N_DIFFUSION" -gt 0 ]]; then
     echo "These determine the numbers msd.py produces, so nothing guesses them." >&2
     exit 1
   fi
+fi
+
+# Checked here, not when the symlinks are made: by then several directories
+# exist and a half-created sweep has to be cleaned up by hand before --force
+# will touch it again.
+input_missing=()
+if [[ "$SKIP_CASCADE" != "1" && -n "$STARTING_STRUCTURE" && ! -f "$STARTING_STRUCTURE" ]]; then
+  input_missing+=("  --starting-structure  $STARTING_STRUCTURE")
+fi
+if [[ -n "$POTENTIAL_FILE" && ! -f "$POTENTIAL_FILE" ]]; then
+  input_missing+=("  --potential-file      $POTENTIAL_FILE")
+fi
+if [[ "${#input_missing[@]}" -gt 0 ]]; then
+  echo "Error: these input files do not exist:" >&2
+  printf '%s\n' "${input_missing[@]}" >&2
+  echo "Fix the paths in $CONFIG_FILE (or the matching flags) and re-run." >&2
+  exit 1
 fi
 
 if [[ "$FORCE" == "1" && -z "$FORCE_REASON" ]]; then
@@ -665,30 +703,61 @@ ANALYSIS_PARENT_DIR="$(cd "$ANALYSIS_PARENT_DIR" && pwd)"
 
 CASCADE_JOBID=""
 
+# Fills the global CASCADE_MISSING with the cascade outputs this sweep needs
+# but does not have. Empty means the cascade is done as far as these
+# temperature lists are concerned.
+cascade_missing_files() {
+  CASCADE_MISSING=()
+  local T
+  for T in "${DIELECTRIC_TEMPS[@]+"${DIELECTRIC_TEMPS[@]}"}"; do
+    [[ -f "$CASCADE_DIR/thermalized_T${T}C.data" ]] || CASCADE_MISSING+=("thermalized_T${T}C.data")
+  done
+  for T in "${DIFFUSION_TEMPS[@]+"${DIFFUSION_TEMPS[@]}"}"; do
+    [[ -f "$CASCADE_DIR/dynamics_T${T}C.lammpstrj" ]] || CASCADE_MISSING+=("dynamics_T${T}C.lammpstrj")
+  done
+}
+
+# A resume over a finished cascade is just a skip: the descent produced
+# everything downstream needs, and only the per-temperature jobs after it have
+# to be re-submitted. That is the usual reason to resume at all — the cascade
+# is one long job, and what tends to run out of walltime is the dielectric
+# production behind it.
+if [[ "$RESUME" == "1" && "$SKIP_CASCADE" != "1" ]]; then
+  cascade_missing_files
+  if [[ "${#CASCADE_MISSING[@]}" -eq 0 ]]; then
+    echo "--resume: cascade already produced everything this sweep needs — skipping stage 1."
+    SKIP_CASCADE="1"
+  elif [[ -e "$CASCADE_DIR" || -e "$INPUT_DIR" ]]; then
+    # The cascade has no chunk-level restart: it is a single job, and resuming
+    # it would mean re-entering a descent partway through.
+    echo "Error: --resume cannot continue an unfinished cascade — it is one job," >&2
+    echo "with no chunk-level restart. $CASCADE_DIR is missing:" >&2
+    printf '  %s\n' "${CASCADE_MISSING[@]}" >&2
+    echo "Re-run with --force to redo the cascade from the start." >&2
+    exit 1
+  fi
+fi
+
 if [[ "$SKIP_CASCADE" == "1" ]]; then
   # Verify every file the downstream stages will want, before submitting any of
   # them — a missing trajectory should be an error now, not a failed job later.
-  cascade_missing=()
-  for T in "${DIELECTRIC_TEMPS[@]+"${DIELECTRIC_TEMPS[@]}"}"; do
-    [[ -f "$CASCADE_DIR/thermalized_T${T}C.data" ]] || cascade_missing+=("thermalized_T${T}C.data")
-  done
-  for T in "${DIFFUSION_TEMPS[@]+"${DIFFUSION_TEMPS[@]}"}"; do
-    [[ -f "$CASCADE_DIR/dynamics_T${T}C.lammpstrj" ]] || cascade_missing+=("dynamics_T${T}C.lammpstrj")
-  done
-  if [[ "${#cascade_missing[@]}" -gt 0 ]]; then
+  cascade_missing_files
+  if [[ "${#CASCADE_MISSING[@]}" -gt 0 ]]; then
     echo "Error: --skip-cascade was given, but $CASCADE_DIR is missing:" >&2
-    printf '  %s\n' "${cascade_missing[@]}" >&2
+    printf '  %s\n' "${CASCADE_MISSING[@]}" >&2
     echo "Re-run without --skip-cascade, or fix the temperature lists." >&2
     exit 1
   fi
-  echo "--skip-cascade: found every required file in $CASCADE_DIR."
+  echo "Found every required file in $CASCADE_DIR."
 else
   if [[ -e "$INPUT_DIR" || -e "$CASCADE_DIR" ]]; then
     if [[ "$FORCE" == "1" ]]; then
       log_overwrite "--force ($FORCE_REASON): removing existing $INPUT_DIR and/or $CASCADE_DIR (sweep id: $SWEEP_ID)"
       rm -rf "$INPUT_DIR" "$CASCADE_DIR"
     else
-      echo "Error: $SWEEP_DIR already has input_files/ or cascade/ — refusing to overwrite (use --force to override)." >&2
+      echo "Error: $SWEEP_DIR already has input_files/ or cascade/ — refusing to overwrite." >&2
+      echo "  --resume  continue this sweep where it stopped (requires a finished cascade)" >&2
+      echo "  --force   throw the cascade away and redo the whole sweep" >&2
       exit 1
     fi
   fi
@@ -753,7 +822,14 @@ fi
 
 cascade_dependency_args() {
   DEP_ARGS=()
-  [[ -n "$CASCADE_JOBID" ]] && DEP_ARGS=(--dependency=afterok:"$CASCADE_JOBID")
+  # An "if", not "[[ ... ]] && DEP_ARGS=(...)": with no cascade job the AND-list
+  # returns 1, which becomes the function's return status, and under `set -e`
+  # the call site exits — silently, just before the first submission. That is
+  # exactly the no-cascade case (--resume and --skip-cascade), so the bug hid
+  # until one of them got far enough to submit anything.
+  if [[ -n "$CASCADE_JOBID" ]]; then
+    DEP_ARGS=(--dependency=afterok:"$CASCADE_JOBID")
+  fi
 }
 
 stagger() {
@@ -786,30 +862,50 @@ for T in "${DIELECTRIC_TEMPS[@]+"${DIELECTRIC_TEMPS[@]}"}"; do
 
   for existing in "$STAGE_DIR" "$CALC_DIR"; do
     if [[ -e "$existing" ]]; then
-      if [[ "$FORCE" == "1" ]]; then
+      if [[ "$RESUME" == "1" ]]; then
+        : # kept on purpose — the state in here is what a resume picks up from
+      elif [[ "$FORCE" == "1" ]]; then
         log_overwrite "--force ($FORCE_REASON): removing existing $existing (sweep id: $SWEEP_ID, T=${T}C)"
         rm -rf "$existing"
       else
-        echo "Error: $existing already exists — refusing to overwrite (use --force to override)." >&2
+        echo "Error: $existing already exists — refusing to overwrite." >&2
+        echo "  --resume  continue this run where it stopped (keeps completed chunks)" >&2
+        echo "  --force   throw it away and start this temperature over" >&2
         exit 1
       fi
     fi
   done
+
+  if [[ "$RESUME" == "1" ]]; then
+    # chunks_done.txt is written by in.input and read by lammps_submit.slurm;
+    # reporting it here means the queue submission already tells you how much
+    # is left, without waiting for the job to start and open its log.
+    if [[ -s "$STAGE_DIR/run/chunks_done.txt" ]]; then
+      done_chunks="$(tail -n 1 "$STAGE_DIR/run/chunks_done.txt" | tr -d '[:space:]')"
+      echo "  resume: ${done_chunks} of ${DIELECTRIC_N_CHUNKS} production chunks already done"
+    else
+      echo "  resume: no completed production chunks — starting from chunk 1"
+    fi
+    if [[ -f "$CALC_DIR/dipole_output/dipole_output.txt" ]]; then
+      echo "  resume: dipole_output.txt already built — the calc will go straight to 2.dipole_std.py"
+    fi
+  fi
 
   mkdir -p "$STAGE_DIR/input_files" "$STAGE_DIR/run" "$CALC_DIR/logs"
 
   cp "$DIELECTRIC_INPUT" "$STAGE_DIR/input_files/in.input"
   # The structure this temperature's production run starts from is the one the
   # cascade wrote for it — not a hand-picked file reused across temperatures.
-  ln -s "$THERMALIZED" "$STAGE_DIR/input_files/start.data"
-  ln -s "$(realpath "$POTENTIAL_FILE")" "$STAGE_DIR/input_files/$POTENTIAL_LINK_NAME"
+  # -sfn so a resume refreshes these rather than failing on the existing links.
+  ln -sfn "$THERMALIZED" "$STAGE_DIR/input_files/start.data"
+  ln -sfn "$(realpath "$POTENTIAL_FILE")" "$STAGE_DIR/input_files/$POTENTIAL_LINK_NAME"
   cp "$DIELECTRIC_TEMPLATE" "$STAGE_DIR/run/lammps_submit.slurm"
 
   cp "$ANALYSIS_TEMPLATE_DIR/1.calc_mpi.py" \
      "$ANALYSIS_TEMPLATE_DIR/2.dipole_std.py" \
      "$ANALYSIS_TEMPLATE_DIR/dielectric_submit.slurm" \
      "$CALC_DIR/"
-  ln -s "$STAGE_DIR/run/dumps" "$CALC_DIR/dumps"
+  ln -sfn "$STAGE_DIR/run/dumps" "$CALC_DIR/dumps"
 
   prod_export="TARGET_TEMP=$TK,"
   [[ -n "$LMP_BIN" ]] && prod_export+="LMP_BIN=$LMP_BIN,"
@@ -895,11 +991,15 @@ for T in "${DIFFUSION_TEMPS[@]+"${DIFFUSION_TEMPS[@]}"}"; do
   TRAJ="$CASCADE_DIR/dynamics_T${T}C.lammpstrj"
 
   if [[ -e "$MSD_DIR" ]]; then
-    if [[ "$FORCE" == "1" ]]; then
+    if [[ "$RESUME" == "1" ]]; then
+      # msd.py reads the finished trajectory in one pass and writes dated CSVs;
+      # there is no partial state to pick up, so a resume just recomputes it.
+      echo "  resume: recomputing MSD in $MSD_DIR"
+    elif [[ "$FORCE" == "1" ]]; then
       log_overwrite "--force ($FORCE_REASON): removing existing $MSD_DIR (sweep id: $SWEEP_ID, T=${T}C)"
       rm -rf "$MSD_DIR"
     else
-      echo "Error: $MSD_DIR already exists — refusing to overwrite (use --force to override)." >&2
+      echo "Error: $MSD_DIR already exists — refusing to overwrite (use --force or --resume)." >&2
       exit 1
     fi
   fi

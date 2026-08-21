@@ -97,11 +97,23 @@ else
         exit 1
     fi
 
+    # Built under a temporary name and moved into place only once every rank
+    # file has been appended. Writing straight to $DIPOLE_FILE meant a job
+    # killed mid-concatenation (walltime, node failure) left a PARTIAL
+    # dipole_output.txt behind — and the existence check above would then skip
+    # both the validation and the rebuild on the next run, handing
+    # 2.dipole_std.py a truncated dipole series and a silently wrong dielectric
+    # constant. The rename is atomic within a filesystem, so the file either
+    # does not exist or is complete.
     echo "Concatenating ${NUM_RANKS} rank files..."
-    > "$DIPOLE_FILE"
+    tmp_dipole="$DIPOLE_FILE.partial.$$"
+    trap 'rm -f "$tmp_dipole"' EXIT
+    > "$tmp_dipole"
     for ((r=0; r<NUM_RANKS; r++)); do
-        cat "$OUTPUT_DIR/ranks/dipole_rank_${r}.txt" >> "$DIPOLE_FILE"
+        cat "$OUTPUT_DIR/ranks/dipole_rank_${r}.txt" >> "$tmp_dipole"
     done
+    mv "$tmp_dipole" "$DIPOLE_FILE"
+    trap - EXIT
     echo "  Wrote: $DIPOLE_FILE ($(wc -l < "$DIPOLE_FILE") lines)"
 fi
 
