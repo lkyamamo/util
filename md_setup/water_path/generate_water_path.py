@@ -322,6 +322,9 @@ def resolve_start(data, args) -> tuple[np.ndarray, list[str]]:
 WATER_ELEMENTS = ("O", "H")
 ELEMENT_WORDS = {"O": "oxygen", "H": "hydrogen"}
 
+# The three atoms a frame adds, in the order they are written and reported.
+WATER_LABELS = ("O", "H1", "H2")
+
 
 def apply_water_types(data) -> tuple[int, int, list[str]]:
     """
@@ -398,7 +401,7 @@ def build_frame(data, positions: dict[str, np.ndarray], oxygen_type: int,
     messages: list[str] = []
     wrapped_count = 0
 
-    for label in ("O", "H1", "H2"):
+    for label in WATER_LABELS:
         wrapped, image_shift = ld.wrap_into_box(frame, positions[label])
         atom_id = ld.add_atom(frame, types[label], wrapped, image_shift=image_shift,
                               molecule_id=molecule_id, charge=charges[label])
@@ -416,7 +419,10 @@ def build_frame(data, positions: dict[str, np.ndarray], oxygen_type: int,
 MANIFEST_COLUMNS = [
     "frame", "o_si_distance", "fraction", "o_x", "o_y", "o_z",
     "o_id", "h1_id", "h2_id", "o_type", "h_type",
-    "closest_atom_id", "closest_atom_type", "closest_distance", "closest_to",
+    # Nearest existing atom to each of the three, target silicon excluded.
+    "o_nearest_id", "o_nearest_type", "o_nearest_distance",
+    "h1_nearest_id", "h1_nearest_type", "h1_nearest_distance",
+    "h2_nearest_id", "h2_nearest_type", "h2_nearest_distance",
     "clash", "data_file",
 ]
 
@@ -589,7 +595,10 @@ def main(argv=None) -> int:
     wrapped_atoms = 0
 
     print()
-    print(f"{'frame':>5}  {'O-Si':>7}  {'frac':>5}  {'closest atom other than the target':<34}  file")
+    print(f"{'':>5}  {'':>7}  {'':>5}  "
+          f"{'nearest existing atom to each, in A (target silicon excluded)':^70}")
+    print(f"{'frame':>5}  {'O-Si':>7}  {'frac':>5}  "
+          f"{'O':>22}  {'H1':>22}  {'H2':>22}  file")
 
     # Frames are numbered from 1, so the file names line up with the frame count
     # rather than with the step count.
@@ -607,24 +616,28 @@ def main(argv=None) -> int:
         messages.extend(wrap_messages)
         wrapped_atoms += wrapped
 
-        # Measured against the original structure, so the water is not compared
-        # with itself, and skipping the target silicon, which the oxygen is
-        # deliberately closing in on and which would otherwise mask a real clash
-        # on the last few frames.
-        closest = min(
-            ((label,) + ld.nearest_existing(data, positions[label],
-                                            exclude={args.silicon_id})[0]
-             for label in ("O", "H1", "H2")),
-            key=lambda entry: entry[3],
-        )
-        label, closest_id, closest_type, closest_distance = closest
-        clash = closest_distance < args.min_separation
-        if clash:
+        # The nearest existing atom to each of the three separately - a single
+        # overall minimum hides a hydrogen buried in a wall whenever the oxygen
+        # happens to be closer to something else. Measured against the original
+        # structure so the water is not compared with itself, and skipping the
+        # target silicon, which the oxygen is deliberately closing in on and
+        # which would otherwise mask a real clash on the last few frames.
+        nearest = {
+            label: ld.nearest_existing(data, positions[label],
+                                       exclude={args.silicon_id})[0]
+            for label in WATER_LABELS
+        }
+
+        clashing = [label for label in WATER_LABELS
+                    if nearest[label][2] < args.min_separation]
+        if clashing:
             clashes += 1
-            messages.append(
-                f"{where}: {label} is {closest_distance:.3f} A from atom {closest_id} "
-                f"(type {closest_type}), below --min-separation {args.min_separation}"
-            )
+            for label in clashing:
+                near_id, near_type, near_distance = nearest[label]
+                messages.append(
+                    f"{where}: {label} is {near_distance:.3f} A from atom {near_id} "
+                    f"(type {near_type}), below --min-separation {args.min_separation}"
+                )
 
         wrapped_oxygen = ld.position_of(frame, ids["O"])
         fraction = (start_distance - target_distance) / span if span else 0.0
@@ -636,7 +649,7 @@ def main(argv=None) -> int:
                 f"frame {index}/{len(distances)}, O-Si {target_distance:.4f} A",
                 atom_style)
 
-        rows.append({
+        row = {
             "frame": index,
             "o_si_distance": round(target_distance, 4),
             "fraction": round(fraction, 4),
@@ -645,18 +658,24 @@ def main(argv=None) -> int:
             "o_z": round(float(wrapped_oxygen[2]), 4),
             "o_id": ids["O"], "h1_id": ids["H1"], "h2_id": ids["H2"],
             "o_type": oxygen_type, "h_type": hydrogen_type,
-            "closest_atom_id": closest_id,
-            "closest_atom_type": closest_type,
-            "closest_distance": round(closest_distance, 4),
-            "closest_to": label,
-            "clash": int(clash),
+            "clash": int(bool(clashing)),
             "data_file": data_file.name,
-        })
+        }
+        for label in WATER_LABELS:
+            near_id, near_type, near_distance = nearest[label]
+            prefix = label.lower()
+            row[f"{prefix}_nearest_id"] = near_id
+            row[f"{prefix}_nearest_type"] = near_type
+            row[f"{prefix}_nearest_distance"] = round(near_distance, 4)
+        rows.append(row)
 
-        marker = " CLASH" if clash else ""
-        print(f"{index:>5}  {target_distance:>7.3f}  {fraction:>5.3f}  "
-              f"{f'{closest_distance:.3f} A to id {closest_id} (type {closest_type}, {label})':<34}"
-              f"{marker}  {data_file.name}")
+        cells = "  ".join(
+            f"{f'{nearest[label][2]:.3f} id {nearest[label][0]} (t{nearest[label][1]})':>22}"
+            for label in WATER_LABELS
+        )
+        marker = "  CLASH " + ",".join(clashing) if clashing else ""
+        print(f"{index:>5}  {target_distance:>7.3f}  {fraction:>5.3f}  {cells}  "
+              f"{data_file.name}{marker}")
 
     if not args.dry_run:
         manifest = outdir / "manifest.csv"
