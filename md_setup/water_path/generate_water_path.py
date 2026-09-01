@@ -42,7 +42,9 @@ Output
                  --final-distance).
   manifest.csv   one row per frame: the O-Si distance the run should restrain
                  to, the ids and types of the three new atoms, and the closest
-                 approach to an existing atom other than the target silicon.
+                 approach of each to an existing atom (the target silicon is
+                 skipped for the oxygen, whose distance to it is the O-Si
+                 column, but kept for the hydrogens).
 
 Every frame adds atoms of two types, one oxygen and two hydrogens. Both come
 from the WATER_TYPES dictionary in the configuration block below - set it to
@@ -204,7 +206,8 @@ def rotate_about_bisector(h1: np.ndarray, h2: np.ndarray,
 
     The bisector is the rotation axis, so it does not move: the oxygen keeps
     facing wherever the orientation aimed it, and what turns is the plane the
-    two hydrogens lie in. In lone-pair mode the bisector is the O-Si axis, so
+    two hydrogens lie in. Under --orientation away/toward the bisector is the
+    O-Si axis, so
     this is the free parameter that nothing else fixes - which way the water is
     rolled around its line of approach.
 
@@ -246,12 +249,19 @@ def resolve_offsets(args, atom_style: str | None,
             source = (f"built from --oh-length {args.oh_length} and "
                       f"--hoh-angle {args.hoh_angle}")
 
-        if args.orientation == "lone-pair":
+        if args.orientation == "away":
             # Bisector anti-parallel to the approach: the hydrogens trail behind
             # the oxygen and its lone pairs face the silicon, which is the
             # geometry a nucleophilic attack starts from.
             h1, h2 = orient_offsets(h1, h2, -approach)
-            source += ", hydrogens pointing away from the silicon"
+            source += ", hydrogens pointing away from the target"
+        elif args.orientation == "toward":
+            # Bisector along the approach: the hydrogens lead and reach the
+            # silicon before the oxygen does. This is not the nucleophilic
+            # attack geometry - it is the arrangement to use when the proton,
+            # not the oxygen, is what should arrive first.
+            h1, h2 = orient_offsets(h1, h2, approach)
+            source += ", hydrogens pointing toward the target"
         else:
             # Molecular plane perpendicular to the approach: both hydrogens stay
             # off the line of travel, which keeps them clear of a tight channel.
@@ -419,7 +429,8 @@ def build_frame(data, positions: dict[str, np.ndarray], oxygen_type: int,
 MANIFEST_COLUMNS = [
     "frame", "o_si_distance", "fraction", "o_x", "o_y", "o_z",
     "o_id", "h1_id", "h2_id", "o_type", "h_type",
-    # Nearest existing atom to each of the three, target silicon excluded.
+    # Nearest existing atom to each of the three; the target silicon is skipped
+    # for the oxygen only (see the search in the frame loop).
     "o_nearest_id", "o_nearest_type", "o_nearest_distance",
     "h1_nearest_id", "h1_nearest_type", "h1_nearest_distance",
     "h2_nearest_id", "h2_nearest_type", "h2_nearest_distance",
@@ -476,17 +487,20 @@ def parse_args(argv=None):
                         help="O-H bond length in A (default: 0.9572)")
     parser.add_argument("--hoh-angle", type=float, default=104.52,
                         help="H-O-H angle in degrees (default: 104.52)")
-    parser.add_argument("--orientation", choices=("lone-pair", "perpendicular"),
-                        default="lone-pair",
-                        help="lone-pair points the hydrogens away from the silicon; "
-                             "perpendicular puts the molecular plane across the path "
-                             "(default: lone-pair)")
+    parser.add_argument("--orientation", choices=("away", "toward", "perpendicular"),
+                        default="away",
+                        help="which way the hydrogens face along the path. 'away' (default) "
+                             "points them away from the target silicon, so the oxygen's lone "
+                             "pairs lead - the geometry a nucleophilic attack starts from. "
+                             "'toward' points them at the silicon, so a proton arrives first "
+                             "instead of the oxygen. 'perpendicular' puts the molecular plane "
+                             "across the path, keeping both hydrogens off the line of travel")
     parser.add_argument("--h-rotation", type=float, default=0.0, metavar="DEGREES",
                         help="roll the hydrogens about the H-O-H bisector by this angle in "
                              "degrees, counterclockwise looking down the bisector toward the "
                              "oxygen (default: 0). The bisector is the rotation axis, so the "
                              "orientation above is unchanged and only the plane the hydrogens "
-                             "lie in turns; in lone-pair mode that is the roll about the O-Si "
+                             "lie in turns; under away/toward that is the roll about the O-Si "
                              "axis, which nothing else fixes. Always counterclockwise - a "
                              "negative angle is taken as the counterclockwise turn to the same "
                              "place")
@@ -596,7 +610,7 @@ def main(argv=None) -> int:
 
     print()
     print(f"{'':>5}  {'':>7}  {'':>5}  "
-          f"{'nearest existing atom to each, in A (target silicon excluded)':^70}")
+          f"{'nearest existing atom to each, in A (target silicon skipped for O only)':^70}")
     print(f"{'frame':>5}  {'O-Si':>7}  {'frac':>5}  "
           f"{'O':>22}  {'H1':>22}  {'H2':>22}  file")
 
@@ -619,12 +633,20 @@ def main(argv=None) -> int:
         # The nearest existing atom to each of the three separately - a single
         # overall minimum hides a hydrogen buried in a wall whenever the oxygen
         # happens to be closer to something else. Measured against the original
-        # structure so the water is not compared with itself, and skipping the
-        # target silicon, which the oxygen is deliberately closing in on and
-        # which would otherwise mask a real clash on the last few frames.
+        # structure, so the water is not compared with itself.
+        #
+        # The target silicon is skipped for the oxygen only. That distance is
+        # the coordinate being driven, it is already the O-Si column, and
+        # leaving it in would mask every other contact on the last few frames.
+        # For the hydrogens it is an ordinary neighbour and has to stay in:
+        # under --orientation toward they reach the silicon before the oxygen
+        # does, and excluding it would hide exactly the collision that mode
+        # risks.
         nearest = {
-            label: ld.nearest_existing(data, positions[label],
-                                       exclude={args.silicon_id})[0]
+            label: ld.nearest_existing(
+                data, positions[label],
+                exclude={args.silicon_id} if label == "O" else None,
+            )[0]
             for label in WATER_LABELS
         }
 
