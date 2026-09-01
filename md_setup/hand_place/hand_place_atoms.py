@@ -8,6 +8,9 @@ make a silanol. Placements are hard-coded in the PLACEMENTS list below; each
 entry is (target_atom_id, new_atom_type, (dx, dy, dz)) and creates one atom at
 position(target) + offset.
 
+The data-file reading, wrapping, distance, and writing helpers live in
+../lammps_data.py, shared with the other md_setup scripts that add atoms.
+
 Algorithm
 ---------
 0.  Detect the atom style from the file's "Atoms # <style>" comment (pymatgen
@@ -58,8 +61,11 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-from pymatgen.io.lammps.data import ATOMS_HEADERS, LammpsData
+from pymatgen.io.lammps.data import LammpsData
+
+# The shared data-file helpers live at the md_setup root, one level up.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import lammps_data as ld  # noqa: E402
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 INPUT_FILE  = "system.data"
@@ -85,58 +91,7 @@ NEW_TYPE_MASSES: dict[int, float] = {}
 MIN_SEPARATION = 0.5
 # ──────────────────────────────────────────────────────────────────────────────
 
-_COORDS = ["x", "y", "z"]
-
-
-# ── atom style ────────────────────────────────────────────────────────────────
-
-def detect_atom_style(input_file: str) -> str | None:
-    """
-    Read the atom style from the "Atoms # <style>" comment that LAMMPS writes.
-    Returns None if the Atoms section carries no comment; raises if the comment
-    names a style pymatgen cannot parse.
-    """
-    with open(input_file) as handle:
-        for line in handle:
-            keyword, _, comment = line.partition("#")
-            if keyword.strip() != "Atoms":
-                continue
-            words = comment.split()
-            if not words:
-                return None
-            style = words[0]
-            if style not in ATOMS_HEADERS:
-                supported = ", ".join(sorted(ATOMS_HEADERS))
-                raise ValueError(
-                    f"{input_file}: Atoms section declares atom style '{style}', "
-                    f"which is not supported (supported: {supported})"
-                )
-            return style
-    raise ValueError(f"{input_file}: no Atoms section found")
-
-
-def resolve_atom_style(input_file: str, configured: str | None) -> str:
-    """Reconcile the style in the file with the one set in the config block."""
-    detected = detect_atom_style(input_file)
-
-    if configured is None:
-        if detected is None:
-            raise ValueError(
-                f"{input_file}: the Atoms section has no '# <style>' comment, so "
-                f"the atom style cannot be detected; set ATOM_STYLE in the "
-                f"configuration block"
-            )
-        print(f"atom style: {detected} (from the Atoms section comment)")
-        return detected
-
-    if detected is not None and detected != configured:
-        raise ValueError(
-            f"{input_file}: ATOM_STYLE is '{configured}' but the Atoms section "
-            f"says '{detected}'; fix whichever is wrong (leave ATOM_STYLE = None "
-            f"to trust the file)"
-        )
-    print(f"atom style: {configured} (from ATOM_STYLE)")
-    return configured
+_COORDS = ld.COORDS
 
 
 # ── validation ────────────────────────────────────────────────────────────────
@@ -196,73 +151,6 @@ def _validate(data: LammpsData, placements: list, new_type_masses: dict[int, flo
 
 # ── placement ─────────────────────────────────────────────────────────────────
 
-def _new_atom_row(target: pd.Series, new_type: int, new_position: np.ndarray,
-                  image_shift: np.ndarray, columns: list[str]) -> dict:
-    """
-    Build an Atoms row for a placed atom: the given type and position, with
-    molecule ID inherited from the target, charge zeroed, and image flags taken
-    from the target plus whatever wrapping the placement needed.
-    """
-    row: dict = {"type": int(new_type)}
-    row.update(dict(zip(_COORDS, (float(c) for c in new_position))))
-    if "molecule-ID" in columns:
-        row["molecule-ID"] = int(target["molecule-ID"])
-    if "q" in columns:
-        row["q"] = 0.0
-    for axis, flag in enumerate(("nx", "ny", "nz")):
-        if flag in columns:
-            row[flag] = int(target[flag]) + int(image_shift[axis])
-    return row
-
-
-def _wrap_into_box(data: LammpsData, position: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Wrap a position into the box under PBC. Returns the wrapped position and the
-    image indices it moved through, such that wrapped + image x L = the original
-    position — the same convention as LAMMPS' image flags.
-    """
-    bounds  = np.asarray(data.box.bounds, dtype=float)
-    lengths = bounds[:, 1] - bounds[:, 0]
-    image_shift = np.floor((position - bounds[:, 0]) / lengths).astype(int)
-    return position - image_shift * lengths, image_shift
-
-
-def _warn_wrapped(where: str, atom_id: int, raw: np.ndarray, wrapped: np.ndarray,
-                  image_shift: np.ndarray, data: LammpsData, columns: list[str]) -> None:
-    """Report a placement that landed outside the box and had to be wrapped."""
-    moved = ", ".join(
-        f"{axis} {raw[i]:.4f} -> {wrapped[i]:.4f}"
-        for i, axis in enumerate(_COORDS) if image_shift[i]
-    )
-    images = " ".join(str(int(i)) for i in image_shift)
-    message = (
-        f"{where}: new atom {atom_id} landed outside the box and was wrapped "
-        f"({moved}); image indices {images}"
-    )
-    if not any(flag in columns for flag in ("nx", "ny", "nz")):
-        message += (
-            " — the file has no image flag columns, so the indices cannot be "
-            "recorded and the unwrapped position is lost"
-        )
-    if data.box.tilt is not None and any(data.box.tilt):
-        message += (
-            " — the box is triclinic and this wrap ignores tilt, so check the "
-            "result by hand"
-        )
-    warnings.warn(message, stacklevel=3)
-
-
-def _closest_existing(data: LammpsData, position: np.ndarray) -> tuple[int, float]:
-    """Nearest existing atom to a position under the minimum-image convention."""
-    bounds  = np.asarray(data.box.bounds, dtype=float)
-    lengths = bounds[:, 1] - bounds[:, 0]
-    deltas  = data.atoms[_COORDS].to_numpy(dtype=float) - position
-    deltas -= lengths * np.round(deltas / lengths)  # minimum image; ignores tilt
-    distances = np.linalg.norm(deltas, axis=1)
-    nearest   = int(np.argmin(distances))
-    return int(data.atoms.index[nearest]), float(distances[nearest])
-
-
 def place_atoms(data: LammpsData, placements: list,
                 new_type_masses: dict[int, float]) -> list[tuple[int, int, np.ndarray]]:
     """
@@ -278,13 +166,16 @@ def place_atoms(data: LammpsData, placements: list,
         target = data.atoms.loc[target_id]
         raw_position = target[_COORDS].to_numpy(dtype=float) + np.asarray(offset, dtype=float)
 
-        new_position, image_shift = _wrap_into_box(data, raw_position)
+        new_position, image_shift = ld.wrap_into_box(data, raw_position)
         if image_shift.any():
-            _warn_wrapped(where, next_id, raw_position, new_position,
-                          image_shift, data, columns)
+            warnings.warn(
+                ld.format_wrap_warning(where, next_id, raw_position, new_position,
+                                       image_shift, data, columns),
+                stacklevel=2,
+            )
 
         if MIN_SEPARATION is not None:
-            neighbor_id, distance = _closest_existing(data, new_position)
+            neighbor_id, _, distance = ld.nearest_existing(data, new_position)[0]
             if distance < MIN_SEPARATION:
                 warnings.warn(
                     f"{where}: new atom {next_id} is {distance:.4f} A from atom "
@@ -293,13 +184,10 @@ def place_atoms(data: LammpsData, placements: list,
                 )
 
         if new_type not in data.masses.index:
-            data.masses.loc[new_type] = {"mass": float(new_type_masses[new_type])}
-            data.masses.sort_index(inplace=True)
+            ld.ensure_mass(data, new_type, new_type_masses[new_type])
 
-        data.atoms.loc[next_id] = _new_atom_row(target, new_type, new_position,
-                                                image_shift, columns)
-        if data.velocities is not None:
-            data.velocities.loc[next_id] = {"vx": 0.0, "vy": 0.0, "vz": 0.0}
+        ld.add_atom(data, new_type, new_position, image_shift=image_shift,
+                    template_row=target, atom_id=next_id)
 
         placed.append((next_id, int(new_type), new_position))
         next_id += 1
@@ -309,34 +197,14 @@ def place_atoms(data: LammpsData, placements: list,
 
 # ── output ────────────────────────────────────────────────────────────────────
 
-def _restore_int_columns(data: LammpsData) -> None:
-    """
-    Keep integer columns integral. pymatgen formats only x/y/z/q/v* explicitly
-    and prints everything else with pandas' default repr, so a `type` column
-    that pandas upcast to float would be written as "1.0" and break read_data.
-    """
-    integral = [c for c in ("type", "molecule-ID", "nx", "ny", "nz") if c in data.atoms.columns]
-    data.atoms[integral] = data.atoms[integral].astype(int)
-
-
 def write_data_file(data: LammpsData, output_file: str, input_file: str,
                     atom_style: str) -> None:
-    """
-    Write the data file, then restore the two things pymatgen's writer drops:
-    an informative first line, and the "# <style>" comment on the Atoms section
-    that LAMMPS, ASE, and box_size_from_data.py use to detect the atom style.
-    """
-    _restore_int_columns(data)
-    data.write_file(output_file, distance=10, charge=8)  # wider than the 6/4 defaults
-
-    path = Path(output_file)
-    lines = path.read_text().splitlines(keepends=True)
-    lines[0] = f"LAMMPS data file via hand_place_atoms.py, from {input_file}\n"
-    for index, line in enumerate(lines):
-        if line.strip() == "Atoms":
-            lines[index] = f"Atoms  # {atom_style}\n"
-            break
-    path.write_text("".join(lines))
+    """Write the data file with a first line that records where it came from."""
+    ld.write_data_file(
+        data, output_file,
+        f"LAMMPS data file via hand_place_atoms.py, from {input_file}",
+        atom_style,
+    )
 
 
 def _report(data: LammpsData, placed: list[tuple[int, int, np.ndarray]],
@@ -360,8 +228,7 @@ def main() -> None:
         print("PLACEMENTS is empty; nothing to do.")
         return
 
-    atom_style = resolve_atom_style(INPUT_FILE, ATOM_STYLE)
-    data = LammpsData.from_file(INPUT_FILE, atom_style=atom_style)
+    data, atom_style = ld.load(INPUT_FILE, ATOM_STYLE, setting_name="ATOM_STYLE")
     atoms_before = len(data.atoms)
     types_before = len(data.masses)
 
