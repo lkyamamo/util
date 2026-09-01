@@ -166,6 +166,24 @@ Dielectric calc (stage 2b) config — same meaning as 1.calc_mpi.py /
   --dielectric-ntasks INT          Ranks for the stage-2b MPI calc (default:
                                   empty — one rank per dielectric.N.custom
                                   file). Must not exceed the chunk-file count.
+  --dielectric-delete-dumps {0|1}  Delete each dielectric.N.custom once its
+                                  frames have been reduced to dipole lines and
+                                  those lines are fsynced (default: 1). Every
+                                  line carries all the dielectric constant needs
+                                  from its frame, so the dump has no further
+                                  use — and the production run writes far more
+                                  trajectory than the dipole series it reduces
+                                  to.
+
+                                  IRREVERSIBLE. Once a temperature's dumps are
+                                  gone, re-running its dipole calc from scratch
+                                  (deleting its dipole_output/ranks/) is no
+                                  longer possible — the production run has to be
+                                  redone with --force. Resuming a partly-done
+                                  calc is unaffected: 1.calc_mpi.py pins the
+                                  file list in a manifest, so the deleted files
+                                  are the ones it already has results for. Set 0
+                                  to keep every dump.
   --dielectric-mem STR              Stage 2b's sbatch --mem (default: 0)
   --la/--lb/--lc FLOAT             Box lengths (Angstrom) feeding
                                   2.dipole_std.py's prefactor. Default to the
@@ -363,7 +381,7 @@ MSD_CORR_LENGTH=""; MSD_CORR_INTERVAL=""; MSD_FIT_FRACTION=""
 DIELECTRIC_N_CHUNKS=""; DIELECTRIC_CHUNK_LENGTH=""; DIELECTRIC_DUMP_EVERY=""
 DIELECTRIC_CUTOFF=""; DIELECTRIC_TYPE_O=""; DIELECTRIC_TYPE_H=""
 DIELECTRIC_CHARGE_H=""; DIELECTRIC_AVERAGING_METHOD=""; DIELECTRIC_NTASKS=""
-DIELECTRIC_MEM=""; LA=""; LB=""; LC=""
+DIELECTRIC_MEM=""; DIELECTRIC_DELETE_DUMPS=""; LA=""; LB=""; LC=""
 NODES=""; NTASKS=""; TIME=""; JOB_NAME=""; CONSTRAINT=""; NODELIST=""
 DIELECTRIC_NODES=""; DIELECTRIC_TIME=""; DIELECTRIC_JOB_NAME=""
 DIELECTRIC_CONSTRAINT=""; DIELECTRIC_NODELIST=""
@@ -467,6 +485,7 @@ while [[ $# -gt 0 ]]; do
     --dielectric-averaging-method) DIELECTRIC_AVERAGING_METHOD="$2"; shift 2 ;;
     --dielectric-ntasks) DIELECTRIC_NTASKS="$2"; shift 2 ;;
     --dielectric-mem) DIELECTRIC_MEM="$2"; shift 2 ;;
+    --dielectric-delete-dumps) DIELECTRIC_DELETE_DUMPS="$2"; shift 2 ;;
     --la) LA="$2"; shift 2 ;;
     --lb) LB="$2"; shift 2 ;;
     --lc) LC="$2"; shift 2 ;;
@@ -910,7 +929,7 @@ for T in "${DIELECTRIC_TEMPS[@]+"${DIELECTRIC_TEMPS[@]}"}"; do
   prod_export="TARGET_TEMP=$TK,"
   [[ -n "$LMP_BIN" ]] && prod_export+="LMP_BIN=$LMP_BIN,"
   prod_export+="N_TIMES=$DIELECTRIC_N_CHUNKS,NVT_LENGTH=$DIELECTRIC_CHUNK_LENGTH,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CHARGE_H=$DIELECTRIC_CHARGE_H"
-  calc_export="ALL,DUMP_DIR=$CALC_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,CHARGE_H=$DIELECTRIC_CHARGE_H,TEMPERATURE=$TK,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD,NRANKS=$DIELECTRIC_NTASKS"
+  calc_export="ALL,DUMP_DIR=$CALC_DIR/dumps,DUMP_EVERY=$DIELECTRIC_DUMP_EVERY,CUTOFF=$DIELECTRIC_CUTOFF,TYPE_O=$DIELECTRIC_TYPE_O,TYPE_H=$DIELECTRIC_TYPE_H,CHARGE_H=$DIELECTRIC_CHARGE_H,TEMPERATURE=$TK,LA=$LA,LB=$LB,LC=$LC,AVERAGING_METHOD=$DIELECTRIC_AVERAGING_METHOD,NRANKS=$DIELECTRIC_NTASKS,DELETE_PROCESSED_DUMPS=$DIELECTRIC_DELETE_DUMPS"
 
   if [[ "$INTERACTIVE" == "1" ]]; then
     echo "Running dielectric production interactively in $STAGE_DIR/run ..."

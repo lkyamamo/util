@@ -153,6 +153,15 @@ DIELECTRIC_CHARGE_H="0.406988"
 DIELECTRIC_AVERAGING_METHOD="cumulative"
 DIELECTRIC_NTASKS=""
 DIELECTRIC_MEM="0"
+# Delete each dielectric.N.custom once its frames have been reduced to dipole
+# lines. The production run writes far more trajectory than the dipole series
+# it reduces to, and each line already carries everything the dielectric
+# constant needs from its frame.
+#
+# IRREVERSIBLE: once a temperature's dumps are gone, its dipole calc cannot be
+# re-run from scratch — only resumed. Set 0 to keep every dump (needed if you
+# want the trajectories for anything else, e.g. structural analysis).
+DIELECTRIC_DELETE_DUMPS="1"
 # Box lengths (Angstrom) for 2.dipole_std.py's prefactor. Leave empty to use
 # the cube edge the density solve produced — the box is no longer independent
 # of this pipeline, so these are overrides rather than required inputs.
