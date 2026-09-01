@@ -28,6 +28,12 @@ of the silicon from that oxygen and walks it straight in. The per-frame nearest
 -neighbour report is there to catch the other failure mode, a line that drives
 the oxygen through an atom that happens to be in the way.
 
+The roll of the water about that line is a free parameter - the approach
+direction fixes where the oxygen points but not which way the hydrogens are
+turned around it. --h-rotation sets that roll in degrees, and the nearest
+-neighbour column is how you tell whether a given one puts a hydrogen into the
+pore wall.
+
 Output
 ------
   <i>.data       the structure, ready for read_data. Frames are numbered from 1
@@ -191,6 +197,37 @@ def orient_offsets(h1: np.ndarray, h2: np.ndarray, bisector: np.ndarray,
     )
 
 
+def rotate_about_bisector(h1: np.ndarray, h2: np.ndarray,
+                          degrees: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Spin the two O->H offsets about their own H-O-H bisector by `degrees`.
+
+    The bisector is the rotation axis, so it does not move: the oxygen keeps
+    facing wherever the orientation aimed it, and what turns is the plane the
+    two hydrogens lie in. In lone-pair mode the bisector is the O-Si axis, so
+    this is the free parameter that nothing else fixes - which way the water is
+    rolled around its line of approach.
+
+    The rotation is counterclockwise about the bisector, seen looking down the
+    bisector toward the oxygen (equivalently, the right-hand rule with the thumb
+    along the bisector). It is always counterclockwise: the angle is reduced
+    into [0, 360) first, so a negative value becomes the counterclockwise turn
+    that lands in the same place rather than a clockwise one.
+
+    Bond lengths and the H-O-H angle are untouched - this is a rigid rotation.
+    """
+    angle = np.radians(float(degrees) % 360.0)
+    axis = normalize(normalize(h1) + normalize(h2))
+
+    def rotated(vector):
+        # Rodrigues' rotation formula about the unit `axis`.
+        return (vector * np.cos(angle)
+                + np.cross(axis, vector) * np.sin(angle)
+                + axis * np.dot(axis, vector) * (1.0 - np.cos(angle)))
+
+    return rotated(np.asarray(h1, dtype=float)), rotated(np.asarray(h2, dtype=float))
+
+
 def resolve_offsets(args, atom_style: str | None,
                     approach: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
     """
@@ -198,27 +235,38 @@ def resolve_offsets(args, atom_style: str | None,
     unit vector pointing from the starting position toward the silicon.
     """
     if args.h1_offset is not None:
-        return np.array(args.h1_offset), np.array(args.h2_offset), "given explicitly"
-
-    if args.water_template is not None:
-        h1, h2 = template_offsets(args.water_template, atom_style)
-        source = f"from {args.water_template}"
+        h1, h2 = np.array(args.h1_offset), np.array(args.h2_offset)
+        source = "given explicitly"
     else:
-        h1, h2 = canonical_offsets(args.oh_length, args.hoh_angle)
-        source = f"built from --oh-length {args.oh_length} and --hoh-angle {args.hoh_angle}"
+        if args.water_template is not None:
+            h1, h2 = template_offsets(args.water_template, atom_style)
+            source = f"from {args.water_template}"
+        else:
+            h1, h2 = canonical_offsets(args.oh_length, args.hoh_angle)
+            source = (f"built from --oh-length {args.oh_length} and "
+                      f"--hoh-angle {args.hoh_angle}")
 
-    if args.orientation == "lone-pair":
-        # Bisector anti-parallel to the approach: the hydrogens trail behind the
-        # oxygen and its lone pairs face the silicon, which is the geometry a
-        # nucleophilic attack starts from.
-        h1, h2 = orient_offsets(h1, h2, -approach)
-        source += ", hydrogens pointing away from the silicon"
-    else:
-        # Molecular plane perpendicular to the approach: both hydrogens stay off
-        # the line of travel, which keeps them clear of a tight channel.
-        bisector = perpendicular_to(approach)
-        h1, h2 = orient_offsets(h1, h2, bisector, in_plane_hint=np.cross(approach, bisector))
-        source += ", molecular plane perpendicular to the path"
+        if args.orientation == "lone-pair":
+            # Bisector anti-parallel to the approach: the hydrogens trail behind
+            # the oxygen and its lone pairs face the silicon, which is the
+            # geometry a nucleophilic attack starts from.
+            h1, h2 = orient_offsets(h1, h2, -approach)
+            source += ", hydrogens pointing away from the silicon"
+        else:
+            # Molecular plane perpendicular to the approach: both hydrogens stay
+            # off the line of travel, which keeps them clear of a tight channel.
+            bisector = perpendicular_to(approach)
+            h1, h2 = orient_offsets(h1, h2, bisector,
+                                    in_plane_hint=np.cross(approach, bisector))
+            source += ", molecular plane perpendicular to the path"
+
+    # Applied last, and to every source of offsets, so --h-rotation always means
+    # the same thing: a roll about the bisector the orientation just set. The
+    # bisector is the axis, so this cannot undo the orientation above.
+    rotation = float(args.h_rotation) % 360.0
+    if rotation:
+        h1, h2 = rotate_about_bisector(h1, h2, rotation)
+        source += f", rolled {rotation:g} deg counterclockwise about the bisector"
 
     return h1, h2, source
 
@@ -427,6 +475,15 @@ def parse_args(argv=None):
                         help="lone-pair points the hydrogens away from the silicon; "
                              "perpendicular puts the molecular plane across the path "
                              "(default: lone-pair)")
+    parser.add_argument("--h-rotation", type=float, default=0.0, metavar="DEGREES",
+                        help="roll the hydrogens about the H-O-H bisector by this angle in "
+                             "degrees, counterclockwise looking down the bisector toward the "
+                             "oxygen (default: 0). The bisector is the rotation axis, so the "
+                             "orientation above is unchanged and only the plane the hydrogens "
+                             "lie in turns; in lone-pair mode that is the roll about the O-Si "
+                             "axis, which nothing else fixes. Always counterclockwise - a "
+                             "negative angle is taken as the counterclockwise turn to the same "
+                             "place")
     parser.add_argument("--h1-offset", nargs=3, type=float, default=None, metavar=("DX", "DY", "DZ"),
                         help="explicit O->H1 offset, overriding every other geometry option")
     parser.add_argument("--h2-offset", nargs=3, type=float, default=None, metavar=("DX", "DY", "DZ"),
