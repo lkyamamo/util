@@ -4,4 +4,7 @@ calculations/lammps/dumps/*
 *.venv
 *.claude
 jobs/pipeline/lammps_to_analysis/submit_pipeline.conf
+jobs/pipeline/lammps_to_dielectric/submit_dielectric_pipeline.conf
+NAS/pipeline/manifests/
+NAS/pipeline/logs/
 jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.conf

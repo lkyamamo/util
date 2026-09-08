@@ -35,9 +35,15 @@ This repository is a personal utilities + scientific workflow workspace (LAMMPS/
 - **`md_setup/`**: Setup utilities for building MD inputs (e.g., bubble/geometry generation).
   - `bubble_setup.py`, `create_bubble.in`, plus a small Python project (`pyproject.toml`, `uv.lock`).
 
-- **`NAS/`**: Scripts and docs for syncing/transferring data from HPC → local NAS with manifests/rsync/tarballs.
-  - Entry points: `create_manifest.sh`, `upload_directory.sh`, `rsync_list.sh`, `process_large_directories.sh`.
-  - Docs: `README.md`, `TUTORIAL.md`, `FILE_STRUCTURE.md`.
+- **`NAS/`**: Scripts for syncing/transferring data from HPC → local NAS with manifests + rsync.
+  - **`NAS/pipeline/`**: Current entry point `nas.sh` (`sync` / `status` / `manifest`), configured by `nas.config`.
+    Transfers run in two global phases — every directory finishes its main transfer before any directory
+    starts its deferred (trajectory) transfer — with `--skip-trajectory` to omit trajectories entirely.
+    Per-directory state lives in `manifests/*.tsv`; rsync logs in `logs/` (both gitignored).
+  - **`NAS/pipeline/ARCHIVE_MODE_NOTES.md`**: the removed HPC-side SLURM compression mode — how to
+    retrieve the code from git and the defects to fix before re-enabling it.
+  - **`NAS/legacy/`**: superseded scripts (`create_manifest.sh`, `upload_directory.sh`, `rsync_list.sh`,
+    `process_large_directories.sh`) plus `README.md`, `TUTORIAL.md`, `FILE_STRUCTURE.md`.
 
 - **`grading/`**: Coursework/grading automation (Python project with `pyproject.toml` / `uv.lock`).
   - **`grading/ai/`**: AI-assisted grading / report tooling (CSV/JSON artifacts and scripts).
@@ -57,7 +63,8 @@ This repository is a personal utilities + scientific workflow workspace (LAMMPS/
   - `cd calculations/codes && make msd && make corr`
 
 - **Transfer data from HPC to NAS**:
-  - Use scripts in `NAS/` (manifest + rsync/tarball workflow; see `NAS/TUTORIAL.md`).
+  - `cd NAS/pipeline && ./nas.sh sync` (add `--skip-trajectory` to defer bulk trajectory files,
+    `--dry-run` to rehearse, `./nas.sh status` to see where each directory stands).
 
 ## Notes / conventions
 

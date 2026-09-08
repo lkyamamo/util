@@ -1,10 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
 # nas.sh — central NAS transfer script
+#
+# Pulls directories from the HPC down to local NAS storage with rsync, in two
+# global phases so that every directory's small/important files land before any
+# bulk trajectory data starts moving:
+#
+#   PHASE 1 (main)     for every directory: priority files, then everything
+#                      except the deferred patterns
+#   PHASE 2 (deferred) for every directory: the deferred patterns
+#                      (trajectories) — skippable entirely
+#
 # Usage:
-#   ./nas.sh sync [dirname]     process all or one directory
-#   ./nas.sh status             show manifest summary
-#   ./nas.sh manifest <dirname> rebuild manifest for a directory
+#   ./nas.sh sync [--force] [--skip-trajectory|--no-skip-trajectory] [--dry-run] [dirname]
+#   ./nas.sh status
+#   ./nas.sh manifest [--force] <dirname>
+#
+# Requires bash 3.2 (the macOS system bash) — do not introduce bash 4+ syntax
+# such as ${var^^}, ${var,,}, declare -A, or mapfile.
+#
+# Archive mode (SLURM-side compression) was removed; see ARCHIVE_MODE_NOTES.md.
 # =============================================================================
 
 set -euo pipefail
@@ -24,8 +39,32 @@ SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 source "$CONFIG"
 
 HPC="${HPC_USER}@${HPC_HOST}"
-REMOTE_LOG_BASE="${REMOTE_BASE}/logs"
 FORCE="false"
+DRY_RUN="false"
+# SKIP_TRAJECTORY comes from nas.config; --skip-trajectory/--no-skip-trajectory override it
+SKIP_TRAJECTORY="${SKIP_TRAJECTORY:-false}"
+
+mkdir -p "$MANIFEST_DIR" "$LOG_DIR"
+
+# =============================================================================
+# Preflight
+# =============================================================================
+
+preflight_local() {
+    if [[ ! -x "$RSYNC" ]]; then
+        echo "ERROR: rsync not found at $RSYNC"
+        echo "       The macOS system rsync is too old for --info=progress2."
+        echo "       Install a current one:  brew install rsync"
+        exit 1
+    fi
+}
+
+preflight_remote() {
+    if ! robust_ssh true; then
+        echo "ERROR: cannot reach ${HPC} over ssh — aborting before any transfer."
+        exit 1
+    fi
+}
 
 # =============================================================================
 # SSH helpers
@@ -68,83 +107,107 @@ robust_rsync() {
         shift 2
     fi
 
-    local attempt=0 delay=10
+    local dry_flag=()
+    [[ "$DRY_RUN" == "true" ]] && dry_flag=(--dry-run)
+
+    local attempt=0 delay=10 rc=0
     while (( attempt < 5 )); do
+        # NOTE: rsync must not run as a bare command here. Under `set -e` a bare
+        # failing command aborts the whole script before the retry logic runs;
+        # that only happens to work today because every caller sits inside an
+        # `if` condition. Guard it explicitly so the retries are unconditional.
+        #
+        # NOTE: bash 3.2 + `set -u` treats an empty array expansion as unbound,
+        # so every optional array below must use the "${arr[@]:+...}" form.
         if [[ -n "$logfile" ]]; then
+            set +e
             $RSYNC \
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
                 --info=progress2 \
+                "${dry_flag[@]:+${dry_flag[@]}}" \
                 -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
                 "$@" 2>&1 | tee -a "$logfile"
-            local rc="${PIPESTATUS[0]}"
+            rc="${PIPESTATUS[0]}"
+            set -e
         else
+            set +e
             $RSYNC \
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
                 --info=progress2 \
+                "${dry_flag[@]:+${dry_flag[@]}}" \
                 -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
                 "$@"
-            local rc=$?
+            rc=$?
+            set -e
         fi
         [[ $rc -eq 0 ]] && return 0
+
+        # rc 1 (syntax/usage) and 2 (protocol incompatibility) are our fault, not
+        # the network's — retrying them just burns 150s of backoff before failing.
+        if (( rc == 1 || rc == 2 )); then
+            echo "  [rsync] rc=$rc is not transient (usage/protocol error) — not retrying"
+            return 1
+        fi
+
         attempt=$(( attempt + 1 ))
-        echo "  [rsync] attempt $attempt failed, retrying in ${delay}s..."
+        echo "  [rsync] attempt $attempt failed (rc=$rc), retrying in ${delay}s..."
         sleep "$delay"
         delay=$(( delay * 2 ))
     done
     return 1
 }
 
-prioritized_rsync() {
-    # Three-pass rsync respecting RSYNC_PRIORITY_FIRST and RSYNC_PRIORITY_LAST
-    # Usage: prioritized_rsync [--logfile <path>] <src> <dest>
-    local logfile=""
-    if [[ "${1:-}" == "--logfile" ]]; then
-        logfile="$2"
-        shift 2
-    fi
-    local src="$1" dest="$2"
+# =============================================================================
+# Pattern helpers
+# =============================================================================
 
-    local logfile_arg=()
-    [[ -n "$logfile" ]] && logfile_arg=(--logfile "$logfile")
-
-    # build --include/--exclude filter args for each pass
-    local first_includes=() last_includes=() last_excludes=()
-    for pat in "${RSYNC_PRIORITY_FIRST[@]:-}"; do
-        [[ -n "$pat" ]] && first_includes+=(--include="$pat")
+# Populates SKIP_EXCLUDES with --exclude args for every SKIP_PATTERNS entry,
+# but only when trajectory skipping is active. Applied to *every* pass, so a
+# skip pattern that is not also a deferred pattern is still honored.
+SKIP_EXCLUDES=()
+build_skip_excludes() {
+    SKIP_EXCLUDES=()
+    [[ "$SKIP_TRAJECTORY" != "true" ]] && return 0
+    local pat
+    for pat in "${SKIP_PATTERNS[@]:-}"; do
+        [[ -n "$pat" ]] && SKIP_EXCLUDES+=(--exclude="$pat")
     done
+}
+
+# Comma-joined list of patterns actually suppressed on this run, for the
+# manifest's `skipped` column. "-" when nothing was suppressed.
+skipped_patterns_field() {
+    if [[ "$SKIP_TRAJECTORY" != "true" ]]; then echo "-"; return; fi
+    local out="" pat
+    for pat in "${SKIP_PATTERNS[@]:-}"; do
+        [[ -z "$pat" ]] && continue
+        out="${out:+${out},}${pat}"
+    done
+    echo "${out:--}"
+}
+
+has_deferred_patterns() {
+    local pat
     for pat in "${RSYNC_PRIORITY_LAST[@]:-}"; do
-        [[ -n "$pat" ]] && last_includes+=(--include="$pat") && last_excludes+=(--exclude="$pat")
+        [[ -n "$pat" ]] && return 0
     done
-
-    # pass 1: priority-first files only (include dirs for recursion)
-    if (( ${#first_includes[@]} > 0 )); then
-        echo "  [rsync pass 1/3] priority files: ${RSYNC_PRIORITY_FIRST[*]:-}"
-        robust_rsync "${logfile_arg[@]}" \
-            --include="*/" "${first_includes[@]}" --exclude="*" \
-            "$src" "$dest"
-    fi
-
-    # pass 2: everything except priority-last files
-    echo "  [rsync pass 2/3] all files except deferred"
-    robust_rsync "${logfile_arg[@]}" \
-        "${last_excludes[@]}" \
-        "$src" "$dest"
-
-    # pass 3: priority-last files (include dirs for recursion)
-    if (( ${#last_includes[@]} > 0 )); then
-        echo "  [rsync pass 3/3] deferred files: ${RSYNC_PRIORITY_LAST[*]:-}"
-        robust_rsync "${logfile_arg[@]}" \
-            --include="*/" "${last_includes[@]}" --exclude="*" \
-            "$src" "$dest"
-    fi
+    return 1
 }
 
 # =============================================================================
 # Manifest helpers
+#
+# Schema (TSV): idx  name  path  type  status  skipped
+# One row per directory in direct mode.
+#
+# Status flow:
+#   PENDING → UPLOADING_MAIN → MAIN_DONE → UPLOADING_DEFERRED → UPLOADED
+#                  ↓                             ↓
+#             FAILED_MAIN                  FAILED_DEFERRED
 # =============================================================================
 
 manifest_path() {
@@ -154,24 +217,37 @@ manifest_path() {
 manifest_init() {
     local manifest="$1"
     if [[ ! -f "$manifest" ]]; then
-        printf "idx\tname\tpath\ttype\tstatus\n" > "$manifest"
+        printf "idx\tname\tpath\ttype\tstatus\tskipped\n" > "$manifest"
     fi
+}
+
+manifest_has() {
+    local manifest="$1" name="$2"
+    [[ -f "$manifest" ]] || return 1
+    awk -F'\t' -v n="$name" 'NR>1 && $2==n {f=1} END{exit !f}' "$manifest"
 }
 
 manifest_add() {
     local manifest="$1" name="$2" path="$3" type="$4"
-    # skip if already tracked
-    if grep -qF "$name" "$manifest" 2>/dev/null; then return; fi
+    # exact match on the name column — a substring match would false-positive
+    # against longer names and against the path column
+    manifest_has "$manifest" "$name" && return 0
     local idx
     idx=$(( $(wc -l < "$manifest") ))
-    printf "%d\t%s\t%s\t%s\tPENDING\n" "$idx" "$name" "$path" "$type" >> "$manifest"
+    printf "%d\t%s\t%s\t%s\tPENDING\t-\n" "$idx" "$name" "$path" "$type" >> "$manifest"
 }
 
 manifest_update() {
     local manifest="$1" name="$2" status="$3"
-    # use awk to rewrite the status column for the matching name
     awk -v name="$name" -v status="$status" \
         'BEGIN{FS=OFS="\t"} $2==name{$5=status} {print}' \
+        "$manifest" > "${manifest}.tmp" && mv "${manifest}.tmp" "$manifest"
+}
+
+manifest_set_skipped() {
+    local manifest="$1" name="$2" skipped="$3"
+    awk -v name="$name" -v s="$skipped" \
+        'BEGIN{FS=OFS="\t"} $2==name{$6=s} {print}' \
         "$manifest" > "${manifest}.tmp" && mv "${manifest}.tmp" "$manifest"
 }
 
@@ -180,398 +256,149 @@ manifest_status() {
     awk -v name="$name" 'BEGIN{FS="\t"} $2==name{print $5}' "$manifest"
 }
 
-manifest_get_field() {
-    local manifest="$1" name="$2" field="$3"
-    awk -v name="$name" -v f="$field" 'BEGIN{FS="\t"} $2==name{print $f}' "$manifest"
-}
-
-manifest_rows_by_status() {
-    local manifest="$1" status="$2"
-    awk -v s="$status" 'BEGIN{FS="\t"} NR>1 && $5==s {print $2}' "$manifest"
+manifest_skipped() {
+    local manifest="$1" name="$2"
+    awk -v name="$name" 'BEGIN{FS="\t"} $2==name{print $6}' "$manifest"
 }
 
 # =============================================================================
-# Size helpers
+# Rsync passes
+#
+#   first    — RSYNC_PRIORITY_FIRST only
+#   main     — everything except RSYNC_PRIORITY_LAST
+#   deferred — RSYNC_PRIORITY_LAST only
+#
+# Pass `main` deliberately re-offers the priority-first files: -a makes that a
+# cheap no-op, and it means a failure during `first` is still recoverable.
 # =============================================================================
 
-# Convert human size (100G, 10M, etc.) to bytes
-to_bytes() {
-    local val="${1%[KMGTPE]*}" unit="${1##*[0-9]}"
-    case "${unit^^}" in
-        K) echo $(( val * 1024 )) ;;
-        M) echo $(( val * 1024 * 1024 )) ;;
-        G) echo $(( val * 1024 * 1024 * 1024 )) ;;
-        T) echo $(( val * 1024 * 1024 * 1024 * 1024 )) ;;
-        *) echo "$val" ;;
-    esac
-}
+rsync_dir_pass() {
+    local dirname="$1" pass="$2"
 
-MAX_ARCHIVE_BYTES=$(to_bytes "$MAX_ARCHIVE_SIZE")
-MIN_FILE_BYTES=$(to_bytes "$MIN_FILE_SIZE")
-
-remote_dir_size_bytes() {
-    # returns size in bytes of a remote directory
-    robust_ssh "du -sb '$1' 2>/dev/null | cut -f1" || echo 0
-}
-
-remote_file_size_bytes() {
-    robust_ssh "stat -c%s '$1' 2>/dev/null || stat -f%z '$1' 2>/dev/null || echo 0"
-}
-
-# =============================================================================
-# Tree walk — find compress targets
-# =============================================================================
-
-# Populates global arrays:
-#   TARGETS_NAME   — tarball/file name (e.g. child1.tar.zst)
-#   TARGETS_PATH   — relative path of the source within REMOTE_BASE/dirname
-#   TARGETS_TYPE   — dir | file | bundle
-declare -a TARGETS_NAME TARGETS_PATH TARGETS_TYPE
-
-walk_tree() {
-    local remote_dir="$1"   # absolute remote path of dir to walk
-    local rel_parent="$2"   # relative path from dirname root to parent of remote_dir
-    local dirname="$3"      # top-level directory name (for manifest)
-
-    # list direct children, separated by null
-    local listing
-    listing=$(robust_ssh "find '$remote_dir' -mindepth 1 -maxdepth 1 -print0 2>/dev/null")
-
-    local has_files=false
-    local -a direct_files direct_dirs
-    direct_files=()
-    direct_dirs=()
-
-    while IFS= read -r -d '' item; do
-        local item_type
-        item_type=$(robust_ssh "[ -d '$item' ] && echo dir || echo file")
-        if [[ "$item_type" == "dir" ]]; then
-            direct_dirs+=("$item")
-        else
-            has_files=true
-            direct_files+=("$item")
-        fi
-    done <<< "$listing"
-
-    local base
-    base=$(basename "$remote_dir")
-    local rel_self="${rel_parent:+${rel_parent}/}${base}"
-
-    if $has_files; then
-        local dir_size
-        dir_size=$(remote_dir_size_bytes "$remote_dir")
-
-        if (( dir_size <= MAX_ARCHIVE_BYTES )); then
-            # whole dir as one tar.zst
-            TARGETS_NAME+=("${base}.tar.zst")
-            TARGETS_PATH+=("$rel_self")
-            TARGETS_TYPE+=("dir")
-        else
-            # dir too large — handle files individually and recurse into subdirs
-            local -a small_files=()
-            for f in "${direct_files[@]}"; do
-                local fname fsize
-                fname=$(basename "$f")
-                fsize=$(remote_file_size_bytes "$f")
-                if (( fsize >= MIN_FILE_BYTES )); then
-                    TARGETS_NAME+=("${fname}.zst")
-                    TARGETS_PATH+=("$rel_self")
-                    TARGETS_TYPE+=("file")
-                else
-                    small_files+=("$fname")
-                fi
-            done
-            if (( ${#small_files[@]} > 0 )); then
-                TARGETS_NAME+=("${base}_bundle.tar.zst")
-                TARGETS_PATH+=("$rel_self")
-                TARGETS_TYPE+=("bundle")
-            fi
-            for subdir in "${direct_dirs[@]}"; do
-                walk_tree "$subdir" "$rel_self" "$dirname"
-            done
-        fi
-    else
-        # no files here — recurse into subdirs
-        for subdir in "${direct_dirs[@]}"; do
-            walk_tree "$subdir" "$rel_parent" "$dirname"
-        done
-    fi
-}
-
-# =============================================================================
-# SLURM job generation and submission
-# =============================================================================
-
-generate_slurm_script() {
-    local dirname="$1"
-    local target_name="$2"   # e.g. child1.tar.zst or file.zst
-    local target_path="$3"   # relative path within dirname (parent of target)
-    local target_type="$4"   # dir | file | bundle
-    local job_name="nas_${dirname}_${target_name%%.*}"
-    local remote_source="${REMOTE_BASE}/${dirname}/${target_path}"
-    local remote_log_dir="${REMOTE_LOG_BASE}/${dirname}"
-    local remote_tarball="${remote_log_dir}/${target_name}"
-
-    local compress_cmd
-    case "$target_type" in
-        dir)
-            local src_base
-            src_base=$(basename "$target_path")
-            local src_parent
-            src_parent=$(dirname "${REMOTE_BASE}/${dirname}/${target_path}")
-            compress_cmd="tar --use-compress-program=\"zstd -T${COMPRESSION_THREADS} -${COMPRESSION_LEVEL}\" -cf \"${remote_tarball}\" -C \"${src_parent}\" \"${src_base}\""
-            ;;
-        file)
-            local fname="${target_name%.zst}"
-            compress_cmd="zstd -T${COMPRESSION_THREADS} -${COMPRESSION_LEVEL} \"${remote_source}/${fname}\" -o \"${remote_tarball}\""
-            ;;
-        bundle)
-            # compress all small files in the directory into one tar.zst
-            compress_cmd="tar --use-compress-program=\"zstd -T${COMPRESSION_THREADS} -${COMPRESSION_LEVEL}\" -cf \"${remote_tarball}\" -C \"${remote_source}\" \$(find . -maxdepth 1 -type f)"
-            ;;
-    esac
-
-    cat <<SLURM
-#!/bin/bash
-#SBATCH --job-name=${job_name}
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=${COMPRESSION_THREADS}
-#SBATCH --time=${SLURM_TIME}
-#SBATCH --partition=${SLURM_PARTITION}
-#SBATCH --output=${remote_log_dir}/${target_name}_%j.log
-
-module load zstd/1.5.6
-
-mkdir -p "${remote_log_dir}"
-
-${compress_cmd}
-
-if [[ \$? -eq 0 ]]; then
-    echo "NAS_SUCCESS"
-else
-    echo "NAS_FAILED"
-    exit 1
-fi
-SLURM
-}
-
-submit_slurm_job() {
-    local dirname="$1" target_name="$2" target_path="$3" target_type="$4"
-
-    local script
-    script=$(generate_slurm_script "$dirname" "$target_name" "$target_path" "$target_type")
-
-    local remote_script="/tmp/nas_job_${dirname}_${target_name%%.*}_$$.sh"
-    echo "$script" | robust_ssh "cat > '$remote_script'"
-
-    local jobid
-    jobid=$(robust_ssh "sbatch '$remote_script' | awk '{print \$NF}'")
-    robust_ssh "rm -f '$remote_script'"
-
-    echo "$jobid"
-}
-
-poll_job() {
-    # returns: RUNNING | COMPLETED | FAILED
-    local jobid="$1"
-    local state
-    state=$(robust_ssh "squeue -j '$jobid' -h -o '%T' 2>/dev/null || echo NOTFOUND")
-    if [[ -z "$state" || "$state" == "NOTFOUND" ]]; then
-        # job no longer in queue — check sacct
-        state=$(robust_ssh "sacct -j '$jobid' --format=State --noheader 2>/dev/null | head -1 | tr -d ' '")
-    fi
-    case "${state^^}" in
-        COMPLETED) echo "COMPLETED" ;;
-        FAILED|CANCELLED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY) echo "FAILED" ;;
-        *) echo "RUNNING" ;;
-    esac
-}
-
-check_job_log() {
-    # returns: SUCCESS | FAILED
-    local dirname="$1" target_name="$2" jobid="$3"
-    local log="${REMOTE_LOG_BASE}/${dirname}/${target_name}_${jobid}.log"
-    local result
-    result=$(robust_ssh "grep -c 'NAS_SUCCESS' '$log' 2>/dev/null || echo 0")
-    if [[ "$result" -gt 0 ]]; then echo "SUCCESS"; else echo "FAILED"; fi
-}
-
-# =============================================================================
-# Rsync helpers
-# =============================================================================
-
-rsync_target() {
-    local dirname="$1" target_name="$2" target_path="$3" jobid="$4"
-    local remote_log_dir="${REMOTE_LOG_BASE}/${dirname}"
-    local remote_file="${remote_log_dir}/${target_name}"
-    local local_dest="${LOCAL_BASE}/${dirname}/${target_path}"
     local local_log_dir="${LOG_DIR}/${dirname}"
-    local logfile="${local_log_dir}/rsync_${target_name}_$(date +%Y%m%d_%H%M%S).log"
+    mkdir -p "$local_log_dir" "${LOCAL_BASE}/${dirname}"
+    local logfile="${local_log_dir}/rsync_${dirname}_${pass}_$(date +%Y%m%d_%H%M%S).log"
 
-    mkdir -p "$local_dest" "$local_log_dir"
-    echo "  [rsync log] $logfile"
+    build_skip_excludes
 
+    local filter_args=()
+    local pat
+    case "$pass" in
+        first)
+            for pat in "${RSYNC_PRIORITY_FIRST[@]:-}"; do
+                [[ -n "$pat" ]] && filter_args+=(--include="$pat")
+            done
+            (( ${#filter_args[@]} == 0 )) && return 0
+            # --include="*/" so rsync descends; --exclude="*" drops everything else
+            filter_args=(--include="*/" "${filter_args[@]}" --exclude="*")
+            ;;
+        main)
+            for pat in "${RSYNC_PRIORITY_LAST[@]:-}"; do
+                [[ -n "$pat" ]] && filter_args+=(--exclude="$pat")
+            done
+            ;;
+        deferred)
+            for pat in "${RSYNC_PRIORITY_LAST[@]:-}"; do
+                [[ -n "$pat" ]] && filter_args+=(--include="$pat")
+            done
+            (( ${#filter_args[@]} == 0 )) && return 0
+            filter_args=(--include="*/" "${filter_args[@]}" --exclude="*")
+            ;;
+        *)
+            echo "ERROR: unknown rsync pass '$pass'"; return 1 ;;
+    esac
+
+    echo "  [rsync:${pass}] log → $logfile"
     robust_rsync --logfile "$logfile" \
-        "${HPC}:${remote_file}" \
-        "${local_dest}/" && return 0 || return 1
-}
-
-cleanup_remote() {
-    local dirname="$1" target_name="$2" jobid="$3"
-    local remote_log_dir="${REMOTE_LOG_BASE}/${dirname}"
-    robust_ssh "rm -f '${remote_log_dir}/${target_name}' '${remote_log_dir}/${target_name}_${jobid}.log'"
-    # pull log to local before deleting
-    local local_log="${LOG_DIR}/${dirname}"
-    mkdir -p "$local_log"
-    robust_rsync \
-        "${HPC}:${remote_log_dir}/${target_name}_${jobid}.log" \
-        "${local_log}/" 2>/dev/null || true
+        "${SKIP_EXCLUDES[@]:+${SKIP_EXCLUDES[@]}}" \
+        "${filter_args[@]:+${filter_args[@]}}" \
+        "${HPC}:${REMOTE_BASE}/${dirname}/" \
+        "${LOCAL_BASE}/${dirname}/"
 }
 
 # =============================================================================
-# Archive mode — process one directory
+# Phase 1 — main transfer for one directory
 # =============================================================================
 
-process_archive() {
+sync_main() {
     local dirname="$1"
     local manifest
     manifest=$(manifest_path "$dirname")
     manifest_init "$manifest"
-
-    echo "  [archive] walking remote tree: ${REMOTE_BASE}/${dirname}"
-    TARGETS_NAME=()
-    TARGETS_PATH=()
-    TARGETS_TYPE=()
-    walk_tree "${REMOTE_BASE}/${dirname}" "" "$dirname"
-
-    local total=${#TARGETS_NAME[@]}
-    echo "  [archive] found $total compress target(s)"
-
-    # add all targets to manifest
-    for (( i=0; i<total; i++ )); do
-        manifest_add "$manifest" "${TARGETS_NAME[$i]}" "${TARGETS_PATH[$i]}" "${TARGETS_TYPE[$i]}"
-    done
-
-    # sliding window: track active jobs as associative array jobid→target_index
-    declare -A active_jobs   # jobid → index into TARGETS arrays
-    local -a rsync_queue=()  # indices ready to rsync, in completion order
-
-    local next_target=0
-
-    while true; do
-        # submit jobs to fill window
-        while (( ${#active_jobs[@]} < MAX_CONCURRENT_JOBS && next_target < total )); do
-            local idx=$next_target
-            next_target=$(( next_target + 1 ))
-            local tname="${TARGETS_NAME[$idx]}"
-            local tpath="${TARGETS_PATH[$idx]}"
-            local ttype="${TARGETS_TYPE[$idx]}"
-            local cur_status
-            cur_status=$(manifest_status "$manifest" "$tname")
-
-            if [[ "$cur_status" == "UPLOADED" && "$FORCE" != "true" ]]; then
-                echo "  [skip] $tname already UPLOADED"
-                continue
-            fi
-
-            echo "  [submit] $tname ($ttype)"
-            local jobid
-            jobid=$(submit_slurm_job "$dirname" "$tname" "$tpath" "$ttype")
-            manifest_update "$manifest" "$tname" "COMPRESSING"
-            active_jobs["$jobid"]=$idx
-            echo "  [submitted] $tname → job $jobid"
-        done
-
-        # break if nothing active and nothing pending
-        if (( ${#active_jobs[@]} == 0 && next_target >= total && ${#rsync_queue[@]} == 0 )); then
-            break
-        fi
-
-        # poll active jobs
-        for jobid in "${!active_jobs[@]}"; do
-            local state
-            state=$(poll_job "$jobid")
-            local idx="${active_jobs[$jobid]}"
-            local tname="${TARGETS_NAME[$idx]}"
-
-            if [[ "$state" == "COMPLETED" ]]; then
-                local result
-                result=$(check_job_log "$dirname" "$tname" "$jobid")
-                unset "active_jobs[$jobid]"
-                if [[ "$result" == "SUCCESS" ]]; then
-                    manifest_update "$manifest" "$tname" "COMPRESSED"
-                    rsync_queue+=("${idx}:${jobid}")
-                    echo "  [compressed] $tname → queued for rsync"
-                else
-                    manifest_update "$manifest" "$tname" "FAILED_COMPRESSION"
-                    echo "  [failed compression] $tname (job $jobid)"
-                fi
-            elif [[ "$state" == "FAILED" ]]; then
-                unset "active_jobs[$jobid]"
-                manifest_update "$manifest" "$tname" "FAILED_COMPRESSION"
-                echo "  [failed compression] $tname (job $jobid)"
-            fi
-        done
-
-        # process front of rsync queue
-        if (( ${#rsync_queue[@]} > 0 )); then
-            local entry="${rsync_queue[0]}"
-            rsync_queue=("${rsync_queue[@]:1}")
-            local idx="${entry%%:*}"
-            local jobid="${entry##*:}"
-            local tname="${TARGETS_NAME[$idx]}"
-            local tpath="${TARGETS_PATH[$idx]}"
-
-            echo "  [rsync] $tname"
-            manifest_update "$manifest" "$tname" "UPLOADING"
-            if rsync_target "$dirname" "$tname" "$tpath" "$jobid"; then
-                cleanup_remote "$dirname" "$tname" "$jobid"
-                manifest_update "$manifest" "$tname" "UPLOADED"
-                echo "  [uploaded] $tname"
-            else
-                manifest_update "$manifest" "$tname" "FAILED_UPLOAD"
-                echo "  [failed upload] $tname"
-            fi
-        fi
-
-        sleep 30
-    done
-}
-
-# =============================================================================
-# Direct mode — process one directory
-# =============================================================================
-
-process_direct() {
-    local dirname="$1"
-    local manifest
-    manifest=$(manifest_path "$dirname")
-    manifest_init "$manifest"
-
     manifest_add "$manifest" "$dirname" "$dirname" "dir"
 
     local cur_status
     cur_status=$(manifest_status "$manifest" "$dirname")
-    if [[ "$cur_status" == "UPLOADED" && "$FORCE" != "true" ]]; then
-        echo "  [skip] $dirname already UPLOADED"
+    if [[ "$FORCE" != "true" ]]; then
+        case "$cur_status" in
+            MAIN_DONE|UPLOADING_DEFERRED|UPLOADED)
+                echo "  [skip] $dirname main phase already done ($cur_status)"
+                return 0
+                ;;
+        esac
+    fi
+
+    manifest_update "$manifest" "$dirname" "UPLOADING_MAIN"
+    manifest_set_skipped "$manifest" "$dirname" "$(skipped_patterns_field)"
+
+    if rsync_dir_pass "$dirname" first && rsync_dir_pass "$dirname" main; then
+        manifest_update "$manifest" "$dirname" "MAIN_DONE"
+        echo "  [main done] $dirname"
+        return 0
+    else
+        manifest_update "$manifest" "$dirname" "FAILED_MAIN"
+        echo "  [failed main] $dirname"
+        return 1
+    fi
+}
+
+# =============================================================================
+# Phase 2 — deferred (trajectory) transfer for one directory
+# =============================================================================
+
+sync_deferred() {
+    local dirname="$1"
+    local manifest
+    manifest=$(manifest_path "$dirname")
+    manifest_init "$manifest"
+
+    local cur_status
+    cur_status=$(manifest_status "$manifest" "$dirname")
+
+    if [[ "$FORCE" != "true" ]]; then
+        case "$cur_status" in
+            MAIN_DONE|FAILED_DEFERRED) ;;
+            UPLOADED)
+                echo "  [skip] $dirname already UPLOADED"
+                return 0
+                ;;
+            *)
+                # never completed its main phase — not eligible for deferred
+                echo "  [skip] $dirname main phase incomplete ($cur_status)"
+                return 0
+                ;;
+        esac
+    fi
+
+    if ! has_deferred_patterns; then
+        manifest_update "$manifest" "$dirname" "UPLOADED"
+        echo "  [uploaded] $dirname (no deferred patterns configured)"
         return 0
     fi
 
-    local local_log_dir="${LOG_DIR}/${dirname}"
-    local logfile="${local_log_dir}/rsync_${dirname}_$(date +%Y%m%d_%H%M%S).log"
-    mkdir -p "$local_log_dir"
+    manifest_update "$manifest" "$dirname" "UPLOADING_DEFERRED"
 
-    echo "  [direct] rsyncing ${dirname}..."
-    echo "  [rsync log] $logfile"
-    manifest_update "$manifest" "$dirname" "UPLOADING"
-    if prioritized_rsync --logfile "$logfile" \
-        "${HPC}:${REMOTE_BASE}/${dirname}/" \
-        "${LOCAL_BASE}/${dirname}/"; then
+    if rsync_dir_pass "$dirname" deferred; then
         manifest_update "$manifest" "$dirname" "UPLOADED"
+        # the deferred files are down now, so whatever the main phase skipped is
+        # no longer outstanding — don't leave a stale pattern list on an
+        # UPLOADED row
+        manifest_set_skipped "$manifest" "$dirname" "$(skipped_patterns_field)"
         echo "  [uploaded] $dirname"
+        return 0
     else
-        manifest_update "$manifest" "$dirname" "FAILED_UPLOAD"
-        echo "  [failed upload] $dirname"
+        manifest_update "$manifest" "$dirname" "FAILED_DEFERRED"
+        echo "  [failed deferred] $dirname"
         return 1
     fi
 }
@@ -580,6 +407,8 @@ process_direct() {
 # Resolve mode for a directory entry
 # =============================================================================
 
+# Entry syntax "dirname" or "dirname:mode" is kept so archive mode can be
+# re-enabled as a dispatch change; see ARCHIVE_MODE_NOTES.md.
 resolve_entry() {
     local entry="$1"
     ENTRY_DIRNAME="${entry%%:*}"
@@ -589,6 +418,17 @@ resolve_entry() {
     fi
 }
 
+check_mode() {
+    local dirname="$1" mode="$2"
+    if [[ "$mode" != "direct" ]]; then
+        echo "ERROR: unsupported mode '$mode' for ${dirname}."
+        echo "       Only 'direct' is supported. Archive mode was removed; see"
+        echo "       ${SCRIPT_DIR}/ARCHIVE_MODE_NOTES.md to bring it back."
+        return 1
+    fi
+    return 0
+}
+
 # =============================================================================
 # Subcommands
 # =============================================================================
@@ -596,59 +436,97 @@ resolve_entry() {
 cmd_sync() {
     local target=""
     for arg in "$@"; do
-        if [[ "$arg" == "--force" ]]; then
-            FORCE="true"
-        else
-            target="$arg"
-        fi
-    done
-    setup_ssh_control
-    trap cleanup_ssh_control EXIT
-
-    # ensure remote log base exists
-    robust_ssh "mkdir -p '${REMOTE_LOG_BASE}'"
-
-    for entry in "${DIRECTORIES[@]}"; do
-        resolve_entry "$entry"
-        if [[ -n "$target" && "$ENTRY_DIRNAME" != "$target" ]]; then continue; fi
-
-        echo ""
-        echo "=== ${ENTRY_DIRNAME} [${ENTRY_MODE}] ==="
-        mkdir -p "${LOCAL_BASE}/${ENTRY_DIRNAME}"
-
-        case "$ENTRY_MODE" in
-            archive) process_archive "$ENTRY_DIRNAME" ;;
-            direct)  process_direct  "$ENTRY_DIRNAME" ;;
-            *) echo "ERROR: unknown mode '$ENTRY_MODE' for $ENTRY_DIRNAME"; continue ;;
+        case "$arg" in
+            --force)                FORCE="true" ;;
+            --skip-trajectory)      SKIP_TRAJECTORY="true" ;;
+            --no-skip-trajectory)   SKIP_TRAJECTORY="false" ;;
+            --dry-run)              DRY_RUN="true" ;;
+            -*) echo "ERROR: unknown flag '$arg'"; usage ;;
+            *)  target="$arg" ;;
         esac
     done
 
+    preflight_local
+    setup_ssh_control
+    trap cleanup_ssh_control EXIT
+    preflight_remote
+
+    [[ "$DRY_RUN" == "true" ]] && echo "*** DRY RUN — rsync runs with --dry-run, nothing is written ***"
+    [[ "$SKIP_TRAJECTORY" == "true" ]] && echo "*** --skip-trajectory active: excluding ${SKIP_PATTERNS[*]:-} ***"
+
+    # collect the directories this run applies to
+    local -a run_dirs=()
+    local entry
+    for entry in "${DIRECTORIES[@]}"; do
+        resolve_entry "$entry"
+        if [[ -n "$target" && "$ENTRY_DIRNAME" != "$target" ]]; then continue; fi
+        check_mode "$ENTRY_DIRNAME" "$ENTRY_MODE" || continue
+        run_dirs+=("$ENTRY_DIRNAME")
+    done
+
+    if (( ${#run_dirs[@]} == 0 )); then
+        echo "ERROR: no directories to sync${target:+ matching '$target'}"
+        exit 1
+    fi
+
+    local d
+    local main_failed=0 deferred_failed=0
+
+    echo ""
+    echo "############################################################"
+    echo "# PHASE 1/2 — main transfer (priority + everything deferred-excluded)"
+    echo "############################################################"
+    for d in "${run_dirs[@]}"; do
+        echo ""
+        echo "=== ${d} [main] ==="
+        sync_main "$d" || main_failed=$(( main_failed + 1 ))
+    done
+
+    echo ""
+    echo "############################################################"
+    if [[ "$SKIP_TRAJECTORY" == "true" ]]; then
+        echo "# PHASE 2/2 — deferred transfer SKIPPED (--skip-trajectory)"
+        echo "############################################################"
+        echo ""
+        echo "Directories remain at MAIN_DONE. Re-run without --skip-trajectory"
+        echo "to pull the deferred files and complete them."
+    else
+        echo "# PHASE 2/2 — deferred transfer (${RSYNC_PRIORITY_LAST[*]:-none})"
+        echo "############################################################"
+        for d in "${run_dirs[@]}"; do
+            echo ""
+            echo "=== ${d} [deferred] ==="
+            sync_deferred "$d" || deferred_failed=$(( deferred_failed + 1 ))
+        done
+    fi
+
     echo ""
     echo "=== sync complete ==="
+    if (( main_failed > 0 || deferred_failed > 0 )); then
+        echo "    ${main_failed} directory(ies) failed the main phase, ${deferred_failed} failed the deferred phase."
+        echo "    Run './nas.sh status' for detail; re-running resumes where it left off."
+        return 1
+    fi
 }
 
 cmd_status() {
-    printf "%-30s %-12s %-12s %-12s %-12s %-12s\n" \
-        "DIRECTORY" "PENDING" "COMPRESSING" "COMPRESSED" "UPLOADING" "UPLOADED" "FAILED"
-    echo "$(printf '%.0s-' {1..100})"
+    printf "%-30s %-8s %-20s %s\n" "DIRECTORY" "MODE" "STATUS" "SKIPPED"
+    printf '%.0s-' {1..90}; echo
 
+    local entry
     for entry in "${DIRECTORIES[@]}"; do
         resolve_entry "$entry"
         local manifest
         manifest=$(manifest_path "$ENTRY_DIRNAME")
         if [[ ! -f "$manifest" ]]; then
-            printf "%-30s %s\n" "$ENTRY_DIRNAME" "(no manifest)"
+            printf "%-30s %-8s %-20s %s\n" "$ENTRY_DIRNAME" "$ENTRY_MODE" "(no manifest)" "-"
             continue
         fi
-        local pending compressing compressed uploading uploaded failed
-        pending=$(awk 'BEGIN{FS="\t"} NR>1 && $5=="PENDING"{c++} END{print c+0}' "$manifest")
-        compressing=$(awk 'BEGIN{FS="\t"} NR>1 && $5=="COMPRESSING"{c++} END{print c+0}' "$manifest")
-        compressed=$(awk 'BEGIN{FS="\t"} NR>1 && $5=="COMPRESSED"{c++} END{print c+0}' "$manifest")
-        uploading=$(awk 'BEGIN{FS="\t"} NR>1 && $5=="UPLOADING"{c++} END{print c+0}' "$manifest")
-        uploaded=$(awk 'BEGIN{FS="\t"} NR>1 && $5=="UPLOADED"{c++} END{print c+0}' "$manifest")
-        failed=$(awk 'BEGIN{FS="\t"} NR>1 && ($5=="FAILED_COMPRESSION" || $5=="FAILED_UPLOAD"){c++} END{print c+0}' "$manifest")
-        printf "%-30s %-12s %-12s %-12s %-12s %-12s %-12s\n" \
-            "$ENTRY_DIRNAME" "$pending" "$compressing" "$compressed" "$uploading" "$uploaded" "$failed"
+        local st sk
+        st=$(manifest_status "$manifest" "$ENTRY_DIRNAME")
+        sk=$(manifest_skipped "$manifest" "$ENTRY_DIRNAME")
+        printf "%-30s %-8s %-20s %s\n" \
+            "$ENTRY_DIRNAME" "$ENTRY_MODE" "${st:-PENDING}" "${sk:--}"
     done
 }
 
@@ -662,16 +540,9 @@ cmd_manifest() {
         fi
     done
     [[ -z "$dirname" ]] && { echo "Usage: ./nas.sh manifest [--force] <dirname>"; exit 1; }
-    setup_ssh_control
-    trap cleanup_ssh_control EXIT
 
-    echo "Rebuilding manifest for $dirname..."
-    TARGETS_NAME=()
-    TARGETS_PATH=()
-    TARGETS_TYPE=()
-
-    # resolve mode to determine if we walk tree or treat as single dir
     local mode="$DEFAULT_MODE"
+    local entry
     for entry in "${DIRECTORIES[@]}"; do
         resolve_entry "$entry"
         if [[ "$ENTRY_DIRNAME" == "$dirname" ]]; then
@@ -679,6 +550,7 @@ cmd_manifest() {
             break
         fi
     done
+    check_mode "$dirname" "$mode" || exit 1
 
     local manifest
     manifest=$(manifest_path "$dirname")
@@ -687,17 +559,8 @@ cmd_manifest() {
         rm -f "$manifest"
     fi
     manifest_init "$manifest"
-
-    if [[ "$mode" == "archive" ]]; then
-        walk_tree "${REMOTE_BASE}/${dirname}" "" "$dirname"
-        for (( i=0; i<${#TARGETS_NAME[@]}; i++ )); do
-            manifest_add "$manifest" "${TARGETS_NAME[$i]}" "${TARGETS_PATH[$i]}" "${TARGETS_TYPE[$i]}"
-        done
-        echo "Manifest written: $manifest (${#TARGETS_NAME[@]} targets)"
-    else
-        manifest_add "$manifest" "$dirname" "$dirname" "dir"
-        echo "Manifest written: $manifest (direct mode, 1 entry)"
-    fi
+    manifest_add "$manifest" "$dirname" "$dirname" "dir"
+    echo "Manifest written: $manifest"
 }
 
 # =============================================================================
@@ -706,11 +569,18 @@ cmd_manifest() {
 
 usage() {
     echo "Usage:"
-    echo "  ./nas.sh sync [--force] [dirname]     sync all or one directory"
-    echo "  ./nas.sh status                       show manifest summary"
-    echo "  ./nas.sh manifest [--force] <dirname> rebuild manifest for a directory"
+    echo "  ./nas.sh sync [flags] [dirname]        sync all or one directory"
+    echo "  ./nas.sh status                        show per-directory status"
+    echo "  ./nas.sh manifest [--force] <dirname>  create/reset a manifest"
     echo ""
-    echo "  --force  ignore UPLOADED status and re-run transfers/rebuild manifest from scratch"
+    echo "Sync flags:"
+    echo "  --force                 ignore recorded status and re-run transfers"
+    echo "  --skip-trajectory       exclude SKIP_PATTERNS and skip the deferred phase"
+    echo "  --no-skip-trajectory    force the deferred phase on (overrides nas.config)"
+    echo "  --dry-run               pass --dry-run to rsync; transfer nothing"
+    echo ""
+    echo "Transfers run in two global phases: every directory completes its main"
+    echo "transfer before any directory starts its deferred (trajectory) transfer."
     exit 1
 }
 
