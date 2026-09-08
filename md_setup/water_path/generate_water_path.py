@@ -2,12 +2,16 @@
 """
 generate_water_path.py
 
-Seed a series of LAMMPS data files for a stepwise hydrolysis study: a water
-molecule is placed in the pore/interstice of a silica structure and its oxygen
-is walked along a straight line toward a targeted silicon, one data file per
-step. Each file is an independent starting point for its own constrained
-minimization / MD run, where the O-Si distance is restrained and everything
-else - the hydrogens included - is free to relax.
+Seed a series of structures for a stepwise hydrolysis study: a water molecule is
+placed in the pore/interstice of a silica structure and its oxygen is walked
+along a straight line toward a targeted silicon, one file per step. Each file is
+an independent starting point for its own constrained minimization / MD run,
+where the O-Si distance is restrained and everything else - the hydrogens
+included - is free to relax.
+
+LAMMPS data files and VASP POSCARs are both supported, and the format is set by
+the required --format flag. It applies to the input and the output together: a
+data file in gives data files out, a POSCAR in gives POSCARs out.
 
 What this script is and is not
 ------------------------------
@@ -36,71 +40,112 @@ pore wall.
 
 Output
 ------
-  <i>.data       the structure, ready for read_data. Frames are numbered from 1
-                 to the frame count, so --n-steps N writes 1.data (the water at
-                 --start-distance) through <N+1>.data (the water at
-                 --final-distance).
-  manifest.csv   one row per frame: the O-Si distance the run should restrain
-                 to, the ids and types of the three new atoms, and the closest
-                 approach of each to an existing atom (the target silicon is
-                 skipped for the oxygen, whose distance to it is the O-Si
-                 column, but kept for the hydrogens).
+Frames are numbered from 1 to the frame count, so --n-steps N writes frame 1 (the
+water at --start-distance) through frame N+1 (the water at --final-distance).
 
-Every frame adds atoms of two types, one oxygen and two hydrogens. Both come
-from the WATER_TYPES dictionary in the configuration block below - set it to
-match your potential's element list before running. A type the input file does
-not already define is added to Masses, and needs a matching entry on the
-pair_coeff line, which this script cannot write for you.
+  --format lammps   <i>.data, ready for read_data.
+  --format poscar   <i>/POSCAR, one directory per frame. VASP reads a file named
+                    literally POSCAR, so each frame is ready to run once an
+                    INCAR, KPOINTS, and POTCAR are dropped in beside it.
+  manifest.csv      one row per frame, at the top of --outdir: the O-Si distance
+                    the run should restrain to, the ids of the three new atoms,
+                    and the closest approach of each to an existing atom (the
+                    target silicon is skipped for the oxygen, whose distance to
+                    it is the O-Si column, but kept for the hydrogens).
+
+Atom ids
+--------
+Every id in the manifest is an index into the frame that was written, not into
+the input file. Under --format lammps the two agree, because atom ids survive a
+write. Under --format poscar they do not: a POSCAR groups its sites by species
+and states the counts in a header, so the water has to join the end of the O and
+H runs to keep that grouping, and every atom after an insertion point shifts
+down. --silicon-id and --backside-of are read as 1-based line numbers in the
+*input* coordinate block; the manifest's si_id_out column gives the silicon's
+index in the output, which is the one to name in an ICONST constraint.
+
+Atom types and species
+----------------------
+Every frame adds one oxygen and two hydrogens.
+
+Under --format lammps both come from the WATER_TYPES dictionary in the
+configuration block below - set it to match your potential's element list before
+running. The elements behind the input's types are known, from its Masses table,
+so a type WATER_TYPES names is checked against what the file says that type
+actually is. A type the input does not define is added to Masses, and needs a
+matching entry on the pair_coeff line, which this script cannot write for you.
+
+Under --format poscar there are no atom types: the water is written as species O
+and H, and WATER_TYPES is ignored. A species the input does not already contain
+becomes a new group on the species line, and the POTCAR has to be extended to
+match - the same caveat as the pair_coeff line above.
+
+What is not carried over
+------------------------
+Velocities and LAMMPS image flags are dropped. Every frame is an independent
+starting point for its own relaxation, so a velocity or an image count inherited
+from whatever run produced the input has no meaning in it. Positions are used
+exactly as the input states them; only the three new atoms are wrapped into the
+cell. Everything else - selective dynamics, charges, molecule ids, the cell, the
+species order - is carried through unchanged.
 
 Usage examples
 --------------
   # back-side attack on the Si-O bond between Si 5 and bridging O 91
-  python generate_water_path.py --input silica.data --outdir frames \\
-      --silicon-id 5 --backside-of 91 --start-distance 4.5 \\
+  python generate_water_path.py --format lammps --input silica.data \\
+      --outdir frames --silicon-id 5 --backside-of 91 --start-distance 4.5 \\
       --final-distance 1.9 --n-steps 10
 
+  # the same path in VASP, writing frames/1/POSCAR ... frames/11/POSCAR
+  python generate_water_path.py --format poscar --input POSCAR \\
+      --outdir frames --silicon-id 5 --backside-of 91 --start-distance 4.5 \\
+      --final-distance 1.9 --n-steps 10
+
+  # the same, set up for a CG minimization of the water against a rigid
+  # framework: every atom from the input is frozen, only the water relaxes
+  python generate_water_path.py --format poscar --input POSCAR \\
+      --outdir frames --silicon-id 5 --backside-of 91 --freeze-substrate
+
   # explicit starting point, water geometry taken from an existing data file
-  python generate_water_path.py --input silica.data --outdir frames \\
-      --silicon-id 5 --initial-position 7.0 7.0 7.0 \\
+  python generate_water_path.py --format lammps --input silica.data \\
+      --outdir frames --silicon-id 5 --initial-position 7.0 7.0 7.0 \\
       --water-template ../isolated_water.data --dry-run
 """
 
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import sys
 from pathlib import Path
 
 import numpy as np
 
-# The shared data-file helpers live at the md_setup root, one level up.
+# The shared structure helpers live at the md_setup root, one level up. One
+# module reads and writes both formats, on top of ASE, so everything below is
+# format-blind apart from the few places that have to know (`water_types`, and
+# the flag guards in parse_args).
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import lammps_data as ld  # noqa: E402
+import structure_io as sio  # noqa: E402
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-# The atom types the water is written as. Every frame adds atoms of both: one
-# oxygen and two hydrogens.
+# The atom types the water is written as, under --format lammps only. Every frame
+# adds atoms of both: one oxygen and two hydrogens. A POSCAR has no atom types,
+# so under --format poscar this is ignored and the water is written as species O
+# and H.
 #
 # These are not guessed from the input file. The type ids have to match the
 # ordering of the element list on your pair_coeff line, which lives in the
 # LAMMPS input script rather than in the data file, so set them to whatever that
 # ordering says and change them per system.
 #
-# A type the input file already defines is used as it stands, and its mass here
-# is only cross-checked against the file's. A type the file does not define is
-# added to Masses with the mass here, which requires it to extend the file's
-# type range contiguously - so with a 2-type silica file (Si, O), a new hydrogen
-# type must be 3.
-WATER_TYPES = {
-    "O": {"type": 2, "mass": 15.9994},
-    "H": {"type": 3, "mass": 1.00784},
-}
-
-# Tolerance in amu when sanity-checking a mass against the element it should be.
-MASS_TOLERANCE = 0.2
+# A type the input file already defines has to agree with what the file says that
+# type is, and the run stops if it does not. A type the file does not define is
+# added to Masses, which requires it to extend the file's type range contiguously
+# - so with a 2-type silica file (Si, O), a new hydrogen type must be 3. Masses
+# are not set here; they come from the element.
+WATER_TYPES = {"O": 2, "H": 3}
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -145,24 +190,24 @@ def canonical_offsets(oh_length: float, hoh_angle_deg: float) -> tuple[np.ndarra
     return h1, h2
 
 
-def template_offsets(template_file: str, atom_style: str | None) -> tuple[np.ndarray, np.ndarray]:
+def template_offsets(fmt: str, template_file: str,
+                     atom_style: str | None) -> tuple[np.ndarray, np.ndarray]:
     """
-    Read the two O->H offsets out of a data file holding a single water
-    molecule, so the seeded water has whatever geometry that file was built or
-    equilibrated with. The heaviest of the three atoms is taken as the oxygen.
+    Read the two O->H offsets out of a file holding a single water molecule, so
+    the seeded water has whatever geometry that file was built or equilibrated
+    with. The template is read in the same --format as everything else.
     """
-    water, _ = ld.load(template_file, atom_style, setting_name="--atom-style", quiet=True)
-    if len(water.atoms) != 3:
+    water = sio.load(template_file, fmt, atom_style, quiet=True)
+    if sio.atom_count(water) != 3:
         raise ValueError(
             f"{template_file}: expected a single water molecule (3 atoms), "
-            f"found {len(water.atoms)}"
+            f"found {sio.atom_count(water)}"
         )
-    masses = {int(t): float(m) for t, m in water.masses["mass"].items()}
-    by_mass = sorted(water.atoms.index, key=lambda i: masses[int(water.atoms.loc[i, "type"])])
-    hydrogen_ids, oxygen_id = by_mass[:2], by_mass[2]
+    oxygen_id, hydrogen_ids = sio.identify_water(water)
 
-    oxygen = ld.position_of(water, oxygen_id)
-    offsets = [ld.displacement(water, oxygen, ld.position_of(water, h)) for h in hydrogen_ids]
+    oxygen = sio.position_of(water, oxygen_id)
+    offsets = [sio.displacement(water, oxygen, sio.position_of(water, h))
+               for h in hydrogen_ids]
     lengths = [np.linalg.norm(o) for o in offsets]
     if not all(0.5 < length < 1.5 for length in lengths):
         raise ValueError(
@@ -231,7 +276,7 @@ def rotate_about_bisector(h1: np.ndarray, h2: np.ndarray,
     return rotated(np.asarray(h1, dtype=float)), rotated(np.asarray(h2, dtype=float))
 
 
-def resolve_offsets(args, atom_style: str | None,
+def resolve_offsets(fmt: str, args, atom_style: str | None,
                     approach: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
     """
     Work out the two rigid O->H offsets for the whole path. `approach` is the
@@ -242,7 +287,7 @@ def resolve_offsets(args, atom_style: str | None,
         source = "given explicitly"
     else:
         if args.water_template is not None:
-            h1, h2 = template_offsets(args.water_template, atom_style)
+            h1, h2 = template_offsets(fmt, args.water_template, atom_style)
             source = f"from {args.water_template}"
         else:
             h1, h2 = canonical_offsets(args.oh_length, args.hoh_angle)
@@ -299,16 +344,16 @@ def step_distances(start_distance: float, final_distance: float, n_steps: int,
     return distances
 
 
-def resolve_start(data, args) -> tuple[np.ndarray, list[str]]:
+def resolve_start(frame, args) -> tuple[np.ndarray, list[str]]:
     """The starting oxygen position, plus any notes to print about how it was chosen."""
-    silicon = ld.position_of(data, args.silicon_id)
+    silicon = sio.position_of(frame, args.silicon_id)
     notes = []
 
     if args.initial_position is not None:
         return np.array(args.initial_position, dtype=float), notes
 
-    neighbour = ld.position_of(data, args.backside_of)
-    bond_length = ld.distance(data, neighbour, silicon)
+    neighbour = sio.position_of(frame, args.backside_of)
+    bond_length = sio.distance(frame, neighbour, silicon)
     if bond_length > 2.5:
         notes.append(
             f"atom {args.backside_of} is {bond_length:.3f} A from silicon "
@@ -316,7 +361,7 @@ def resolve_start(data, args) -> tuple[np.ndarray, list[str]]:
             f"check that this is the bond you meant to attack"
         )
     # Continue through the silicon, away from the named neighbour.
-    outward = normalize(ld.displacement(data, neighbour, silicon))
+    outward = normalize(sio.displacement(frame, neighbour, silicon))
     notes.append(
         f"starting {args.start_distance:.3f} A from silicon {args.silicon_id}, "
         f"opposite atom {args.backside_of} (Si-neighbour distance {bond_length:.3f} A)"
@@ -334,16 +379,25 @@ ELEMENT_WORDS = {"O": "oxygen", "H": "hydrogen"}
 
 # The three atoms a frame adds, in the order they are written and reported.
 WATER_LABELS = ("O", "H1", "H2")
+# Which element each of them is. Under --format poscar this is the whole story;
+# under --format lammps it is the key into WATER_TYPES.
+WATER_SPECIES = {"O": "O", "H1": "H", "H2": "H"}
 
 
-def apply_water_types(data) -> tuple[int, int, list[str]]:
+def resolve_water_types(frame) -> tuple[list[str], list[str]]:
     """
-    Register the WATER_TYPES entries against the input file, and report what
-    each element ended up as. Both types are settled before any frame is
-    written, because every frame adds atoms of both.
+    Reconcile WATER_TYPES with the atom types the input file actually uses, and
+    return the type->element list every frame is written with (position i is
+    type i+1) plus notes to print.
+
+    LAMMPS-only: this is entirely about numeric atom types and the pair_coeff
+    line, neither of which a POSCAR has.
+
+    The elements behind the input's types are known - they come from its Masses
+    table - so this checks the stronger thing the old mass comparison was a proxy
+    for: that the type WATER_TYPES names really is the element it claims.
     """
-    types = {element: int(WATER_TYPES[element]["type"]) for element in WATER_ELEMENTS}
-    masses = {element: float(WATER_TYPES[element]["mass"]) for element in WATER_ELEMENTS}
+    types = {element: int(WATER_TYPES[element]) for element in WATER_ELEMENTS}
     notes: list[str] = []
 
     if types["O"] == types["H"]:
@@ -352,83 +406,108 @@ def apply_water_types(data) -> tuple[int, int, list[str]]:
             f"({types['O']}); they must be different types"
         )
 
-    for element in WATER_ELEMENTS:
-        if types[element] in data.masses.index:
-            word = ELEMENT_WORDS[element]
-            existing = float(data.masses.loc[types[element], "mass"])
-            notes.append(
-                f"water {word} uses existing atom type {types[element]} (mass {existing})")
-            if abs(existing - masses[element]) > MASS_TOLERANCE:
-                notes.append(
-                    f"  WARNING: WATER_TYPES gives {word} a mass of {masses[element]}, but "
-                    f"type {types[element]} in the input file has mass {existing} - check "
-                    f"that this is the type you meant"
-                )
+    # New elements are appended in ascending configured type order, so a file
+    # missing both still ends up with a contiguous range whatever order
+    # WATER_TYPES lists them in.
+    specorder = list(frame.specorder)
+    present = set(specorder)
+    for element in sorted(WATER_ELEMENTS, key=lambda e: types[e]):
+        if element not in present:
+            specorder.append(element)
 
-    # Added in ascending type order so a file missing both types still ends up
-    # with a contiguous range, whatever order WATER_TYPES lists them in.
-    missing = [e for e in WATER_ELEMENTS if types[e] not in data.masses.index]
-    for element in sorted(missing, key=lambda e: types[e]):
+    for element in WATER_ELEMENTS:
         word = ELEMENT_WORDS[element]
-        next_type = int(max(data.masses.index)) + 1
-        if types[element] != next_type:
+        actual = specorder.index(element) + 1
+        if actual != types[element]:
+            if element in present:
+                raise ValueError(
+                    f"WATER_TYPES puts {word} at atom type {types[element]}, but "
+                    f"{frame.source} already has {element} as type {actual}; set "
+                    f"WATER_TYPES to match the file, or attack a different file"
+                )
             raise ValueError(
-                f"WATER_TYPES puts {word} at atom type {types[element]}, which the input "
-                f"file does not define and which would leave a gap in the type range "
-                f"(next available is {next_type}); atom types must be contiguous"
+                f"WATER_TYPES puts {word} at atom type {types[element]}, which "
+                f"{frame.source} does not define and which would leave a gap in the "
+                f"type range (next available is {actual}); atom types must be "
+                f"contiguous"
             )
-        ld.ensure_mass(data, types[element], masses[element])
-        notes.append(
-            f"added atom type {types[element]} for {word} (mass {masses[element]}) - "
-            f"the potential's element list and pair_coeff line must be extended to match"
-        )
+        if element in present:
+            notes.append(f"water {word} uses existing atom type {actual}")
+        else:
+            notes.append(
+                f"added atom type {actual} for {word} - the potential's element list "
+                f"and pair_coeff line must be extended to match"
+            )
 
     notes.append(
         f"each frame adds 3 atoms of 2 types: 1 oxygen of type {types['O']} and "
         f"2 hydrogens of type {types['H']}"
     )
-    return types["O"], types["H"], notes
+    return specorder, notes
+
+
+def water_spec(frame, args) -> tuple[dict, list[str]]:
+    """
+    Describe the three atoms every frame adds, in whatever terms the format
+    works in, and report what was settled. This is the one place that has to know
+    which format is in play: a LAMMPS file needs atom types, charges, and a
+    molecule id, and a POSCAR needs none of them because it names elements
+    outright.
+    """
+    spec: dict = {"species": dict(WATER_SPECIES)}
+
+    if frame.fmt != sio.LAMMPS:
+        notes = ["each frame adds 3 atoms: 1 oxygen and 2 hydrogens, written as "
+                 "species O and H"]
+        added = sio.new_species(frame, spec, WATER_LABELS)
+        if added:
+            plural = len(added) > 1
+            notes.append(
+                f"{' and '.join(added)} {'are' if plural else 'is'} not in "
+                f"{args.input}, so {'they become new groups' if plural else 'it becomes a new group'} "
+                f"on the species line - the POTCAR must be extended to match"
+            )
+        return spec, notes
+
+    specorder, notes = resolve_water_types(frame)
+    spec["specorder"] = specorder
+    spec["molecule_id"] = sio.next_molecule_id(frame)
+    spec["charges"] = {
+        "O": 0.0 if args.o_charge is None else args.o_charge,
+        "H1": 0.0 if args.h_charge is None else args.h_charge,
+        "H2": 0.0 if args.h_charge is None else args.h_charge,
+    }
+
+    has_charges = "initial_charges" in frame.atoms.arrays
+    if has_charges and args.o_charge is None and args.h_charge is None:
+        print(f"NOTE: atom style {frame.atom_style} carries charges and the water is "
+              f"being written with q = 0; correct for a potential that computes charges "
+              f"itself, otherwise pass --o-charge / --h-charge.", file=sys.stderr)
+    elif not has_charges and (args.o_charge is not None or args.h_charge is not None):
+        raise ValueError(
+            f"--o-charge/--h-charge were given but atom style {frame.atom_style} has no "
+            f"charge column, so the charges cannot be written"
+        )
+    return spec, notes
 
 
 # ── writing ───────────────────────────────────────────────────────────────────
 
-def build_frame(data, positions: dict[str, np.ndarray], oxygen_type: int,
-                hydrogen_type: int, charges: dict[str, float], molecule_id: int,
-                where: str) -> tuple[object, dict[str, int], int, list[str]]:
+
+def type_cell(label) -> str:
     """
-    Copy the structure and add the three water atoms.
-    Returns (frame, {label: atom id}, atoms wrapped, warnings).
-
-    A path that crosses a periodic boundary wraps as a matter of course and the
-    wrapped structure is physically identical, so wrapping is only counted, not
-    warned about - except on a triclinic box, where the per-axis wrap ignores
-    tilt and the result is worth checking by hand.
+    How an atom's kind reads in the report table: "t2" for a LAMMPS atom type,
+    "O" for a POSCAR species, which needs no prefix to be recognisable.
     """
-    frame = copy.deepcopy(data)
-    columns = list(frame.atoms.columns)
-    types = {"O": oxygen_type, "H1": hydrogen_type, "H2": hydrogen_type}
-    ids: dict[str, int] = {}
-    messages: list[str] = []
-    wrapped_count = 0
-
-    for label in WATER_LABELS:
-        wrapped, image_shift = ld.wrap_into_box(frame, positions[label])
-        atom_id = ld.add_atom(frame, types[label], wrapped, image_shift=image_shift,
-                              molecule_id=molecule_id, charge=charges[label])
-        ids[label] = atom_id
-        if image_shift.any():
-            wrapped_count += 1
-            if ld.is_triclinic(frame):
-                messages.append(ld.format_wrap_warning(
-                    f"{where} {label}", atom_id, positions[label], wrapped,
-                    image_shift, frame, columns))
-
-    return frame, ids, wrapped_count, messages
+    return f"t{label}" if isinstance(label, int) else str(label)
 
 
 MANIFEST_COLUMNS = [
     "frame", "o_si_distance", "fraction", "o_x", "o_y", "o_z",
-    "o_id", "h1_id", "h2_id", "o_type", "h_type",
+    # Every id here indexes the frame that was written, not the input file. Under
+    # --format poscar those differ, so si_id_out carries the target silicon's
+    # index in the output - the one to name in an ICONST constraint.
+    "o_id", "h1_id", "h2_id", "si_id_out", "o_type", "h_type",
     # Nearest existing atom to each of the three; the target silicon is skipped
     # for the oxygen only (see the search in the frame loop).
     "o_nearest_id", "o_nearest_type", "o_nearest_distance",
@@ -444,20 +523,30 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 
-    parser.add_argument("--input", required=True, help="input LAMMPS data file")
+    parser.add_argument("--format", required=True, choices=sorted(sio.FORMATS),
+                        help="the file format to read and write. 'lammps' reads a data "
+                             "file and writes <i>.data; 'poscar' reads a VASP POSCAR and "
+                             "writes <i>/POSCAR, one directory per frame. Input and output "
+                             "are always the same format")
+    parser.add_argument("--input", required=True,
+                        help="input structure: a LAMMPS data file or a POSCAR, per --format")
     parser.add_argument("--outdir", required=True, help="directory to write the frames into")
     parser.add_argument("--atom-style", default=None,
-                        help="override the style in the file's 'Atoms # <style>' comment")
+                        help="override the style in the file's 'Atoms # <style>' comment "
+                             "(--format lammps only)")
 
     parser.add_argument("--silicon-id", type=int, required=True,
-                        help="atom id of the silicon being attacked")
+                        help="atom id of the silicon being attacked. Under --format poscar "
+                             "there are no atom ids, so this is the 1-based line number in "
+                             "the input file's coordinate block")
 
     start = parser.add_mutually_exclusive_group(required=True)
     start.add_argument("--initial-position", nargs=3, type=float, metavar=("X", "Y", "Z"),
                        help="explicit starting position for the water oxygen")
     start.add_argument("--backside-of", type=int, metavar="ATOM_ID",
                        help="start on the far side of the silicon from this atom - normally "
-                            "the bridging oxygen whose Si-O bond is being broken")
+                            "the bridging oxygen whose Si-O bond is being broken. Numbered "
+                            "like --silicon-id")
     parser.add_argument("--start-distance", type=float, default=4.0,
                         help="O-Si distance at the first frame, with --backside-of "
                              "(default: 4.0 A)")
@@ -471,6 +560,14 @@ def parse_args(argv=None):
     parser.add_argument("--spacing-exponent", type=float, default=1.0,
                         help="1.0 spaces the frames evenly in distance; above 1.0 bunches "
                              "them toward the silicon (default: 1.0)")
+
+    parser.add_argument("--freeze-substrate", action="store_true",
+                        help="write selective dynamics freezing every atom that came from "
+                             "the input file, leaving only the three water atoms free - the "
+                             "setup for a CG minimization of the water against a rigid "
+                             "framework (--format poscar only). This replaces any selective "
+                             "dynamics the input already had; without it those flags are "
+                             "carried through unchanged")
 
     parser.add_argument("--o-charge", type=float, default=None,
                         help="charge on the water oxygen, for atom styles with a q column "
@@ -519,6 +616,29 @@ def parse_args(argv=None):
                         help="report the path and the clash check without writing any files")
 
     args = parser.parse_args(argv)
+    described = sio.DESCRIPTION[args.format]
+
+    # Flags that describe something only one of the formats has. Rejecting them
+    # outright beats writing a file that quietly ignored them.
+    if sio.STYLE_OPTION[args.format] is None and args.atom_style is not None:
+        parser.error(f"--atom-style does not apply to --format {args.format}: a "
+                     f"{described} has no atom style")
+    if not sio.SUPPORTS_CHARGES[args.format] and (args.o_charge is not None
+                                                  or args.h_charge is not None):
+        parser.error(f"--o-charge/--h-charge do not apply to --format {args.format}: a "
+                     f"{described} has no per-atom charge column")
+    if not sio.SUPPORTS_FREEZING[args.format] and args.freeze_substrate:
+        parser.error(f"--freeze-substrate does not apply to --format {args.format}: a "
+                     f"{described} has no selective dynamics. Freeze atoms in the LAMMPS "
+                     f"input script instead, with a group and fix setforce 0 0 0")
+
+    # --format is what picks the reader, so a mismatch would otherwise surface as
+    # a confusing traceback from deep inside ASE.
+    for path, what in ((args.input, "--input"),
+                       (args.water_template, "--water-template")):
+        if path is not None and not sio.looks_like(path, args.format):
+            parser.error(f"{what} {path} does not look like a {described}, which is "
+                         f"what --format {args.format} expects")
 
     if (args.h1_offset is None) != (args.h2_offset is None):
         parser.error("--h1-offset and --h2-offset must be given together")
@@ -539,27 +659,23 @@ def parse_args(argv=None):
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    data, atom_style = ld.load(args.input, args.atom_style, setting_name="--atom-style")
-    if data.topology:
-        sections = ", ".join(sorted(data.topology))
+    topology = sio.find_topology(args.input, args.format)
+    if topology:
         raise ValueError(
-            f"{args.input} has topology sections ({sections}); adding atoms would leave "
-            f"them inconsistent. This script is for reactive/pairwise potentials, where "
-            f"water needs no Bonds or Angles."
+            f"{args.input} has topology sections ({', '.join(topology)}); adding atoms "
+            f"would leave them inconsistent. This script is for reactive/pairwise "
+            f"potentials, where water needs no Bonds or Angles."
         )
-    if ld.is_triclinic(data):
-        print("NOTE: the box is triclinic; wrapping and distances here ignore tilt.",
-              file=sys.stderr)
 
-    silicon = ld.position_of(data, args.silicon_id)
-    silicon_type = int(data.atoms.loc[args.silicon_id, "type"])
-    silicon_mass = float(data.masses.loc[silicon_type, "mass"])
-    if abs(silicon_mass - ld.ELEMENT_MASSES["Si"]) > MASS_TOLERANCE:
-        print(f"NOTE: atom {args.silicon_id} has type {silicon_type} with mass "
-              f"{silicon_mass}, which is not silicon.", file=sys.stderr)
+    data = sio.load(args.input, args.format, args.atom_style)
+
+    silicon = sio.position_of(data, args.silicon_id)
+    target_note = sio.check_target(data, args.silicon_id, "Si")
+    if target_note:
+        print(f"NOTE: {target_note}.", file=sys.stderr)
 
     start_position, start_notes = resolve_start(data, args)
-    to_silicon = ld.displacement(data, start_position, silicon)
+    to_silicon = sio.displacement(data, start_position, silicon)
     start_distance = float(np.linalg.norm(to_silicon))
     if start_distance <= args.final_distance:
         raise ValueError(
@@ -569,22 +685,22 @@ def main(argv=None) -> int:
         )
     approach = to_silicon / start_distance
 
-    oxygen_type, hydrogen_type, type_notes = apply_water_types(data)
-    h1_offset, h2_offset, geometry_note = resolve_offsets(args, args.atom_style, approach)
-    molecule_id = ld.next_molecule_id(data)
+    spec, type_notes = water_spec(data, args)
+    h1_offset, h2_offset, geometry_note = resolve_offsets(
+        args.format, args, args.atom_style, approach)
 
-    oxygen_charge = 0.0 if args.o_charge is None else args.o_charge
-    hydrogen_charge = 0.0 if args.h_charge is None else args.h_charge
-    charges = {"O": oxygen_charge, "H1": hydrogen_charge, "H2": hydrogen_charge}
-    has_charge_column = "q" in data.atoms.columns
-    if has_charge_column and args.o_charge is None and args.h_charge is None:
-        print(f"NOTE: atom style {atom_style} carries charges and the water is being "
-              f"written with q = 0; correct for a potential that computes charges itself, "
-              f"otherwise pass --o-charge / --h-charge.", file=sys.stderr)
-    elif not has_charge_column and (args.o_charge is not None or args.h_charge is not None):
-        raise ValueError(
-            f"--o-charge/--h-charge were given but atom style {atom_style} has no charge "
-            f"column, so the charges cannot be written"
+    # Input ids to ids in the frames about to be written. Only the layout of the
+    # input decides this, so it is the same for every frame.
+    to_output = sio.index_map(data, spec, WATER_LABELS)
+    silicon_out = to_output[args.silicon_id]
+
+    if args.freeze_substrate:
+        already = sio.frozen_count(data)
+        type_notes.append(
+            f"freezing all {data.n_input} atoms from {args.input}; only the 3 water "
+            f"atoms are free to move"
+            + (f" (this replaces the {already} already frozen in the input)"
+               if already else "")
         )
 
     for note in start_notes + type_notes:
@@ -592,9 +708,16 @@ def main(argv=None) -> int:
     print(f"  water geometry {geometry_note}")
     print(f"  O-H {np.linalg.norm(h1_offset):.4f} / {np.linalg.norm(h2_offset):.4f} A, "
           f"H-O-H {np.degrees(np.arccos(np.dot(normalize(h1_offset), normalize(h2_offset)))):.2f} deg")
+    # Named relative to --outdir, so "1.data" or "1/POSCAR" depending on format.
+    first = sio.frame_path("", 1, args.format)
+    last = sio.frame_path("", args.n_steps + 1, args.format)
     print(f"  walking the oxygen from {start_distance:.3f} A to "
           f"{args.final_distance:.3f} A of silicon {args.silicon_id} "
-          f"in {args.n_steps} steps, writing 1.data through {args.n_steps + 1}.data")
+          f"in {args.n_steps} steps, writing {first} through {last}")
+    if silicon_out != args.silicon_id:
+        print(f"  the water shifts the numbering: silicon {args.silicon_id} is atom "
+              f"{silicon_out} in every frame written, and the manifest's ids all index "
+              f"the frames, not {args.input}")
 
     outdir = Path(args.outdir)
     if not args.dry_run:
@@ -622,18 +745,19 @@ def main(argv=None) -> int:
         oxygen = silicon - target_distance * approach
         positions = {"O": oxygen, "H1": oxygen + h1_offset, "H2": oxygen + h2_offset}
 
-        data_file = outdir / f"{index}.data"
+        relative_path = sio.frame_path("", index, args.format)
+        frame_file = outdir / relative_path
         where = f"frame {index}"
 
-        frame, ids, wrapped, wrap_messages = build_frame(
-            data, positions, oxygen_type, hydrogen_type, charges, molecule_id, where)
-        messages.extend(wrap_messages)
+        frame, ids, _, wrapped = sio.add_water(
+            data, positions, WATER_LABELS, spec, args.freeze_substrate)
         wrapped_atoms += wrapped
 
         # The nearest existing atom to each of the three separately - a single
         # overall minimum hides a hydrogen buried in a wall whenever the oxygen
-        # happens to be closer to something else. Measured against the original
-        # structure, so the water is not compared with itself.
+        # happens to be closer to something else. Searched in the frame with the
+        # water already in it, excluding the water, so the ids reported are the
+        # ones the written file uses and no atom is compared with itself.
         #
         # The target silicon is skipped for the oxygen only. That distance is
         # the coordinate being driven, it is already the O-Si column, and
@@ -642,10 +766,11 @@ def main(argv=None) -> int:
         # under --orientation toward they reach the silicon before the oxygen
         # does, and excluding it would hide exactly the collision that mode
         # risks.
+        water_ids = set(ids.values())
         nearest = {
-            label: ld.nearest_existing(
-                data, positions[label],
-                exclude={args.silicon_id} if label == "O" else None,
+            label: sio.nearest_existing(
+                frame, positions[label],
+                exclude=water_ids | {silicon_out} if label == "O" else water_ids,
             )[0]
             for label in WATER_LABELS
         }
@@ -661,15 +786,15 @@ def main(argv=None) -> int:
                     f"(type {near_type}), below --min-separation {args.min_separation}"
                 )
 
-        wrapped_oxygen = ld.position_of(frame, ids["O"])
+        wrapped_oxygen = sio.position_of(frame, ids["O"])
         fraction = (start_distance - target_distance) / span if span else 0.0
 
         if not args.dry_run:
-            ld.write_data_file(
-                frame, str(data_file),
-                f"LAMMPS data file via generate_water_path.py, from {args.input} - "
-                f"frame {index}/{len(distances)}, O-Si {target_distance:.4f} A",
-                atom_style)
+            sio.write_frame(
+                frame, frame_file,
+                f"{sio.DESCRIPTION[args.format]} via generate_water_path.py, from "
+                f"{args.input} - frame {index}/{len(distances)}, "
+                f"O-Si {target_distance:.4f} A")
 
         row = {
             "frame": index,
@@ -679,9 +804,11 @@ def main(argv=None) -> int:
             "o_y": round(float(wrapped_oxygen[1]), 4),
             "o_z": round(float(wrapped_oxygen[2]), 4),
             "o_id": ids["O"], "h1_id": ids["H1"], "h2_id": ids["H2"],
-            "o_type": oxygen_type, "h_type": hydrogen_type,
+            "si_id_out": silicon_out,
+            "o_type": sio.species_label(frame, ids["O"]),
+            "h_type": sio.species_label(frame, ids["H1"]),
             "clash": int(bool(clashing)),
-            "data_file": data_file.name,
+            "data_file": str(relative_path),
         }
         for label in WATER_LABELS:
             near_id, near_type, near_distance = nearest[label]
@@ -692,12 +819,12 @@ def main(argv=None) -> int:
         rows.append(row)
 
         cells = "  ".join(
-            f"{f'{nearest[label][2]:.3f} id {nearest[label][0]} (t{nearest[label][1]})':>22}"
+            f"{f'{nearest[label][2]:.3f} id {nearest[label][0]} ({type_cell(nearest[label][1])})':>22}"
             for label in WATER_LABELS
         )
         marker = "  CLASH " + ",".join(clashing) if clashing else ""
         print(f"{index:>5}  {target_distance:>7.3f}  {fraction:>5.3f}  {cells}  "
-              f"{data_file.name}{marker}")
+              f"{relative_path}{marker}")
 
     if not args.dry_run:
         manifest = outdir / "manifest.csv"
@@ -721,9 +848,10 @@ def main(argv=None) -> int:
     if args.dry_run:
         print(f"dry run: nothing written to {outdir}/")
     else:
-        print(f"wrote 1.data through {len(rows)}.data and manifest.csv to {outdir}/")
-    print("Every frame is a seed, not a relaxed geometry: relax each one with the O-Si "
-          "distance restrained and the hydrogens free before reading any energy off it.")
+        print(f"wrote {sio.frame_path('', 1, args.format)} through "
+              f"{sio.frame_path('', len(rows), args.format)} and manifest.csv to {outdir}/")
+    print(f"Every frame is a seed, not a relaxed geometry: "
+          f"{sio.restraint_advice(args.format)}.")
 
     if clashes and args.fail_on_clash:
         print(f"{clashes} frame(s) below --min-separation", file=sys.stderr)
