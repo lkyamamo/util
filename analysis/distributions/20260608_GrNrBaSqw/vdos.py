@@ -41,7 +41,7 @@ trajectory), the rest are documented algorithm conventions, not physics:
   VDOS_NUM_GRIDS     frequency grid points         (default 5000)
   VDOS_METHOD        see METHOD below              (default vacf_cosine_transform)
   VDOS_WINDOW        see METHOD below              (default cosine_lag / hann)
-  VDOS_NORMALIZATION see NORMALIZATION below       (default phonon)
+  VDOS_NORMALIZATION phonon | unit_area         (default phonon)
   VDOS_THREADS       FFT workers, 0 = all cores    (default 0)
   VDOS_PLOT_XUNIT    meV | THz | cm-1 | eV         (default meV / THz)
 
@@ -72,7 +72,7 @@ Two interchangeable ways to get VDOS(ν), selected via METHOD:
      msd.cpp's Gw. Vectorized here as one matrix multiply per element rather
      than msd.cpp's nested loop, but numerically the same calculation.
   4. Combine elements into a total using msd.cpp's phonon-DOS convention
-     (NORMALIZATION='phonon'): Total = sum_el (6/pi)*(N_el/N_total)*Gw_el.
+     (VDOS_NORMALIZATION='phonon'): Total = sum_el (6/pi)*(N_el/N_total)*Gw_el.
 
 'fft_periodogram' — this script's own approach (see prior revisions): skips
   the explicit VACF and computes VDOS directly as the batched FFT periodogram
@@ -84,7 +84,45 @@ Two interchangeable ways to get VDOS(ν), selected via METHOD:
   grid is fixed by CORR_LENGTH and TIME_UNIT (FFT bin spacing/Nyquist), not
   freely chosen.
 
-NORMALIZATION applies regardless of METHOD:
+WEIGHTING
+---------
+VDOS_WEIGHTING sets how much each element contributes to a total, and is a
+different axis from VDOS_NORMALIZATION below: weighting decides the relative
+species contributions, normalization decides the sum rule. It takes a
+SEMICOLON-separated list (a comma would be truncated by `sbatch --export` in
+submit_pipeline.sh) and emits one total column per entry, named
+DoS(Total_<weighting>):
+
+  unity       w_el = c_el                                    (mole fractions)
+  coherent    w_el = c_el * sigma_coh_el / m_el
+  incoherent  w_el = c_el * sigma_inc_el / m_el
+  total       w_el = c_el * (sigma_coh_el + sigma_inc_el) / m_el
+
+Weights are normalized so sum(w) = 1, which keeps the 'phonon' 3-per-atom sum
+rule intact and each total comparable to the unity-weighted one. Default is
+'unity', which reproduces exactly what this script produced before weighting
+existed (msd.cpp's mole-fraction total).
+
+Why sigma/m and not a scattering length: what inelastic neutron scattering
+measures is the generalized DOS, in which the one-phonon incoherent cross
+section carries a factor sigma/m per species. That is a different quantity from
+the coherent scattering length b that weights diffraction — rdf_freud.py's and
+dsf.py's b-weighting does not transfer here, and sigma_inc cannot be derived
+from b_coh at all.
+
+Not applied: the Debye-Waller factor exp(-2W). At fixed Q it would be a pure
+per-species re-weighting, but Q and energy transfer are kinematically coupled in
+a real spectrometer while this DOS is not Q-resolved, and the harmonic
+fixed-site assumption behind <u^2> fails for diffusing species (the integral
+that would give <u^2> diverges for the same reason).
+
+Hydrogen is refused: with H or D present, any weighting other than 'unity'
+exits with an explanation instead of a number. Protium and deuterium differ by
+~21x in sigma/m and a LAMMPS dump labels both 'H', while under 'incoherent'
+weighting H carries >99.9% of the weight — so the result would be set almost
+entirely by the one species whose treatment is undecided.
+
+VDOS_NORMALIZATION applies regardless of METHOD:
   'phonon' (default) — matches msd.cpp: partial curves are left as computed
      (C(0)=1-normalized VACF cosine-transform, or — for fft_periodogram,
      which has no intrinsic physical scale — individually unit-area-rescaled
@@ -96,8 +134,10 @@ NORMALIZATION applies regardless of METHOD:
 OUTPUT
 ------
 - vdos.csv — freq_meV, freq_THz, freq_cm-1, freq_eV, then DoS(<element>) per
-             element and DoS(Total) — column naming matches msd.cpp's dos.dat
-             (Freq(meV), DoS(<el>), DoS(Total)), with THz/cm-1/eV as extras.
+             element and one DoS(Total_<weighting>) per requested weighting —
+             column naming follows msd.cpp's dos.dat (Freq(meV), DoS(<el>)),
+             with THz/cm-1/eV as extras. The plain DoS(Total) this script wrote
+             before weighting existed is now DoS(Total_unity), unchanged.
 - vdos.png — all curves overlaid on one axes  (set OUTPUT_PLOT=None to skip)
 
 Not replicated from msd.cpp: real-space MSD (a different quantity; use a
@@ -231,9 +271,16 @@ if WINDOW not in _VALID_WINDOWS[METHOD]:
     )
 
 # How partial/total curves are combined and scaled — see module docstring.
-NORMALIZATION = _env("VDOS_NORMALIZATION", "phonon")
-if NORMALIZATION not in ("phonon", "unit_area"):
-    raise ValueError(f"Unknown VDOS_NORMALIZATION={NORMALIZATION!r}; use 'phonon' or 'unit_area'.")
+VDOS_NORMALIZATION = _env("VDOS_NORMALIZATION", "phonon")
+if VDOS_NORMALIZATION not in ("phonon", "unit_area"):
+    raise ValueError(f"Unknown VDOS_NORMALIZATION={VDOS_NORMALIZATION!r}; use 'phonon' or 'unit_area'.")
+
+# How much each element contributes to a total — see WEIGHTING in the module
+# docstring. SEMICOLON-separated list; one total column is emitted per entry.
+# This is a different axis from VDOS_NORMALIZATION, which is a sum rule, not a
+# weighting; both names are VDOS_-prefixed so it is always clear which analysis
+# they configure (vdos_dynmat.py has its own VDOS_DYNMAT_NORMALIZATION).
+VDOS_WEIGHTING = _env("VDOS_WEIGHTING", "unity")
 
 # FFT threading — only used by METHOD='fft_periodogram' and only if scipy is
 # installed; 0 = all available cores.
@@ -491,22 +538,244 @@ def compute_power_spectrum(velocities, dt_fs, window='hann', seg_len_frames=None
 # Shared: normalization/combination, frequency units, output
 # ---------------------------------------------------------------------------
 
-def combine_results(raw_curves, elements, freq, normalization, prenormalize_partials):
+# =============================================================================
+# Neutron weighting — see WEIGHTING in the module docstring
+# =============================================================================
+
+# One record per isotope: (sigma_coh, sigma_inc, mass), cross-sections in barn
+# and mass in amu. Cross-sections are NIST's tabulated values
+# (https://www.ncnr.nist.gov/resources/n-lengths/); masses are IUPAC standard
+# atomic weights.
+#
+# sigma and mass are bound together in ONE record rather than kept in two
+# parallel dicts, because the weight is sigma/m: resolving the cross-section
+# from one isotope and the mass from another would be silent and would land
+# squarely on the ratio the whole weighting depends on. 'H' here is protium.
+NEUTRON_SCATTERING = {
+    'H':  (1.7568,  80.26,    1.008),
+    'D':  (5.592,    2.05,    2.014),
+    'C':  (5.551,    0.001,  12.011),
+    'N':  (11.01,    0.5,    14.007),
+    'O':  (4.232,    0.0008, 15.999),
+    'Na': (1.66,     1.62,   22.990),
+    'Mg': (3.631,    0.08,   24.305),
+    'Al': (1.495,    0.0082, 26.982),
+    'Si': (2.163,    0.004,  28.085),
+    'P':  (3.307,    0.005,  30.974),
+    'S':  (1.0186,   0.007,  32.06),
+    'Cl': (11.5257,  5.3,    35.45),
+    'K':  (1.69,     0.27,   39.098),
+    'Ca': (2.78,     0.05,   40.078),
+    'Fe': (11.22,    0.4,    55.845),
+    'Ni': (13.3,     5.2,    58.693),
+    'Zr': (6.44,     0.02,   91.224),
+    'Ba': (3.23,     0.15,  137.327),
+}
+
+WEIGHTING_EQUATIONS = {
+    'unity':      'w_el = c_el',
+    'coherent':   'w_el = c_el * sigma_coh_el / m_el',
+    'incoherent': 'w_el = c_el * sigma_inc_el / m_el',
+    'total':      'w_el = c_el * (sigma_coh_el + sigma_inc_el) / m_el',
+}
+
+
+def parse_weightings(value):
     """
-    Combine per-element raw curves into a results dict (partials + 'total').
+    Parse the semicolon-separated VDOS_WEIGHTING list.
+
+    The separator is ';' and not ',' because submit_pipeline.sh passes settings
+    through `sbatch --export`, which is itself comma-delimited and silently
+    truncates a value at the first embedded comma — a comma-separated list would
+    arrive on the cluster as its first entry alone, with no error.
+    """
+    if ',' in value:
+        raise ValueError(
+            f"VDOS_WEIGHTING={value!r} uses ',' but the separator is ';' — a comma would "
+            f"be truncated by `sbatch --export` in submit_pipeline.sh. Write it as "
+            f"{value.replace(',', ';')!r}."
+        )
+    keys = [k.strip() for k in value.split(';') if k.strip()]
+    if not keys:
+        raise ValueError(f"VDOS_WEIGHTING is empty; choose from {list(WEIGHTING_EQUATIONS)}.")
+    unknown = [k for k in keys if k not in WEIGHTING_EQUATIONS]
+    if unknown:
+        raise ValueError(f"Unknown VDOS_WEIGHTING {unknown}; choose from {list(WEIGHTING_EQUATIONS)}.")
+    return keys
+
+
+def check_hydrogen_guard(unique_elements, weightings):
+    """
+    Refuse to neutron-weight a hydrogen-bearing system.
+
+    Protium and deuterium differ by a factor of ~21 in sigma/m (82.02/1.008 vs
+    7.64/2.014 barn/amu) and a LAMMPS dump labels both 'H', so the isotope
+    cannot be inferred from the trajectory. Under 'incoherent' weighting H
+    carries >99.9% of the total weight, which means the answer would be set
+    almost entirely by the one species whose treatment is unresolved. Producing
+    a plausible-looking number here would be worse than producing none.
+    """
+    present = sorted({'H', 'D'} & set(unique_elements))
+    neutron = [w for w in weightings if w != 'unity']
+    if present and neutron:
+        raise SystemExit(
+            f"\nvdos.py: refusing to neutron-weight a hydrogen-bearing system.\n"
+            f"  elements present:     {present}\n"
+            f"  weightings requested: {neutron}\n\n"
+            f"  Protium and deuterium differ by ~21x in sigma/m (81.4 vs 3.8 barn/amu)\n"
+            f"  and a LAMMPS dump labels both 'H', so the isotope cannot be determined\n"
+            f"  from the trajectory. Under 'incoherent' weighting H would carry >99.9%\n"
+            f"  of the weight, so the result would be dominated by exactly the species\n"
+            f"  whose treatment is undecided. This needs a careful implementation\n"
+            f"  (isotope selection, and quasi-elastic rather than harmonic treatment of\n"
+            f"  diffusing H) that is deliberately not attempted here.\n\n"
+            f"  Use VDOS_WEIGHTING=unity for this system.\n"
+        )
+
+
+def species_weights(weighting, counts):
+    """
+    Normalized per-element weights for one weighting, summing to 1.
+
+    Normalizing to sum(w) = 1 keeps VDOS_NORMALIZATION='phonon' meaningful: the
+    3-per-atom sum rule survives, and the weighted total stays directly
+    comparable to the unity-weighted one. The absolute scale of an inelastic
+    measurement depends on Q, the Debye-Waller factor and detector efficiency
+    anyway, none of which this script models, so a raw barn/amu total would not
+    be comparable to data.
+    """
+    n_total = sum(counts.values())
+    concentration = {el: n / n_total for el, n in counts.items()}
+
+    if weighting == 'unity':
+        raw = dict(concentration)
+    else:
+        missing = [el for el in counts if el not in NEUTRON_SCATTERING]
+        if missing:
+            raise SystemExit(
+                f"vdos.py: no neutron cross-section for {missing}, needed by "
+                f"VDOS_WEIGHTING={weighting!r}. Add the element to NEUTRON_SCATTERING "
+                f"(sigma_coh, sigma_inc, mass) or use VDOS_WEIGHTING=unity."
+            )
+        raw = {}
+        for el in counts:
+            sigma_coh, sigma_inc, mass = NEUTRON_SCATTERING[el]
+            sigma = {'coherent': sigma_coh,
+                     'incoherent': sigma_inc,
+                     'total': sigma_coh + sigma_inc}[weighting]
+            raw[el] = concentration[el] * sigma / mass
+
+    total = sum(raw.values())
+    if total <= 0:
+        raise SystemExit(
+            f"vdos.py: VDOS_WEIGHTING={weighting!r} gives zero total weight for these "
+            f"elements — every cross-section involved is zero."
+        )
+    return {el: w / total for el, w in raw.items()}
+
+
+def print_weighting_table(weights_by_key, normalization):
+    """
+    Print each total's defining equation and resolved weights.
+
+    Same habit as rdf_freud.py's convention table: a computed number you can
+    check against the curve beats a label. The weights are the whole content of
+    the neutron weighting, so seeing them is seeing whether the table is right.
+    """
+    sum_rule = ('integral ~ 3 per atom' if normalization == 'phonon'
+                else 'integral = 1')
+    print("\nWeighted totals (check these weights against the curves):")
+    for key, weights in weights_by_key.items():
+        shares = ', '.join(f'{el}={w:.4f}' for el, w in sorted(weights.items()))
+        print(f"  DoS(Total_{key})")
+        print(f"    {WEIGHTING_EQUATIONS[key]},  normalized so sum(w) = 1")
+        print(f"    weights: {shares}   sum={sum(weights.values()):.6f}   {sum_rule}")
+    if any(k == 'incoherent' for k in weights_by_key):
+        print("  Note: 'incoherent' weights are normalized, so they say nothing about "
+              "absolute signal.\n        For a system of light elements sigma_inc is tiny "
+              "(Si 0.004 b, O 0.0008 b) and a real\n        measurement is coherent-dominated; "
+              "this column is a decomposition, not a prediction.")
+    print("  Debye-Waller factor exp(-2W) is NOT applied: it is Q-dependent, while this DOS\n"
+          "  is not Q-resolved, and the harmonic fixed-site assumption behind <u^2> fails for\n"
+          "  diffusing species.")
+
+
+# =============================================================================
+# Sampling reporting — see "How much data is enough" in the README
+# =============================================================================
+
+# Relative statistical error of an averaged quantity is ~1/sqrt(M), where M is
+# the number of INDEPENDENT contributions.  Ladder: 1e2 = 10%, 1e3 = 3% (the
+# pass mark), 1e4 = 1%, 1e6 = 0.1%.
+SAMPLING_TARGET = 1e3
+
+
+def _verdict(m):
+    if m <= 0:
+        return float('inf'), 'EMPTY'
+    return 1.0 / np.sqrt(m), ('ok' if m >= SAMPLING_TARGET else 'LOW')
+
+
+def report_sampling_origins(counts, n_origins, n_independent, span_fs, corr_length_fs):
+    """
+    M = atoms of that species x time origins — the atoms x samples product.
+
+    Two numbers per species, because they answer different questions.  M_raw
+    counts every origin; M_indep counts only origins far enough apart to be
+    statistically independent.  Overlapping windows are the severe case in this
+    pipeline: with CORR_LENGTH=2000 fs and CORR_INTERVAL=100 fs consecutive
+    origins share 95% of the same trajectory, so averaging them does NOT buy
+    sqrt(n_origins).  The number of genuinely independent windows is capped at
+    span/CORR_LENGTH, a ceiling set by trajectory length that shrinking
+    CORR_INTERVAL cannot raise — past it you pay linearly in runtime for
+    nothing.  To actually reduce noise, lengthen the trajectory or add atoms.
+    """
+    print(f"\nSampling achieved (relative error ~ 1/sqrt(M), target M >= {SAMPLING_TARGET:.0e}):")
+    print(f"  {n_origins} time origins over {span_fs/1000:.1f} ps; only "
+          f"{n_independent} are independent (span / CORR_LENGTH = "
+          f"{span_fs/1000:.1f} / {corr_length_fs/1000:.1f} ps)")
+    width = max((len(el) for el in counts), default=4)
+    worst = None
+    for el in sorted(counts):
+        m_raw = counts[el] * n_origins
+        m_ind = counts[el] * n_independent
+        err_raw, _ = _verdict(m_raw)
+        err_ind, verdict = _verdict(m_ind)
+        print(f"  {el.ljust(width)}  {counts[el]:6d} atoms   "
+              f"M_raw = {m_raw:9.3g} ({100*err_raw:5.2f}%)   "
+              f"M_indep = {m_ind:9.3g} ({100*err_ind:5.2f}%)  {verdict}")
+        if worst is None or m_ind < worst[1]:
+            worst = (el, m_ind)
+    if worst is not None:
+        err, verdict = _verdict(worst[1])
+        print(f"  limiting: {worst[0]} at {100*err:.2f}% on independent windows ({verdict})")
+        if n_origins > n_independent:
+            factor = np.sqrt(n_origins / max(n_independent, 1))
+            print(f"  -> M_raw overstates precision by {factor:.1f}x here; "
+                  f"CORR_INTERVAL below span/CORR_LENGTH costs runtime and buys nothing")
+
+
+def combine_results(raw_curves, elements, freq, normalization, prenormalize_partials,
+                    weightings):
+    """
+    Combine per-element raw curves into partials plus one total per weighting.
 
     normalization='phonon' (msd.cpp's convention): partials are used as-is
       (or, if prenormalize_partials, first individually rescaled to unit
       area — needed for fft_periodogram, whose raw partials have no
-      intrinsic physical scale the way a C(0)=1 VACF does), and the total is
-      the mole-fraction-weighted sum sum_el (6/pi)*(N_el/N_total)*curve_el.
-    normalization='unit_area': every partial and the total are independently
-      rescaled so integral(curve) dnu = 1.
+      intrinsic physical scale the way a C(0)=1 VACF does), and each total is
+      the weighted sum sum_el (6/pi)*w_el*curve_el.
+    normalization='unit_area': every partial is rescaled so integral = 1, and
+      each total is the weighted sum rescaled the same way.
 
-    Returns dict {element_or_'total': (n_freq,) array}.
+    With weighting='unity', w_el = N_el/N_total, so the 'phonon' total is
+    exactly msd.cpp's sum_el (6/pi)*(N_el/N_total)*curve_el — the terms are
+    accumulated in the same order so the result is bit-identical.
+
+    Returns (results, weights_by_key) where results is
+    {element_or_'total_<weighting>': (n_freq,) array}.
     """
     counts = {el: int((elements == el).sum()) for el in raw_curves}
-    n_total = sum(counts.values())
     d_nu = freq[1] - freq[0]
 
     def unit_area(curve):
@@ -516,16 +785,25 @@ def combine_results(raw_curves, elements, freq, normalization, prenormalize_part
     if normalization == 'phonon':
         partials = ({el: unit_area(c) for el, c in raw_curves.items()}
                     if prenormalize_partials else dict(raw_curves))
-        total = np.zeros_like(freq)
-        for el, c in partials.items():
-            total += (6.0 / np.pi) * (counts[el] / n_total) * c
     else:  # 'unit_area'
         partials = {el: unit_area(c) for el, c in raw_curves.items()}
-        total = unit_area(sum(raw_curves.values()))
 
     results = dict(partials)
-    results['total'] = total
-    return results
+    weights_by_key = {}
+
+    for weighting in weightings:
+        w = species_weights(weighting, counts)
+        weights_by_key[weighting] = w
+
+        total = np.zeros_like(freq)
+        for el, c in partials.items():
+            total += (6.0 / np.pi) * w[el] * c if normalization == 'phonon' else w[el] * c
+        if normalization != 'phonon':
+            total = unit_area(total)
+
+        results[f'total_{weighting}'] = total
+
+    return results, weights_by_key
 
 
 def _freq_all_units(freq_eV):
@@ -540,13 +818,17 @@ def _freq_all_units(freq_eV):
 
 
 def save_csv(results, freq_by_unit, filename):
-    """Save results dict {element_or_'total': array} to CSV, with columns
-    named to match msd.cpp's dos.dat (Freq(meV), DoS(<el>), DoS(Total))."""
-    order = [el for el in results if el != 'total'] + ['total']
+    """Save results dict {element_or_'total_<weighting>': array} to CSV, with
+    columns named after msd.cpp's dos.dat (Freq(meV), DoS(<el>)); each total
+    carries its weighting, as DoS(Total_unity). Underscore and never a comma —
+    these are CSV headers."""
+    partials = [el for el in results if not el.startswith('total_')]
+    totals   = [el for el in results if el.startswith('total_')]
     header_parts = ['freq_meV', 'freq_THz', 'freq_cm-1', 'freq_eV']
     columns = [freq_by_unit['meV'], freq_by_unit['THz'], freq_by_unit['cm-1'], freq_by_unit['eV']]
-    for label in order:
-        header_parts.append('DoS(Total)' if label == 'total' else f'DoS({label})')
+    for label in partials + totals:
+        header_parts.append(f'DoS(Total_{label[len("total_"):]})'
+                            if label.startswith('total_') else f'DoS({label})')
         columns.append(results[label])
     header = ','.join(header_parts)
     data = np.column_stack(columns)
@@ -561,9 +843,9 @@ def plot_vdos(results, freq_by_unit, filename, xunit=PLOT_XUNIT):
 
     fig, ax = plt.subplots(figsize=(8, 5))
     for label, curve in results.items():
-        ax.plot(x, curve, label=label, linewidth=1.5 if label == 'total' else 1.0)
+        ax.plot(x, curve, label=label, linewidth=1.5 if label.startswith('total_') else 1.0)
     ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
-    ax.set_ylabel('DOS (phonon-normalized)' if NORMALIZATION == 'phonon' else 'VDOS (unit-area normalized)')
+    ax.set_ylabel('DOS (phonon-normalized)' if VDOS_NORMALIZATION == 'phonon' else 'VDOS (unit-area normalized)')
     ax.legend()
     fig.tight_layout()
     fig.savefig(filename, dpi=PLOT_DPI)
@@ -574,7 +856,10 @@ def plot_vdos(results, freq_by_unit, filename, xunit=PLOT_XUNIT):
 if __name__ == '__main__':
     print(f"Reading trajectory: {DUMP_FILE}")
     print(f"  N_FRAMES={N_FRAMES or 'all'}, STRIDE={STRIDE}, TIME_UNIT={TIME_UNIT} fs")
-    print(f"  METHOD={METHOD}, WINDOW={WINDOW}, NORMALIZATION={NORMALIZATION}")
+    print(f"  METHOD={METHOD}, WINDOW={WINDOW}, VDOS_NORMALIZATION={VDOS_NORMALIZATION}")
+
+    weightings = parse_weightings(VDOS_WEIGHTING)
+    print(f"  VDOS_WEIGHTING={weightings}")
 
     import time
     t0 = time.time()
@@ -585,6 +870,9 @@ if __name__ == '__main__':
 
     unique_els = sorted(set(elements.tolist()))
     print(f"  Elements: {unique_els}")
+
+    # After element detection, so the message can name what it actually found.
+    check_hydrogen_guard(unique_els, weightings)
 
     CORR_LENGTH = float(_CORR_LENGTH_ENV)
     CORR_INTERVAL = float(_CORR_INTERVAL_ENV)
@@ -606,9 +894,15 @@ if __name__ == '__main__':
         vac, n_refs = compute_vacf_multi_origin(velocities, elements, corr_length_frames, corr_interval_frames)
         Zt = apply_cosine_lag_window(vac, corr_length_frames, WINDOW)
         freq_eV, Gw = cosine_transform_dos(Zt, TIME_UNIT, corr_length_frames, MAX_FREQUENCY_EV, NUM_GRIDS)
-        results = combine_results(Gw, elements, freq_eV, NORMALIZATION, prenormalize_partials=False)
+        results, weights_by_key = combine_results(
+            Gw, elements, freq_eV, VDOS_NORMALIZATION,
+            prenormalize_partials=False, weightings=weightings)
         freq_by_unit = _freq_all_units(freq_eV)
         print(f"  VACF reference frames used: {n_refs}")
+        _span_fs = n_frames_read * TIME_UNIT
+        _n_indep = max(1, int(_span_fs // CORR_LENGTH))
+        _counts  = {el: int((elements == el).sum()) for el in unique_els}
+        report_sampling_origins(_counts, n_refs, _n_indep, _span_fs, CORR_LENGTH)
     else:  # 'fft_periodogram'
         freq_THz, power, n_segments = compute_power_spectrum(
             velocities, TIME_UNIT, window=WINDOW,
@@ -616,13 +910,17 @@ if __name__ == '__main__':
         )
         raw_curves = {el: power[elements == el].sum(axis=0) for el in unique_els}
         freq_eV = freq_THz * EV_PER_THZ
-        results = combine_results(raw_curves, elements, freq_eV, NORMALIZATION, prenormalize_partials=True)
+        results, weights_by_key = combine_results(
+            raw_curves, elements, freq_eV, VDOS_NORMALIZATION,
+            prenormalize_partials=True, weightings=weightings)
         freq_by_unit = _freq_all_units(freq_eV)
         print(f"  Segments averaged: {n_segments}")
 
     t3 = time.time()
     print(f"  Compute: {t3 - t2:.2f}s")
     print(f"  Total: {t3 - t0:.2f}s")
+
+    print_weighting_table(weights_by_key, VDOS_NORMALIZATION)
 
     if OUTPUT_CSV is not None:
         save_csv(results, freq_by_unit, OUTPUT_CSV)

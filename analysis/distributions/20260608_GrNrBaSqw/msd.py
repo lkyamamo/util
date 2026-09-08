@@ -66,16 +66,18 @@ Elements are combined into a total via a mole-fraction-weighted average
 quantity, unlike vdos.py's phonon-DOS convention, so no extra normalization
 is needed.
 
-As a convenience, a self-diffusion coefficient is estimated per element (and
-total) via the 3D Einstein relation MSD(t) = 6*D*t, linear-fit over the last
-FIT_FRACTION of the correlation window (the early, non-diffusive/ballistic
-part of MSD(t) is excluded from the fit) and printed — not written to the
-CSV, since it's a derived summary rather than part of the MSD(t) curve.
+A self-diffusion coefficient is estimated per element (and total) via the 3D
+Einstein relation MSD(t) = 6*D*t, linear-fit over the last FIT_FRACTION of the
+correlation window (the early, non-diffusive/ballistic part of MSD(t) is
+excluded from the fit). It is printed, and written to its own small CSV — it
+is a derived summary rather than part of the MSD(t) curve, so it gets a
+separate file rather than a column in msd.csv.
 
 OUTPUT
 ------
-- msd.csv — time_fs, then MSD_<element> per element and MSD_total (Å²)
-- msd.png — all curves overlaid on one axes  (set OUTPUT_PLOT=None to skip)
+- msd.csv       — time_fs, then MSD_<element> per element and MSD_total (Å²)
+- diffusion.csv — label, D (1e-5 cm²/s) per element and total
+- msd.png       — all curves overlaid on one axes  (set OUTPUT_PLOT=None to skip)
 
 DEPENDENCIES
 ------------
@@ -116,6 +118,61 @@ DUMP_FILE = os.environ.get("DYNAMICS_TRAJ", "dynamics.lammpstrj")
 # never a silently substituted number. Missing ones are collected so a single
 # run reports every one of them at once instead of failing one at a time.
 _MISSING = []
+
+# =============================================================================
+# Sampling reporting — see "How much data is enough" in the README
+# =============================================================================
+
+# Relative statistical error of an averaged quantity is ~1/sqrt(M), where M is
+# the number of INDEPENDENT contributions.  Ladder: 1e2 = 10%, 1e3 = 3% (the
+# pass mark), 1e4 = 1%, 1e6 = 0.1%.
+SAMPLING_TARGET = 1e3
+
+
+def _verdict(m):
+    if m <= 0:
+        return float('inf'), 'EMPTY'
+    return 1.0 / np.sqrt(m), ('ok' if m >= SAMPLING_TARGET else 'LOW')
+
+
+def report_sampling_origins(counts, n_origins, n_independent, span_fs, corr_length_fs):
+    """
+    M = atoms of that species x time origins — the atoms x samples product.
+
+    Two numbers per species, because they answer different questions.  M_raw
+    counts every origin; M_indep counts only origins far enough apart to be
+    statistically independent.  Overlapping windows are the severe case in this
+    pipeline: with CORR_LENGTH=2000 fs and CORR_INTERVAL=100 fs consecutive
+    origins share 95% of the same trajectory, so averaging them does NOT buy
+    sqrt(n_origins).  The number of genuinely independent windows is capped at
+    span/CORR_LENGTH, a ceiling set by trajectory length that shrinking
+    CORR_INTERVAL cannot raise — past it you pay linearly in runtime for
+    nothing.  To actually reduce noise, lengthen the trajectory or add atoms.
+    """
+    print(f"\nSampling achieved (relative error ~ 1/sqrt(M), target M >= {SAMPLING_TARGET:.0e}):")
+    print(f"  {n_origins} time origins over {span_fs/1000:.1f} ps; only "
+          f"{n_independent} are independent (span / CORR_LENGTH = "
+          f"{span_fs/1000:.1f} / {corr_length_fs/1000:.1f} ps)")
+    width = max((len(el) for el in counts), default=4)
+    worst = None
+    for el in sorted(counts):
+        m_raw = counts[el] * n_origins
+        m_ind = counts[el] * n_independent
+        err_raw, _ = _verdict(m_raw)
+        err_ind, verdict = _verdict(m_ind)
+        print(f"  {el.ljust(width)}  {counts[el]:6d} atoms   "
+              f"M_raw = {m_raw:9.3g} ({100*err_raw:5.2f}%)   "
+              f"M_indep = {m_ind:9.3g} ({100*err_ind:5.2f}%)  {verdict}")
+        if worst is None or m_ind < worst[1]:
+            worst = (el, m_ind)
+    if worst is not None:
+        err, verdict = _verdict(worst[1])
+        print(f"  limiting: {worst[0]} at {100*err:.2f}% on independent windows ({verdict})")
+        if n_origins > n_independent:
+            factor = np.sqrt(n_origins / max(n_independent, 1))
+            print(f"  -> M_raw overstates precision by {factor:.1f}x here; "
+                  f"CORR_INTERVAL below span/CORR_LENGTH costs runtime and buys nothing")
+
 
 def _require(name, description):
     """Value of `name`, or None after recording it as missing."""
@@ -165,6 +222,12 @@ FIT_FRACTION = float(_FIT_FRACTION_ENV)
 
 # Output files (set to None to skip writing)
 OUTPUT_CSV  = "msd.csv"
+# The Einstein-relation diffusion coefficients, as a table rather than only as
+# printed text. The temperature-sweep pipeline
+# (jobs/pipeline/lammps_to_temperature_sweep/) aggregates D across
+# temperatures and reads this file; a regex over stdout would break the first
+# time someone reformats a print statement.
+OUTPUT_DIFFUSION_CSV = "diffusion.csv"
 OUTPUT_PLOT = "msd.png"
 
 # Plot appearance
@@ -179,6 +242,7 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_CSV  = _dated(OUTPUT_CSV)
+OUTPUT_DIFFUSION_CSV = _dated(OUTPUT_DIFFUSION_CSV)
 OUTPUT_PLOT = _dated(OUTPUT_PLOT)
 
 # 1 Angstrom^2/fs = 1e-16 cm^2 / 1e-15 s = 0.1 cm^2/s = 1e4 x(1e-5 cm^2/s)
@@ -355,6 +419,22 @@ def save_csv(results, time_fs, filename):
     print(f"Data table saved to {filename}")
 
 
+def save_diffusion_csv(D, filename):
+    """Save {label: D} to a two-column CSV, elements first and 'total' last.
+
+    Same label order as save_csv's columns. The unit is in the header rather
+    than left implicit: D here is in 1e-5 cm^2/s (see
+    estimate_diffusion_coefficients), and a bare 'D' column would be read as
+    cm^2/s by anyone who did not open this file.
+    """
+    order = [el for el in D if el != 'total'] + ['total']
+    with open(filename, 'w') as f:
+        f.write('label,D_1e-5_cm2_s\n')
+        for label in order:
+            f.write(f'{label},{D[label]:.6f}\n')
+    print(f"Diffusion coefficients saved to {filename}")
+
+
 def plot_msd(results, time_fs, filename):
     fig, ax = plt.subplots(figsize=(8, 5))
     for label, curve in results.items():
@@ -401,6 +481,9 @@ if __name__ == '__main__':
     time_fs = np.arange(corr_length_frames) * TIME_UNIT
     t3 = _time.time()
     print(f"  Reference frames used: {n_refs}")
+    _span_fs = n_frames_read * TIME_UNIT
+    _n_indep = max(1, int(_span_fs // CORR_LENGTH))
+    report_sampling_origins(counts, n_refs, _n_indep, _span_fs, CORR_LENGTH)
     print(f"  Compute: {t3 - t2:.2f}s")
     print(f"  Total: {t3 - t0:.2f}s")
 
@@ -412,5 +495,7 @@ if __name__ == '__main__':
 
     if OUTPUT_CSV is not None:
         save_csv(results, time_fs, OUTPUT_CSV)
+    if OUTPUT_DIFFUSION_CSV is not None:
+        save_diffusion_csv(D, OUTPUT_DIFFUSION_CSV)
     if OUTPUT_PLOT is not None:
         plot_msd(results, time_fs, OUTPUT_PLOT)

@@ -7,8 +7,25 @@ boundary        p p p
 processors      * * *
 atom_style      atomic
 
-read_data       start.data
+############### restart support ###############
+# START_CHUNK/RESTART_FILE are set by jobs/slurm/lammps_dielectric_submit.slurm,
+# which works out where a killed run got to by reading chunks_done.txt (see the
+# chunk loop at the bottom of this file). "variable ... index" is the LAMMPS
+# form a command-line -var overrides, so the values here are what applies to a
+# fresh run.
+#
+# START_CHUNK 1 means "start over": read the equilibrated structure. Anything
+# higher resumes, restoring the state written after the last chunk that
+# completed, and the loop below picks up at that chunk + 1.
+variable        START_CHUNK  index 1
+variable        RESTART_FILE index none
 
+if "${START_CHUNK} == 1" then "read_data start.data" else "read_restart ${RESTART_FILE}"
+
+# Re-issued after read_restart as well as read_data. A restart file already
+# carries the pair style and masses, so this is redundant on a resume — but
+# harmless, and it keeps one copy of the settings rather than two that could
+# drift apart.
 neighbor        0.3 bin
 neigh_modify    delay 0 every 1 check yes
 
@@ -79,18 +96,43 @@ variable        dielectric_dump_every equal ${DUMP_EVERY}
 # $(...) immediate variables are evaluated once at parse time and would
 # otherwise freeze at whatever step the fix was defined on.
 variable        curstep equal step
+# "append", not "file": a resumed run must add to the series rather than
+# truncate what earlier chunks already wrote. A fresh run starts in a directory
+# the pipeline has just created (or that --force emptied), so there is nothing
+# to append to.
 fix             dipole_print all print ${dielectric_dump_every} "${curstep} ${Mx} ${My} ${Mz} ${Mmag}" &
-                file dipole_by_hand.txt screen no title "# step Mx My Mz |M| (e*Angstrom)"
+                append dipole_by_hand.txt screen no title "# step Mx My Mz |M| (e*Angstrom)"
 
 ###################### run setup ###########################
 # start.data is assumed already equilibrated at ${TARGET_TEMP} — no
 # deform/anneal ramp here (unlike OH-therm.input/b-SiO-therm.input).
-reset_timestep  0
+#
+# Only on a fresh run: a resume must keep counting from where the restart left
+# off, or the dipole_by_hand.txt step column would restart at 0 mid-series.
+if "${START_CHUNK} == 1" then "reset_timestep 0"
 
 timestep        0.00025
 
+############### chunk loop, restartable ###############
+# Two files per chunk make a resume possible:
+#
+#   restart.${i}      the state to resume FROM, written once the chunk's run
+#                     has finished and its dump is closed.
+#   chunks_done.txt   one chunk index per line, appended AFTER the restart is
+#                     safely on disk.
+#
+# The order matters. chunks_done.txt is the authority on what completed, and it
+# only ever names a restart file that was fully written — a job killed during
+# write_restart leaves a truncated restart.${i}, but chunks_done.txt still ends
+# at ${i}-1, so the resume falls back to the previous chunk's intact restart and
+# redoes this one. Detecting progress from the restart files themselves would
+# walk straight into the truncated one.
+#
+# Redoing a chunk is harmless: its dump is rewritten from scratch, so a
+# half-written dielectric.${i}.custom from the killed run is replaced rather
+# than appended to.
 label           start_loop
-variable        i loop ${n_times}
+variable        i loop ${START_CHUNK} ${n_times}
 
         dump            1 all custom ${dielectric_dump_every} dumps/dielectric.${i}.custom id type x y z
         dump_modify     1 sort id
@@ -102,6 +144,9 @@ variable        i loop ${n_times}
         ##############################################
 
         undump          1
+
+        write_restart   restart.${i}
+        print           "${i}" append chunks_done.txt screen no
 
 next            i
 jump            SELF start_loop

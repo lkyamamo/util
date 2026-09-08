@@ -95,6 +95,31 @@ def load_csv(filename):
     return x, labels, data
 
 
+# rdfs.csv mixes units: the partials are dimensionless g_AB(r) about 1, while
+# the combined columns rdf_freud.py writes are named <function>_<normalization>
+# and carry their own units and baseline (h_absolute is barn/sr/atom about 0).
+# See CONVENTIONS in rdf_freud.py for the defining equations.
+NORMALIZATION_UNITS = {'unity': '', 'FZ': '', 'absolute': 'barn/sr/atom'}
+FUNCTION_KEYS       = ('g', 'h', 'D', 'T')
+
+
+def column_style(label):
+    """Return (ylabel, reference_level) for one rdfs.csv column; None = no line."""
+    parts = label.split('_')
+    if len(parts) < 2 or parts[0] not in FUNCTION_KEYS or parts[1] not in NORMALIZATION_UNITS:
+        return 'g(r)', 1.0                       # a partial, e.g. 'Si-O'
+
+    func, norm = parts[0], parts[1]
+    units = NORMALIZATION_UNITS[norm]
+    if func in ('D', 'T'):
+        units = f'{units} Å⁻²'.strip() if units else 'Å⁻²'
+
+    # g_absolute sits at Σw, which this script cannot know; T has no flat limit.
+    reference = {'g': None if norm == 'absolute' else 1.0,
+                 'h': 0.0, 'D': 0.0, 'T': None}[func]
+    return (f'{label} ({units})' if units else label), reference
+
+
 def _apply_style():
     mpl.rcParams['font.family']      = FONT_FAMILY
     mpl.rcParams['font.weight']      = FONT_WEIGHT
@@ -103,6 +128,7 @@ def _apply_style():
 
 
 def _save_plots(x, labels, data, out_dir, xlabel, ylabel, ref_line=False):
+    """ylabel=None derives the label and baseline per column via column_style()."""
     os.makedirs(out_dir, exist_ok=True)
 
     for i, label in enumerate(labels):
@@ -113,14 +139,16 @@ def _save_plots(x, labels, data, out_dir, xlabel, ylabel, ref_line=False):
                 linewidth=PLOT_LWIDTH,
                 linestyle=PLOT_LSTYLE)
 
-        if ref_line and SHOW_REF_LINE:
-            ax.axhline(1.0,
+        col_ylabel, reference = column_style(label) if ylabel is None else (ylabel, 1.0)
+
+        if ref_line and SHOW_REF_LINE and reference is not None:
+            ax.axhline(reference,
                        color=REF_LINE_COLOR,
                        linestyle=REF_LINE_LSTYLE,
                        linewidth=REF_LINE_LWIDTH)
 
         ax.set_xlabel(xlabel, fontsize=FONT_LABEL, fontweight=FONT_WEIGHT)
-        ax.set_ylabel(ylabel, fontsize=FONT_LABEL, fontweight=FONT_WEIGHT)
+        ax.set_ylabel(col_ylabel, fontsize=FONT_LABEL, fontweight=FONT_WEIGHT)
         ax.tick_params(axis='x', labelsize=FONT_TICK_X, length=TICK_LENGTH, width=TICK_WIDTH)
 
         if XTICK_POSITIONS is not None:
@@ -152,7 +180,7 @@ if __name__ == '__main__':
         _save_plots(r, rdf_labels, rdf_data,
                     out_dir=OUTPUT_RDF_DIR,
                     xlabel='r (Å)',
-                    ylabel='g(r)',
+                    ylabel=None,          # per-column units; see column_style()
                     ref_line=True)
         print(f"Done. {len(rdf_labels)} g(r) plot(s) written to '{OUTPUT_RDF_DIR}/'")
 

@@ -1,0 +1,192 @@
+# submit_temperature_sweep.conf.example — template for
+# submit_temperature_sweep.conf.
+#
+# submit_temperature_sweep.sh reads its conf from ITS OWN directory and
+# refuses to run without one. The intended workflow is to copy the script and
+# this file together into an empty sweep directory:
+#
+#   mkdir -p .../sweeps/water-OH-0001 && cd .../sweeps/water-OH-0001
+#   cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.sh .
+#   cp <util>/jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.conf.example \
+#      submit_temperature_sweep.conf
+#
+# The sweep then carries the exact script and settings it ran with, next to
+# its results. Running the script in place from the checkout works identically.
+#
+# In the checkout, submit_temperature_sweep.conf is gitignored — it holds your
+# own local paths. This file (the .example) is the tracked template.
+#
+# Every value here is just a default: any of submit_temperature_sweep.sh's
+# flags overrides the corresponding variable below for that one invocation. Run
+# submit_temperature_sweep.sh --help for what each variable/flag controls.
+#
+# This file is sourced as bash, so normal bash quoting works. $REPO_ROOT is
+# available below and expands to the checkout the pipeline files come from —
+# including the REPO_ROOT you set in this file, since the script reads that
+# value first and only then sources this file for real.
+
+# ---------------------------------------------------------------------------
+# Where the util checkout is
+#
+# Only submit_temperature_sweep.sh and this conf get copied into a sweep
+# directory; everything else the pipeline needs (generate_cascade_input.py,
+# OH-cascade-preamble.input, dielectric-production.input, the aggregators, the
+# slurm templates) is read from the checkout.
+#
+# Set to the checkout on the cluster, so a script copied into a sweep
+# directory anywhere finds the pipeline files without further configuration.
+# Change it for a different checkout (a worktree, a clone on /scratch1, a
+# laptop). The script errors out immediately, naming the path it looked for,
+# if the pipeline files are not there.
+#
+# This is a literal rather than "${REPO_ROOT:-}" (the form that would defer to
+# whatever the script auto-detects) because a fixed path is one less thing to
+# get wrong. Note that it also governs the $REPO_ROOT paths further down this
+# file — the assignment is read top to bottom, so those pick up whatever is
+# set here, and the conf's paths can never disagree with the pipeline's.
+REPO_ROOT="/home1/lkyamamo/util"
+
+# ---------------------------------------------------------------------------
+# General input
+# ---------------------------------------------------------------------------
+# The seed structure the cascade starts from. Read for its atom COUNTS by the
+# density solve; its own Masses section is deliberately not used (see the note
+# on --density in --help).
+STARTING_STRUCTURE="$REPO_ROOT/starting-structures/ICE_CUBIC.data"
+POTENTIAL_FILE="/scratch1/lkyamamo/finalized-modifications/potentials/20260729_OH_B_theta_mod_v3.usc"
+# Must stay OH.usc: OH-cascade-preamble.input's pair_coeff line names it, and
+# the driver rejects anything else rather than letting LAMMPS fail after the
+# job has already queued.
+POTENTIAL_LINK_NAME="OH.usc"
+# LAMMPS executable for the cascade and the dielectric production stage. Empty
+# means each SLURM template's own default
+# (/home1/lkyamamo/executables/lammps/lmp_mpi_shock_2019). Whatever you point
+# at must be built with pair_style usc; the cascade needs no optional package
+# beyond that.
+LMP_BIN=""
+# Virtualenv activated before the density solve (which this driver runs itself,
+# before submitting anything) and before the aggregators. Assumed to have
+# everything they need — numpy, ase. Same venv distribution_submit.slurm and
+# dielectric_submit.slurm activate. Leave empty to use whatever python is
+# already on PATH.
+VENV_PATH="/home1/lkyamamo/venv/struc_analysis"
+ANALYSIS_PARENT_DIR="/scratch1/lkyamamo/finalized-modifications/analysis"
+ANALYSIS_TEMPLATE_DIR="$REPO_ROOT/simulation/lammps/20260617_dielectric_multi_traj"
+MSD_TEMPLATE_DIR="$REPO_ROOT/analysis/distributions/20260608_GrNrBaSqw"
+
+# ---------------------------------------------------------------------------
+# Temperatures — CELSIUS, SEMICOLON-separated
+#
+# Semicolons, not commas: these reach the SLURM stages through sbatch --export,
+# which is comma-delimited and truncates silently.
+#
+# The two lists are independent. Leave one empty to run only the other route;
+# the cascade still thermalizes and writes a structure at every temperature in
+# the union of the two, so both routes get properly equilibrated starting
+# points either way. A temperature in both lists is one cascade stop feeding
+# both.
+#
+# BOTH ARE EMPTY BY DEFAULT ON PURPOSE. Everything else in this file is a
+# default worth having, but these two decide how many jobs get queued and how
+# much compute gets spent. If a list were set here, running
+#
+#   submit_temperature_sweep.sh --diffusion-temperatures "5;25"
+#
+# would quietly submit this file's dielectric temperatures too — the flag only
+# overrides its own variable. Keeping them empty forces the choice to be made,
+# visibly, per invocation. Pass the ones you want on the command line, or fill
+# these in if you genuinely run the same pair of lists every time.
+# ---------------------------------------------------------------------------
+DIFFUSION_TEMPERATURES=""
+DIELECTRIC_TEMPERATURES=""
+
+# ---------------------------------------------------------------------------
+# Cascade (stage 1)
+# ---------------------------------------------------------------------------
+# The only system-size knob. The preamble is otherwise a fixed constant.
+REPLICATE="6 6 6"
+# Target mass density in g/cc. ICE_CUBIC + "6 6 6" at 1.0 solves to a 37.2514 A
+# cube — the value OH-therm.input hardcodes.
+DENSITY="1.0"
+# Optional Celsius melt above the highest requested temperature, held and then
+# descended from but never saved. 127 C is OH-therm.input's 400 K melt. Leave
+# empty to ramp straight to the highest requested temperature.
+MELT_TEMPERATURE=""
+# PICOSECONDS (LAMMPS metal units). 0.00025 ps = 0.25 fs. Note that the MSD
+# parameters further down are in femtoseconds.
+TIMESTEP="0.00025"
+SEED="156467"
+DEFORM_LENGTH="100000"
+RAMP_LENGTH="20000"
+HOLD_LENGTH="100000"
+NVE_LENGTH="50000"
+DYNAMICS_DUMP_EVERY="10"
+
+# ---------------------------------------------------------------------------
+# Diffusion / MSD (stage 3) — FEMTOSECONDS
+#
+# msd.py hard-fails on the three below rather than guessing, so
+# submit_temperature_sweep.sh checks them before submitting anything whenever
+# DIFFUSION_TEMPERATURES is non-empty.
+# ---------------------------------------------------------------------------
+MSD_CORR_LENGTH="5000"
+MSD_CORR_INTERVAL="500"
+MSD_FIT_FRACTION="0.5"
+# Normally left empty: derived as TIMESTEP x DYNAMICS_DUMP_EVERY x 1000, which
+# is exact because this pipeline sets both of those itself. Set only to override.
+DYNAMICS_DT=""
+
+# ---------------------------------------------------------------------------
+# Dielectric production (stage 2a)
+# ---------------------------------------------------------------------------
+DIELECTRIC_N_CHUNKS="128"
+DIELECTRIC_CHUNK_LENGTH="468750"
+DIELECTRIC_DUMP_EVERY="10"
+
+# ---------------------------------------------------------------------------
+# Dielectric calc (stage 2b)
+# ---------------------------------------------------------------------------
+DIELECTRIC_CUTOFF="1.2"
+DIELECTRIC_TYPE_O="1"
+DIELECTRIC_TYPE_H="2"
+DIELECTRIC_CHARGE_H="0.406988"
+DIELECTRIC_AVERAGING_METHOD="cumulative"
+DIELECTRIC_NTASKS=""
+DIELECTRIC_MEM="0"
+# Box lengths (Angstrom) for 2.dipole_std.py's prefactor. Leave empty to use
+# the cube edge the density solve produced — the box is no longer independent
+# of this pipeline, so these are overrides rather than required inputs.
+LA=""
+LB=""
+LC=""
+
+# ---------------------------------------------------------------------------
+# SLURM — stage 1 (the cascade)
+#
+# The cascade runs every temperature in one job, so its walltime has to cover
+# the whole descent, not one temperature.
+# ---------------------------------------------------------------------------
+NODES="1"
+NTASKS="64"
+TIME="24:00:00"
+JOB_NAME="cascade"
+CONSTRAINT="epyc-7513"
+NODELIST=""
+
+# ---------------------------------------------------------------------------
+# SLURM — stage 2a (dielectric production, one job per dielectric temperature)
+# ---------------------------------------------------------------------------
+DIELECTRIC_NODES="1"
+DIELECTRIC_TIME="8:00:00"
+DIELECTRIC_JOB_NAME="dielectric-production"
+DIELECTRIC_CONSTRAINT="epyc-7513"
+DIELECTRIC_NODELIST=""
+
+# ---------------------------------------------------------------------------
+# SLURM — stages 2b and 3 (the per-temperature analysis jobs)
+# ---------------------------------------------------------------------------
+ANALYSIS_NODES=""
+ANALYSIS_TIME="8:00:00"
+ANALYSIS_JOB_NAME="sweep"
+ANALYSIS_CONSTRAINT=""
+ANALYSIS_NODELIST=""

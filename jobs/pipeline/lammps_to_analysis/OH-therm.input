@@ -6,6 +6,34 @@ boundary        p p p
 processors      * * *
 atom_style      atomic
 
+# ---- dynamical-matrix VDOS (vdos_dynmat.py) ------------------------------
+# Off by default: this file's normal job is the MD trajectory below. Setting
+# RUN_DYNMAT=1 appends a minimization + dynamical_matrix block at the very end,
+# acting on the final MD configuration. "variable ... index" is the LAMMPS form
+# whose value a command-line -var overrides, so submit_pipeline.sh drives all of
+# these; the values here are what applies when it doesn't.
+#
+# Cost, before you turn this on: the finite-difference loop costs 6N force
+# evaluations and produces a (3N)^2 matrix. With replicate 6 6 6 on
+# ICE_CUBIC.data that is N=5184 -> 31104 force evaluations and a 15552x15552
+# matrix (~1.9 GB in memory, ~2.9 GB as text). Set DYNMAT_BINARY=yes to write
+# raw float64 instead of text.
+variable        RUN_DYNMAT          index 0
+variable        DYNMAT_MIN_STYLE    index cg
+variable        DYNMAT_MIN_ETOL     index 1.0e-12
+variable        DYNMAT_MIN_FTOL     index 1.0e-12
+variable        DYNMAT_MIN_MAXITER  index 100000
+variable        DYNMAT_MIN_MAXEVAL  index 1000000
+variable        DYNMAT_DISPLACEMENT index 0.0001
+variable        DYNMAT_FILE         index dynmat.dat
+variable        DYNMAT_REF_FILE     index dynmat_ref.lammpstrj
+variable        DYNMAT_BINARY       index no
+
+# dynamical_matrix needs an atom map, and atom_modify must come before
+# read_data. Conditional so an MD-only run (RUN_DYNMAT=0) is unchanged.
+if "${RUN_DYNMAT} == 1" then "atom_modify map array"
+# --------------------------------------------------------------------------
+
 read_data       start.data
 replicate       6 6 6
 
@@ -93,5 +121,36 @@ undump          mydyn
 
 write_restart   final.restart
 write_data      final.data
+
+############### dynamical-matrix VDOS (RUN_DYNMAT=1) ###############
+# Runs on the configuration the MD above just finished with — all fixes
+# released, all dumps closed — so the minimization drops it into the nearest
+# inherent structure and dynamical_matrix builds the mass-weighted force
+# constants there. The tolerances are much tighter than the pre-MD CG relax
+# above on purpose: residual forces show up directly as spurious imaginary
+# modes in the eigenvalue spectrum.
+#
+# The group must stay `all`. dynamical_matrix iterates atoms by global ID, so
+# matrix row 3i+alpha is atom ID i+1 — which is what lets vdos_dynmat.py take
+# the per-atom element from dump.lammpstrj (written with dump_modify sort id)
+# without any extra output from this file.
+if "${RUN_DYNMAT} == 0" then "jump SELF end_dynmat"
+
+min_style       ${DYNMAT_MIN_STYLE}
+minimize        ${DYNMAT_MIN_ETOL} ${DYNMAT_MIN_FTOL} ${DYNMAT_MIN_MAXITER} ${DYNMAT_MIN_MAXEVAL}
+
+# The minimized geometry, for vdos_dynmat.py's mode-character analysis. That
+# analysis projects each mode onto local Si-O-Si frames, so it needs the exact
+# coordinates the force constants below were evaluated at -- the last MD frame
+# in dump.lammpstrj is the configuration BEFORE this minimization, and the
+# relaxation rotates bond directions, which is precisely what the projection
+# measures. write_dump emits one frame immediately, with no run.
+write_dump      all custom ${DYNMAT_REF_FILE} id element x y z &
+                modify element O H sort id
+
+dynamical_matrix all regular ${DYNMAT_DISPLACEMENT} file ${DYNMAT_FILE} binary ${DYNMAT_BINARY}
+
+label end_dynmat
+####################################################################
 
 

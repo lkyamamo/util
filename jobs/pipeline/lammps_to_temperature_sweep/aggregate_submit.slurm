@@ -7,13 +7,16 @@
 #SBATCH --output=STREAM_OUTPUT
 #SBATCH --job-name=dielectric-aggregate
 
-# Combines all per-temperature dielectric_submit.slurm summaries into one
-# CSV. Submitted by submit_dielectric_pipeline.sh with --dependency=afterok
-# on every per-temperature stage-2 job.
+# Combines one route's per-temperature results into a single CSV. Submitted
+# once per route by submit_temperature_sweep.sh, with --dependency=afterok on
+# every terminal job of that route: the dielectric calcs, or the msd jobs.
+# AGGREGATE_SCRIPT is what makes it route-agnostic.
 #
-# ENTRIES_FILE: one "TEMPERATURE:SUMMARY_FILE" per line (avoids the comma
+# ENTRIES_FILE: one "CELSIUS:KELVIN:PATH" per line (avoids the comma
 # restriction of sbatch --export for an arbitrarily long list).
 # OUTPUT_CSV / AGGREGATE_SCRIPT: set via sbatch --export.
+# VENV_PATH: virtualenv to activate, set via --export from the driver, so the
+# aggregators run under the same python as everything else in the pipeline.
 
 set -euo pipefail
 
@@ -22,9 +25,13 @@ if [ -z "${ENTRIES_FILE:-}" ] || [ -z "${OUTPUT_CSV:-}" ] || [ -z "${AGGREGATE_S
     exit 1
 fi
 
+if [ -n "${VENV_PATH:-}" ]; then
+    source "$VENV_PATH/bin/activate"
+fi
+
 entry_args=()
 while IFS= read -r line; do
     [ -n "$line" ] && entry_args+=(--entry "$line")
 done < "$ENTRIES_FILE"
 
-python3 "$AGGREGATE_SCRIPT" "${entry_args[@]}" --output "$OUTPUT_CSV"
+python "$AGGREGATE_SCRIPT" "${entry_args[@]}" --output "$OUTPUT_CSV"
