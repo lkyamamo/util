@@ -25,7 +25,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RSYNC=/opt/homebrew/bin/rsync
 CONFIG="${SCRIPT_DIR}/nas.config"
 MANIFEST_DIR="${SCRIPT_DIR}/manifests"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -37,6 +36,18 @@ SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 
 [[ -f "$CONFIG" ]] || { echo "ERROR: nas.config not found at $CONFIG"; exit 1; }
 source "$CONFIG"
+
+# rsync binary. Do not hardcode a path: this script runs on macOS (where the
+# system rsync is 2.6.9 and too old for --info=progress2, so a Homebrew build is
+# wanted) and on Linux hosts where rsync is simply /bin/rsync or /usr/bin/rsync.
+# An explicit RSYNC in nas.config or the environment always wins.
+if [[ -z "${RSYNC:-}" ]]; then
+    for _candidate in /opt/homebrew/bin/rsync /usr/local/bin/rsync; do
+        [[ -x "$_candidate" ]] && { RSYNC="$_candidate"; break; }
+    done
+    unset _candidate
+    : "${RSYNC:=$(command -v rsync 2>/dev/null || true)}"
+fi
 
 HPC="${HPC_USER}@${HPC_HOST}"
 FORCE="false"
@@ -51,10 +62,10 @@ mkdir -p "$MANIFEST_DIR" "$LOG_DIR"
 # =============================================================================
 
 preflight_local() {
-    if [[ ! -x "$RSYNC" ]]; then
-        echo "ERROR: rsync not found at $RSYNC"
-        echo "       The macOS system rsync is too old for --info=progress2."
-        echo "       Install a current one:  brew install rsync"
+    if [[ -z "${RSYNC:-}" || ! -x "$RSYNC" ]]; then
+        echo "ERROR: no usable rsync found${RSYNC:+ at $RSYNC}."
+        echo "       Set RSYNC in ${CONFIG} (or the environment) to its full path."
+        echo "       On macOS the system rsync (2.6.9) is too old — brew install rsync."
         exit 1
     fi
 }
@@ -473,7 +484,7 @@ cmd_sync() {
 
     [[ "$DRY_RUN" == "true" ]] && echo "*** DRY RUN — rsync runs with --dry-run, nothing is written ***"
     [[ "$SKIP_TRAJECTORY" == "true" ]] && echo "*** --skip-trajectory active: not syncing ${RSYNC_PRIORITY_LAST[*]:-} ***"
-    if (( ${#ALWAYS_EXCLUDE[@]:-0} > 0 )); then
+    if (( ${#ALWAYS_EXCLUDE[@]} > 0 )); then
         echo "*** never transferred (ALWAYS_EXCLUDE): ${ALWAYS_EXCLUDE[*]:-} ***"
     fi
 
