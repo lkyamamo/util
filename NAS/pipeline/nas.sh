@@ -165,28 +165,46 @@ robust_rsync() {
 # Pattern helpers
 # =============================================================================
 
-# Populates SKIP_EXCLUDES with --exclude args for every SKIP_PATTERNS entry,
-# but only when trajectory skipping is active. Applied to *every* pass, so a
-# skip pattern that is not also a deferred pattern is still honored.
-SKIP_EXCLUDES=()
-build_skip_excludes() {
-    SKIP_EXCLUDES=()
-    [[ "$SKIP_TRAJECTORY" != "true" ]] && return 0
+# Two lists govern what transfers, and they answer different questions:
+#
+#   RSYNC_PRIORITY_LAST — WHEN. These are held back to phase 2, so every
+#       directory's main files land before any bulk data starts. Without
+#       --skip-trajectory they all still transfer, just last. With
+#       --skip-trajectory they are not transferred at all, and the directory
+#       rests at MAIN_DONE so a later run without the flag completes it.
+#
+#   ALWAYS_EXCLUDE — WHETHER, unconditionally. Never transferred, in any pass,
+#       whatever --skip-trajectory is set to. This is the list for data that is
+#       derived and disposable: the dielectric dumps, for instance, are reduced
+#       to dipole lines on the HPC and the sweep pipeline deletes them there.
+#
+# The distinction matters because ALWAYS_EXCLUDE entries need not be trajectories
+# at all — dielectric.*.custom matches neither *.lammpstrj nor *.dump, so without
+# this list it would transfer in phase 1, ahead of everything it dwarfs.
+ALWAYS_EXCLUDES=()
+build_always_excludes() {
+    ALWAYS_EXCLUDES=()
     local pat
-    for pat in "${SKIP_PATTERNS[@]:-}"; do
-        [[ -n "$pat" ]] && SKIP_EXCLUDES+=(--exclude="$pat")
+    for pat in "${ALWAYS_EXCLUDE[@]:-}"; do
+        [[ -n "$pat" ]] && ALWAYS_EXCLUDES+=(--exclude="$pat")
     done
 }
 
-# Comma-joined list of patterns actually suppressed on this run, for the
-# manifest's `skipped` column. "-" when nothing was suppressed.
+# Comma-joined list of what this directory is still missing, for the manifest's
+# `skipped` column: the permanent exclusions, plus the deferred globs while
+# --skip-trajectory is suppressing them. "-" when nothing is outstanding.
 skipped_patterns_field() {
-    if [[ "$SKIP_TRAJECTORY" != "true" ]]; then echo "-"; return; fi
     local out="" pat
-    for pat in "${SKIP_PATTERNS[@]:-}"; do
+    for pat in "${ALWAYS_EXCLUDE[@]:-}"; do
         [[ -z "$pat" ]] && continue
         out="${out:+${out},}${pat}"
     done
+    if [[ "$SKIP_TRAJECTORY" == "true" ]]; then
+        for pat in "${RSYNC_PRIORITY_LAST[@]:-}"; do
+            [[ -z "$pat" ]] && continue
+            out="${out:+${out},}${pat}"
+        done
+    fi
     echo "${out:--}"
 }
 
@@ -279,7 +297,7 @@ rsync_dir_pass() {
     mkdir -p "$local_log_dir" "${LOCAL_BASE}/${dirname}"
     local logfile="${local_log_dir}/rsync_${dirname}_${pass}_$(date +%Y%m%d_%H%M%S).log"
 
-    build_skip_excludes
+    build_always_excludes
 
     local filter_args=()
     local pat
@@ -309,8 +327,10 @@ rsync_dir_pass() {
     esac
 
     echo "  [rsync:${pass}] log → $logfile"
+    # rsync is first-match-wins, so the unconditional excludes go first: they
+    # then beat any --include a pass adds later.
     robust_rsync --logfile "$logfile" \
-        "${SKIP_EXCLUDES[@]:+${SKIP_EXCLUDES[@]}}" \
+        "${ALWAYS_EXCLUDES[@]:+${ALWAYS_EXCLUDES[@]}}" \
         "${filter_args[@]:+${filter_args[@]}}" \
         "${HPC}:${REMOTE_BASE}/${dirname}/" \
         "${LOCAL_BASE}/${dirname}/"
@@ -452,7 +472,10 @@ cmd_sync() {
     preflight_remote
 
     [[ "$DRY_RUN" == "true" ]] && echo "*** DRY RUN — rsync runs with --dry-run, nothing is written ***"
-    [[ "$SKIP_TRAJECTORY" == "true" ]] && echo "*** --skip-trajectory active: excluding ${SKIP_PATTERNS[*]:-} ***"
+    [[ "$SKIP_TRAJECTORY" == "true" ]] && echo "*** --skip-trajectory active: not syncing ${RSYNC_PRIORITY_LAST[*]:-} ***"
+    if (( ${#ALWAYS_EXCLUDE[@]:-0} > 0 )); then
+        echo "*** never transferred (ALWAYS_EXCLUDE): ${ALWAYS_EXCLUDE[*]:-} ***"
+    fi
 
     # collect the directories this run applies to
     local -a run_dirs=()
@@ -575,7 +598,7 @@ usage() {
     echo ""
     echo "Sync flags:"
     echo "  --force                 ignore recorded status and re-run transfers"
-    echo "  --skip-trajectory       exclude SKIP_PATTERNS and skip the deferred phase"
+    echo "  --skip-trajectory       do not sync the RSYNC_PRIORITY_LAST globs at all"
     echo "  --no-skip-trajectory    force the deferred phase on (overrides nas.config)"
     echo "  --dry-run               pass --dry-run to rsync; transfer nothing"
     echo ""

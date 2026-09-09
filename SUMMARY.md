@@ -38,7 +38,9 @@ This repository is a personal utilities + scientific workflow workspace (LAMMPS/
 - **`NAS/`**: Scripts for syncing/transferring data from HPC → local NAS with manifests + rsync.
   - **`NAS/pipeline/`**: Current entry point `nas.sh` (`sync` / `status` / `manifest`), configured by `nas.config`.
     Transfers run in two global phases — every directory finishes its main transfer before any directory
-    starts its deferred (trajectory) transfer — with `--skip-trajectory` to omit trajectories entirely.
+    starts its deferred (trajectory) transfer — with `--skip-trajectory` to defer trajectories to a later
+    run, and `ALWAYS_EXCLUDE` in the config for data that should never transfer at all (the dielectric
+    `dumps/dielectric.*.custom` trajectories, which are reduced to dipole lines on the HPC).
     Per-directory state lives in `manifests/*.tsv`; rsync logs in `logs/` (both gitignored).
   - **`NAS/pipeline/ARCHIVE_MODE_NOTES.md`**: the removed HPC-side SLURM compression mode — how to
     retrieve the code from git and the defects to fix before re-enabling it.
