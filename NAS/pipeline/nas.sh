@@ -19,13 +19,53 @@
 # Requires bash 3.2 (the macOS system bash) — do not introduce bash 4+ syntax
 # such as ${var^^}, ${var,,}, declare -A, or mapfile.
 #
+# SYMLINKS
+#   Transfers use --copy-unsafe-links. `rsync -a` implies -l, which copies
+#   symlinks *as symlinks*; because the links under runs/ are absolute
+#   /scratch1/lkyamamo paths that do not exist locally, they used to arrive
+#   dangling — the listing looked complete while the input it pointed at was
+#   missing. rsync treats every absolute symlink as "unsafe", so
+#   --copy-unsafe-links replaces them with the file they point at, while leaving
+#   relative in-tree links as links.
+#
+#   Watch the cost. Most of these links are small (potentials ~2 KB, start.data
+#   ~800 KB), but some are DIRECTORY links into another run's output — e.g.
+#   analysis/small_interface/voxel_0147/dumps -> runs/small_interface/0147/run/full,
+#   which is ~2.1 TB. Dereferencing that would copy the whole tree a second time.
+#   ALWAYS_EXCLUDE is what holds this back: an excluded pattern is applied to the
+#   dereferenced path, so `dumps/` prunes such a link instead of expanding it.
+#   Before adding a new directory symlink to the tree, check it is covered.
+#
+#   Note the side effect: an excluded directory link now disappears from the
+#   local copy entirely, where before it survived as a dangling symlink that at
+#   least recorded which run the analysis had used.
+#
+# DELETION HAZARD
+#   Symlink targets are frequently *other runs'* outputs — runs/0177/run/final.data
+#   is the start.data for six other runs. Pruning old runs by age or size will
+#   silently break newer runs' provenance. Check inbound links before deleting.
+#
 # Archive mode (SLURM-side compression) was removed; see ARCHIVE_MODE_NOTES.md.
 # =============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG="${SCRIPT_DIR}/nas.config"
+
+# The config lives on the NAS itself, so every checkout and git worktree of this
+# repo shares one config rather than each carrying a divergent copy. Fall back to
+# the copy beside the script when the drive is not mounted (or on Linux, where
+# /Volumes does not exist), and let NAS_CONFIG override both.
+NAS_CONFIG_DEFAULT=/Volumes/Elements/nas.config
+CONFIG="${NAS_CONFIG:-}"
+if [[ -z "$CONFIG" ]]; then
+    if [[ -f "$NAS_CONFIG_DEFAULT" ]]; then
+        CONFIG="$NAS_CONFIG_DEFAULT"
+    else
+        CONFIG="${SCRIPT_DIR}/nas.config"
+    fi
+fi
+
 MANIFEST_DIR="${SCRIPT_DIR}/manifests"
 LOG_DIR="${SCRIPT_DIR}/logs"
 SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
@@ -34,7 +74,13 @@ SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 # Load config
 # =============================================================================
 
-[[ -f "$CONFIG" ]] || { echo "ERROR: nas.config not found at $CONFIG"; exit 1; }
+[[ -f "$CONFIG" ]] || {
+    echo "ERROR: nas.config not found at $CONFIG"
+    echo "       Expected ${NAS_CONFIG_DEFAULT} (is the drive mounted?)"
+    echo "       or ${SCRIPT_DIR}/nas.config; override with NAS_CONFIG=<path>."
+    exit 1
+}
+echo "  [config] $CONFIG"
 source "$CONFIG"
 
 # rsync binary. Do not hardcode a path: this script runs on macOS (where the
@@ -136,6 +182,7 @@ robust_rsync() {
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
+                --copy-unsafe-links \
                 --info=progress2 \
                 "${dry_flag[@]:+${dry_flag[@]}}" \
                 -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
@@ -148,6 +195,7 @@ robust_rsync() {
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
+                --copy-unsafe-links \
                 --info=progress2 \
                 "${dry_flag[@]:+${dry_flag[@]}}" \
                 -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
