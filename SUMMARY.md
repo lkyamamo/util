@@ -41,6 +41,10 @@ This repository is a personal utilities + scientific workflow workspace (LAMMPS/
     starts its deferred (trajectory) transfer — with `--skip-trajectory` to defer trajectories to a later
     run, and `ALWAYS_EXCLUDE` in the config for data that should never transfer at all (the dielectric
     `dumps/dielectric.*.custom` trajectories, which are reduced to dipole lines on the HPC).
+    After each phase it relinks symlinks written in the remote namespace (absolute `/scratch1/...`
+    targets) into relative in-tree links, so they resolve locally without copying; run it on its own
+    with `./nas.sh relink [--dry-run]`, and see `logs/unresolved_symlinks_<dir>.tsv` for links whose
+    target lies outside `REMOTE_BASE`.
     Config defaults to `/Volumes/Elements/nas.config` (override with `NAS_CONFIG`), falling back to
     the copy in the repo when the drive is not mounted. Per-directory state (`manifests/*.tsv`) and
     rsync logs (`logs/`) are written next to whichever config was used, so all checkouts share one

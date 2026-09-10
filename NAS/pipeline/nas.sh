@@ -20,25 +20,31 @@
 # such as ${var^^}, ${var,,}, declare -A, or mapfile.
 #
 # SYMLINKS
-#   Transfers use --copy-unsafe-links. `rsync -a` implies -l, which copies
-#   symlinks *as symlinks*; because the links under runs/ are absolute
-#   /scratch1/lkyamamo paths that do not exist locally, they used to arrive
-#   dangling — the listing looked complete while the input it pointed at was
-#   missing. rsync treats every absolute symlink as "unsafe", so
-#   --copy-unsafe-links replaces them with the file they point at, while leaving
-#   relative in-tree links as links.
+#   `rsync -a` implies -l, so symlinks are copied *as symlinks*. The links under
+#   runs/ are absolute /scratch1/lkyamamo paths that do not exist locally, so they
+#   arrive dangling — the listing looks complete while the input it points at is
+#   missing.
 #
-#   Watch the cost. Most of these links are small (potentials ~2 KB, start.data
-#   ~800 KB), but some are DIRECTORY links into another run's output — e.g.
-#   analysis/small_interface/voxel_0147/dumps -> runs/small_interface/0147/run/full,
-#   which is ~2.1 TB. Dereferencing that would copy the whole tree a second time.
-#   ALWAYS_EXCLUDE is what holds this back: an excluded pattern is applied to the
-#   dereferenced path, so `dumps/` prunes such a link instead of expanding it.
-#   Before adding a new directory symlink to the tree, check it is covered.
+#   The fix is a relink pass, not --copy-unsafe-links. These targets are not
+#   really lost: they are inside the transfer, just written in the *remote*
+#   namespace. relink translates REMOTE_BASE/... to LOCAL_BASE/... and rewrites
+#   the link as a RELATIVE one, which costs nothing and keeps the tree portable
+#   if the drive is renamed.
 #
-#   Note the side effect: an excluded directory link now disappears from the
-#   local copy entirely, where before it survived as a dangling symlink that at
-#   least recorded which run the analysis had used.
+#   Why not --copy-unsafe-links: rsync counts every absolute symlink as unsafe,
+#   so it would replace each one with a full copy of its target. Most are small
+#   (potentials ~2 KB, start.data ~800 KB) but some are DIRECTORY links into
+#   another run's output — analysis/small_interface/voxel_0147/dumps ->
+#   runs/small_interface/0147/run/full is ~2.1 TB, copied a second time. It also
+#   destroys the sharing: runs/0177/run/final.data is the start.data for six
+#   other runs, and as six independent copies that provenance is gone.
+#
+#   relink also works before the target exists, so a link pointing at trajectory
+#   data can be fixed in phase 1 and simply starts resolving when phase 2 lands
+#   the file. That is why it runs after *each* phase, not only at the end.
+#
+#   Links whose target is not under REMOTE_BASE cannot be translated. Those are
+#   left untouched and recorded in LOG_DIR/unresolved_symlinks_<dirname>.tsv.
 #
 # DELETION HAZARD
 #   Symlink targets are frequently *other runs'* outputs — runs/0177/run/final.data
@@ -108,6 +114,8 @@ FORCE="false"
 DRY_RUN="false"
 # SKIP_TRAJECTORY comes from nas.config; --skip-trajectory/--no-skip-trajectory override it
 SKIP_TRAJECTORY="${SKIP_TRAJECTORY:-false}"
+# Repair remote-namespace symlinks after each phase; --no-relink turns it off
+RELINK="${RELINK:-true}"
 
 mkdir -p "$MANIFEST_DIR" "$LOG_DIR"
 
@@ -190,7 +198,6 @@ robust_rsync() {
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
-                --copy-unsafe-links \
                 --info=progress2 \
                 "${dry_flag[@]:+${dry_flag[@]}}" \
                 -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
@@ -203,7 +210,6 @@ robust_rsync() {
                 -az \
                 --partial \
                 --partial-dir=.rsync-partial \
-                --copy-unsafe-links \
                 --info=progress2 \
                 "${dry_flag[@]:+${dry_flag[@]}}" \
                 -e "ssh -o ControlPath=$SSH_CONTROL -o ControlMaster=no" \
@@ -281,6 +287,99 @@ has_deferred_patterns() {
         [[ -n "$pat" ]] && return 0
     done
     return 1
+}
+
+# =============================================================================
+# Relink — repair symlinks written in the remote namespace
+#
+# rsync -a copies symlinks as symlinks, so absolute REMOTE_BASE/... targets land
+# pointing at paths that do not exist here. Translate them to LOCAL_BASE and
+# rewrite as relative links. See the SYMLINKS note in the header for why this is
+# preferred over --copy-unsafe-links.
+# =============================================================================
+
+# Relative path from a directory to a target, both absolute. Pure bash so it
+# works with the macOS 3.2 shell and without GNU realpath.
+relpath() {
+    local from="$1" to="$2" common up=""
+    common="$from"
+    while [[ "$to" != "$common/"* && "$common" != "/" ]]; do
+        common="$(dirname "$common")"
+        up="../$up"
+    done
+    [[ "$common" == "/" ]] && { echo "$to"; return; }
+    echo "${up}${to#$common/}"
+}
+
+relink_dir() {
+    local dirname="$1"
+    local root="${LOCAL_BASE}/${dirname}"
+    [[ -d "$root" ]] || return 0
+
+    local report="${LOG_DIR}/unresolved_symlinks_${dirname}.tsv"
+    mkdir -p "$LOG_DIR"
+    printf "link\ttarget\treason\n" > "${report}.tmp"
+
+    local rewritten=0 already=0 unresolved=0 pending=0
+    local link target mapped linkdir rel
+
+    while IFS= read -r link; do
+        target=$(readlink "$link") || continue
+
+        # already relative — portable, leave it alone (this is what makes the
+        # pass idempotent)
+        if [[ "$target" != /* ]]; then
+            already=$(( already + 1 ))
+            continue
+        fi
+
+        if [[ "$target" == "${REMOTE_BASE}/"* ]]; then
+            mapped="${LOCAL_BASE}/${target#${REMOTE_BASE}/}"
+            linkdir=$(cd "$(dirname "$link")" && pwd)
+            rel=$(relpath "$linkdir" "$mapped")
+
+            if [[ "$DRY_RUN" == "true" ]]; then
+                echo "    [would relink] ${link#$LOCAL_BASE/} -> $rel"
+            else
+                ln -sfn "$rel" "$link"
+            fi
+            rewritten=$(( rewritten + 1 ))
+
+            # a rewritten link may still not resolve yet: its target can be
+            # deferred to phase 2, or live in a directory not listed in
+            # DIRECTORIES. Record it so it is visible either way.
+            if [[ ! -e "$mapped" ]]; then
+                pending=$(( pending + 1 ))
+                printf "%s\t%s\ttarget-not-present-yet\n" \
+                    "${link#$LOCAL_BASE/}" "$target" >> "${report}.tmp"
+            fi
+        else
+            # outside REMOTE_BASE — nothing here can map it, so leave the link
+            # exactly as it is and report it rather than papering over it
+            unresolved=$(( unresolved + 1 ))
+            printf "%s\t%s\toutside-REMOTE_BASE\n" \
+                "${link#$LOCAL_BASE/}" "$target" >> "${report}.tmp"
+        fi
+    done < <(find "$root" -type l 2>/dev/null)
+
+    mv "${report}.tmp" "$report"
+
+    local verb="rewritten"
+    [[ "$DRY_RUN" == "true" ]] && verb="would rewrite"
+    echo "  [relink] ${dirname}: ${rewritten} ${verb}, ${already} already relative, ${pending} awaiting data, ${unresolved} unresolvable"
+    if (( unresolved > 0 || pending > 0 )); then
+        echo "  [relink] see $report"
+    fi
+}
+
+relink_all() {
+    local phase="$1"; shift
+    echo ""
+    echo "--- relink after ${phase} ---"
+    local d
+    for d in "$@"; do
+        relink_dir "$d"
+    done
 }
 
 # =============================================================================
@@ -528,6 +627,7 @@ cmd_sync() {
             --skip-trajectory)      SKIP_TRAJECTORY="true" ;;
             --no-skip-trajectory)   SKIP_TRAJECTORY="false" ;;
             --dry-run)              DRY_RUN="true" ;;
+            --no-relink)            RELINK="false" ;;
             -*) echo "ERROR: unknown flag '$arg'"; usage ;;
             *)  target="$arg" ;;
         esac
@@ -572,6 +672,13 @@ cmd_sync() {
         sync_main "$d" || main_failed=$(( main_failed + 1 ))
     done
 
+    # Relink after the phase, not after each directory: a link in one directory
+    # often points into another, so waiting until the whole phase is down means
+    # far fewer targets are still missing.
+    if [[ "$RELINK" == "true" ]]; then
+        relink_all "phase 1 (main)" "${run_dirs[@]}"
+    fi
+
     echo ""
     echo "############################################################"
     if [[ "$SKIP_TRAJECTORY" == "true" ]]; then
@@ -588,6 +695,9 @@ cmd_sync() {
             echo "=== ${d} [deferred] ==="
             sync_deferred "$d" || deferred_failed=$(( deferred_failed + 1 ))
         done
+        if [[ "$RELINK" == "true" ]]; then
+            relink_all "phase 2 (deferred)" "${run_dirs[@]}"
+        fi
     fi
 
     echo ""
@@ -618,6 +728,34 @@ cmd_status() {
         printf "%-30s %-8s %-20s %s\n" \
             "$ENTRY_DIRNAME" "$ENTRY_MODE" "${st:-PENDING}" "${sk:--}"
     done
+}
+
+cmd_relink() {
+    local target=""
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run) DRY_RUN="true" ;;
+            -*) echo "ERROR: unknown flag '$arg'"; usage ;;
+            *)  target="$arg" ;;
+        esac
+    done
+
+    [[ "$DRY_RUN" == "true" ]] && echo "*** DRY RUN — showing rewrites, changing nothing ***"
+
+    local -a run_dirs=()
+    local entry
+    for entry in "${DIRECTORIES[@]}"; do
+        resolve_entry "$entry"
+        if [[ -n "$target" && "$ENTRY_DIRNAME" != "$target" ]]; then continue; fi
+        run_dirs+=("$ENTRY_DIRNAME")
+    done
+
+    if (( ${#run_dirs[@]} == 0 )); then
+        echo "ERROR: no directories to relink${target:+ matching '$target'}"
+        exit 1
+    fi
+
+    relink_all "manual run" "${run_dirs[@]}"
 }
 
 cmd_manifest() {
@@ -661,13 +799,15 @@ usage() {
     echo "Usage:"
     echo "  ./nas.sh sync [flags] [dirname]        sync all or one directory"
     echo "  ./nas.sh status                        show per-directory status"
-    echo "  ./nas.sh manifest [--force] <dirname>  create/reset a manifest"
+    echo "  ./nas.sh manifest [--force] <dirname>  create/reset a manifest
+  ./nas.sh relink [--dry-run] [dirname]  repair remote-namespace symlinks"
     echo ""
     echo "Sync flags:"
     echo "  --force                 ignore recorded status and re-run transfers"
     echo "  --skip-trajectory       do not sync the RSYNC_PRIORITY_LAST globs at all"
     echo "  --no-skip-trajectory    force the deferred phase on (overrides nas.config)"
-    echo "  --dry-run               pass --dry-run to rsync; transfer nothing"
+    echo "  --dry-run               pass --dry-run to rsync; transfer nothing
+  --no-relink             skip the post-phase symlink repair"
     echo ""
     echo "Transfers run in two global phases: every directory completes its main"
     echo "transfer before any directory starts its deferred (trajectory) transfer."
@@ -676,6 +816,7 @@ usage() {
 
 case "${1:-}" in
     sync)     shift; cmd_sync "$@" ;;
+    relink)   shift; cmd_relink "$@" ;;
     status)   cmd_status ;;
     manifest) shift; cmd_manifest "$@" ;;
     *)        usage ;;
