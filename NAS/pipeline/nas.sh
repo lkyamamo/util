@@ -58,17 +58,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# The config lives on the NAS itself, so every checkout and git worktree of this
-# repo shares one config rather than each carrying a divergent copy.
-#
-# There is deliberately NO fallback to the copy beside the script. Falling back
-# would mean the script silently ran with a different config depending on whether
-# the drive happened to be mounted — and a run without the drive cannot succeed
-# anyway, since LOCAL_BASE is on it. Missing drive is an error, not a mode.
-# NAS_CONFIG=<path> is the one override (used for testing, and on hosts that have
-# no /Volumes).
-NAS_CONFIG_DEFAULT=/Volumes/Elements/nas.config
-CONFIG="${NAS_CONFIG:-$NAS_CONFIG_DEFAULT}"
+# nas.sh and nas.config travel together: the config is always the one sitting next
+# to this script, and it is an error if it is not there. Run the copy on the drive
+# and you get the drive's config and the drive's state; run the copy in the repo
+# and you get the repo's.
+CONFIG="${SCRIPT_DIR}/nas.config"
 
 SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 
@@ -77,26 +71,18 @@ SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 # =============================================================================
 
 [[ -f "$CONFIG" ]] || {
-    echo "ERROR: nas.config not found at $CONFIG"
-    if [[ "$CONFIG" == "$NAS_CONFIG_DEFAULT" ]]; then
-        echo "       The Elements drive does not appear to be mounted."
-        echo "       Mount it and retry; there is no fallback config by design."
-        echo "       To run against a different config: NAS_CONFIG=<path> $0 ..."
-    fi
+    echo "ERROR: no nas.config next to nas.sh"
+    echo "       expected: $CONFIG"
     exit 1
 }
 echo "  [config] $CONFIG"
 source "$CONFIG"
 
-# Transfer state (per-directory manifests, rsync logs) lives NEXT TO THE CONFIG,
-# not next to the script. The repo has many git worktrees, and keying state to
-# SCRIPT_DIR meant each of them tracked its own progress: running `sync` from one
-# and `status` from another reported "(no manifest)" for everything while the real
-# state sat elsewhere. Anchoring to the config means one drive, one set of state,
-# whichever copy of the script you invoke. nas.config may override either.
-CONFIG_DIR="$(cd "$(dirname "$CONFIG")" && pwd)"
-MANIFEST_DIR="${MANIFEST_DIR:-${CONFIG_DIR}/manifests}"
-LOG_DIR="${LOG_DIR:-${CONFIG_DIR}/logs}"
+# Transfer state (per-directory manifests, rsync logs) sits alongside the script
+# and its config, so a given copy of nas.sh always finds its own state. Set either
+# in nas.config to put it elsewhere.
+MANIFEST_DIR="${MANIFEST_DIR:-${SCRIPT_DIR}/manifests}"
+LOG_DIR="${LOG_DIR:-${SCRIPT_DIR}/logs}"
 
 # rsync binary. Do not hardcode a path: this script runs on macOS (where the
 # system rsync is 2.6.9 and too old for --info=progress2, so a Homebrew build is
