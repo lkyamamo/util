@@ -130,6 +130,16 @@ preflight_local() {
         echo "       On macOS the system rsync (2.6.9) is too old — brew install rsync."
         exit 1
     fi
+
+    # LOCAL_BASE must already exist. Do NOT create it: it is a mount point for an
+    # external drive, and `mkdir -p` on an unmounted /Volumes/... silently makes a
+    # plain directory on the boot disk, which the transfer then fills.
+    if [[ ! -d "$LOCAL_BASE" ]]; then
+        echo "ERROR: LOCAL_BASE does not exist: $LOCAL_BASE"
+        echo "       Refusing to create it — if that is an external drive, it is"
+        echo "       not mounted, and syncing would fill the boot disk instead."
+        exit 1
+    fi
 }
 
 preflight_remote() {
