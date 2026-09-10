@@ -59,18 +59,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # The config lives on the NAS itself, so every checkout and git worktree of this
-# repo shares one config rather than each carrying a divergent copy. Fall back to
-# the copy beside the script when the drive is not mounted (or on Linux, where
-# /Volumes does not exist), and let NAS_CONFIG override both.
+# repo shares one config rather than each carrying a divergent copy.
+#
+# There is deliberately NO fallback to the copy beside the script. Falling back
+# would mean the script silently ran with a different config depending on whether
+# the drive happened to be mounted — and a run without the drive cannot succeed
+# anyway, since LOCAL_BASE is on it. Missing drive is an error, not a mode.
+# NAS_CONFIG=<path> is the one override (used for testing, and on hosts that have
+# no /Volumes).
 NAS_CONFIG_DEFAULT=/Volumes/Elements/nas.config
-CONFIG="${NAS_CONFIG:-}"
-if [[ -z "$CONFIG" ]]; then
-    if [[ -f "$NAS_CONFIG_DEFAULT" ]]; then
-        CONFIG="$NAS_CONFIG_DEFAULT"
-    else
-        CONFIG="${SCRIPT_DIR}/nas.config"
-    fi
-fi
+CONFIG="${NAS_CONFIG:-$NAS_CONFIG_DEFAULT}"
 
 SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 
@@ -80,8 +78,11 @@ SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 
 [[ -f "$CONFIG" ]] || {
     echo "ERROR: nas.config not found at $CONFIG"
-    echo "       Expected ${NAS_CONFIG_DEFAULT} (is the drive mounted?)"
-    echo "       or ${SCRIPT_DIR}/nas.config; override with NAS_CONFIG=<path>."
+    if [[ "$CONFIG" == "$NAS_CONFIG_DEFAULT" ]]; then
+        echo "       The Elements drive does not appear to be mounted."
+        echo "       Mount it and retry; there is no fallback config by design."
+        echo "       To run against a different config: NAS_CONFIG=<path> $0 ..."
+    fi
     exit 1
 }
 echo "  [config] $CONFIG"
