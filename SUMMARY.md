@@ -41,7 +41,10 @@ This repository is a personal utilities + scientific workflow workspace (LAMMPS/
     starts its deferred (trajectory) transfer — with `--skip-trajectory` to defer trajectories to a later
     run, and `ALWAYS_EXCLUDE` in the config for data that should never transfer at all (the dielectric
     `dumps/dielectric.*.custom` trajectories, which are reduced to dipole lines on the HPC).
-    Per-directory state lives in `manifests/*.tsv`; rsync logs in `logs/` (both gitignored).
+    Config defaults to `/Volumes/Elements/nas.config` (override with `NAS_CONFIG`), falling back to
+    the copy in the repo when the drive is not mounted. Per-directory state (`manifests/*.tsv`) and
+    rsync logs (`logs/`) are written next to whichever config was used, so all checkouts share one
+    set of state rather than each tracking its own.
   - **`NAS/pipeline/ARCHIVE_MODE_NOTES.md`**: the removed HPC-side SLURM compression mode — how to
     retrieve the code from git and the defects to fix before re-enabling it.
   - **`NAS/legacy/`**: superseded scripts (`create_manifest.sh`, `upload_directory.sh`, `rsync_list.sh`,

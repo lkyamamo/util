@@ -66,8 +66,6 @@ if [[ -z "$CONFIG" ]]; then
     fi
 fi
 
-MANIFEST_DIR="${SCRIPT_DIR}/manifests"
-LOG_DIR="${SCRIPT_DIR}/logs"
 SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 
 # =============================================================================
@@ -82,6 +80,16 @@ SSH_CONTROL="${TMPDIR:-/tmp}/nas_ssh_ctl_$$"
 }
 echo "  [config] $CONFIG"
 source "$CONFIG"
+
+# Transfer state (per-directory manifests, rsync logs) lives NEXT TO THE CONFIG,
+# not next to the script. The repo has many git worktrees, and keying state to
+# SCRIPT_DIR meant each of them tracked its own progress: running `sync` from one
+# and `status` from another reported "(no manifest)" for everything while the real
+# state sat elsewhere. Anchoring to the config means one drive, one set of state,
+# whichever copy of the script you invoke. nas.config may override either.
+CONFIG_DIR="$(cd "$(dirname "$CONFIG")" && pwd)"
+MANIFEST_DIR="${MANIFEST_DIR:-${CONFIG_DIR}/manifests}"
+LOG_DIR="${LOG_DIR:-${CONFIG_DIR}/logs}"
 
 # rsync binary. Do not hardcode a path: this script runs on macOS (where the
 # system rsync is 2.6.9 and too old for --info=progress2, so a Homebrew build is
