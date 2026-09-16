@@ -17,3 +17,6 @@ NAS/pipeline/logs/
 *.csv
 *.png
 *.lammpstrj
+
+# LAMMPS data files: structures written by setup scripts and write_data.
+*.data
