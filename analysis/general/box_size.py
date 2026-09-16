@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_MASSES = HERE / "masses_quantities.dat"
-DEFAULT_BOX_PARAMS = HERE / "box_parameters.dat"
+DEFAULT_MASSES = HERE / "masses_quantities.config"
+DEFAULT_BOX_PARAMS = HERE / "box_parameters.config"
 
 AMU_TO_G = 1.66054e-24
 A3_TO_CM3 = 1e-24
