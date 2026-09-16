@@ -5,13 +5,21 @@ from collections import defaultdict
 
 import numpy as np
 import h5py
+import psutil
 from scipy.spatial import cKDTree
 from scipy.ndimage import uniform_filter
 
 # --- Configuration ---
-# DUMP_FILE, OUTPUT_FILE, HYDRONIUM_Y_CENTER, HYDRONIUM_Z_CENTER are CLI args
-# Usage: python voxel_analysis.py <dump_file> <output_file> <y_center> <z_center>
+# DUMP_FILE, OUTPUT_FILE, Y_CENTER, Z_CENTER, BUBBLE_RADIUS are CLI args
+# Usage: python voxel_analysis.py <dump_file> <output_file> <y_center> <z_center> <bubble_radius>
 VOXEL_SIZE  = 10.0      # Å (10 Å = 1 nm)
+
+MEMORY_PROFILING = os.environ.get('VOXEL_MEMORY_PROFILE', '0') == '1'
+_process = psutil.Process() if MEMORY_PROFILING else None
+
+
+def _rss_mb():
+    return _process.memory_info().rss / (1024 * 1024)
 
 # Atom type IDs (1-based, must match LAMMPS dump)
 SI_TYPE = 1
@@ -36,7 +44,11 @@ HYDRONIUM_PADDING =  1.3   # Å, padding around rod for H atom collection
 OH_CUTOFF         =  1.2   # Å, O-H bond distance cutoff
 
 # --- Jet tip detection ---
-JET_TIP_SPEED_THRESHOLD = 30.0  # Å/ps, minimum avg_speed to count as jet front
+# Density-based (not speed-based) to avoid spurious detections from isolated
+# fast-moving stray atoms, which can give a high avg_speed in an otherwise
+# near-empty voxel. Bulk liquid water is ~1.0 g/cm^3; this threshold should
+# be calibrated against actual bulk-water voxel density in your trajectory.
+JET_TIP_DENSITY_THRESHOLD = 0.3  # g/cm^3, minimum density to count as jet front
 
 
 def parse_header(file):
@@ -148,6 +160,10 @@ def process_voxel(arr, masses, V):
 
 
 def flush_layer(layer_buf, ix, h5file, attrs):
+    if MEMORY_PROFILING:
+        n_atoms = sum(len(v) for v in layer_buf.values())
+        rss_before = _rss_mb()
+
     ny = attrs['ny']
     nz = attrs['nz']
     vs = attrs['voxel_size']
@@ -209,6 +225,12 @@ def flush_layer(layer_buf, ix, h5file, attrs):
     h5file['number_density' ][ix] = out_number_density
     h5file['voxel_type'     ][ix] = out_voxel_type
     h5file['v_COM'          ][ix] = out_v_COM
+
+    if MEMORY_PROFILING:
+        rss_after = _rss_mb()
+        print(f"[mem] layer ix={ix} atoms={n_atoms} rss_before={rss_before:.1f}MB "
+              f"rss_after={rss_after:.1f}MB delta={rss_after - rss_before:+.1f}MB",
+              file=sys.stderr)
 
 
 def streaming_loop(file, attrs, h5file, y_center, z_center):
@@ -308,17 +330,35 @@ def detect_hydronium(rod_o, rod_h, attrs):
     return counts
 
 
-def detect_jet_tip(h5file, attrs):
-    avg_speed  = h5file['avg_speed'][:]    # (nx, ny, nz)
-    voxel_type = h5file['voxel_type'][:]   # (nx, ny, nz)
+def detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius):
+    """Jet tip = smallest-x water voxel with density above threshold,
+    restricted to a square rod in (y, z) centered at (y_center, z_center)
+    with half-width bubble_radius (i.e. edge length = 2*bubble_radius, the
+    initial bubble's diameter). Operates on smoothed density (this is called
+    after smooth_voxel_data); voxel_type is never smoothed."""
+    density    = h5file['density'][:]      # (nx, ny, nz), smoothed
+    voxel_type = h5file['voxel_type'][:]   # (nx, ny, nz), raw
 
-    water_above_threshold = (voxel_type == 1) & (avg_speed > JET_TIP_SPEED_THRESHOLD)
+    ny  = attrs['ny']
+    nz  = attrs['nz']
+    vs  = attrs['voxel_size']
+    ylo = attrs['ylo']
+    zlo = attrs['zlo']
+
+    y_bin_centers = (np.arange(ny) + 0.5) * vs + ylo
+    z_bin_centers = (np.arange(nz) + 0.5) * vs + zlo
+    y_mask = np.abs(y_bin_centers - y_center) <= bubble_radius   # (ny,)
+    z_mask = np.abs(z_bin_centers - z_center) <= bubble_radius   # (nz,)
+    rod_mask = y_mask[:, np.newaxis] & z_mask[np.newaxis, :]     # (ny, nz)
+
+    water_above_threshold = (voxel_type == 1) & (density > JET_TIP_DENSITY_THRESHOLD)
+    water_above_threshold &= rod_mask[np.newaxis, :, :]
     x_layers_hit = np.any(water_above_threshold, axis=(1, 2))   # (nx,)
 
     if not x_layers_hit.any():
         return np.float32(np.nan)
 
-    tip_ix = int(np.where(x_layers_hit)[0].max())
+    tip_ix = int(np.where(x_layers_hit)[0].min())
     return np.float32((tip_ix + 0.5) * attrs['voxel_size'])
 
 
@@ -342,20 +382,39 @@ def _smooth_3d(arr):
 
 def smooth_voxel_data(h5file):
     for name in SMOOTH_DATASETS:
+        if MEMORY_PROFILING:
+            rss_before = _rss_mb()
+
         arr = h5file[name][:]
         h5file[name][:] = _smooth_3d(arr)
+
+        if MEMORY_PROFILING:
+            rss_after = _rss_mb()
+            print(f"[mem] smooth '{name}' shape={arr.shape} rss_before={rss_before:.1f}MB "
+                  f"rss_after={rss_after:.1f}MB delta={rss_after - rss_before:+.1f}MB",
+                  file=sys.stderr)
+
+    if MEMORY_PROFILING:
+        rss_before = _rss_mb()
 
     v_com = h5file['v_COM'][:]   # (nx, ny, nz, 3)
     for i in range(3):
         v_com[..., i] = _smooth_3d(v_com[..., i])
     h5file['v_COM'][:] = v_com
 
+    if MEMORY_PROFILING:
+        rss_after = _rss_mb()
+        print(f"[mem] smooth 'v_COM' shape={v_com.shape} rss_before={rss_before:.1f}MB "
+              f"rss_after={rss_after:.1f}MB delta={rss_after - rss_before:+.1f}MB",
+              file=sys.stderr)
+
 
 def main():
-    dump_file   = sys.argv[1]
-    output_file = sys.argv[2]
-    y_center    = float(sys.argv[3])
-    z_center    = float(sys.argv[4])
+    dump_file     = sys.argv[1]
+    output_file   = sys.argv[2]
+    y_center      = float(sys.argv[3])
+    z_center      = float(sys.argv[4])
+    bubble_radius = float(sys.argv[5])
 
     with open(dump_file, "r") as f:
         timestep, N, xlo, xhi, ylo, yhi, zlo, zhi = parse_header(f)
@@ -377,8 +436,10 @@ def main():
             'o_type': O_TYPE,
             'h_type': H_TYPE,
             'n_hydronium_x': n_hydronium_x,
+            'hydronium_voxel_x': HYDRONIUM_VOXEL_X,
             'hydronium_y_center': y_center,
             'hydronium_z_center': z_center,
+            'jet_tip_bubble_radius': bubble_radius,
         }
 
         tmp_file = output_file + ".tmp"
@@ -400,9 +461,11 @@ def main():
         h5file['si_surface_mask'][:] = si_surface_mask
 
         h5file['hydronium_count'][:] = detect_hydronium(rod_o, rod_h, attrs)
-        h5file['jet_tip_x'][()]      = detect_jet_tip(h5file, attrs)
 
         smooth_voxel_data(h5file)
+
+        # runs after smoothing — detect_jet_tip operates on smoothed density
+        h5file['jet_tip_x'][()] = detect_jet_tip(h5file, attrs, y_center, z_center, bubble_radius)
 
         h5file.close()
         os.rename(tmp_file, output_file)

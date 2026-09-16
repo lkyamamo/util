@@ -132,6 +132,8 @@ def merge(output_dir, final_h5, initial_cutoff, secondary_cutoff, sphere_cy, sph
     print(f"Merging {T} files -> {final_h5}")
 
     with h5py.File(final_h5, 'w') as out:
+        out.create_dataset('timestep', shape=(T,), dtype=np.int64)
+
         for i, path in enumerate(files):
             with h5py.File(path, 'r') as src:
                 for name in src:
@@ -142,6 +144,7 @@ def merge(output_dir, final_h5, initial_cutoff, secondary_cutoff, sphere_cy, sph
                         for key, val in src.attrs.items():
                             out.attrs[key] = val
                     out[name][i] = data
+                out['timestep'][i] = src.attrs['timestep']
             if (i + 1) % 50 == 0 or (i + 1) == T:
                 print(f"  {i + 1}/{T}")
 

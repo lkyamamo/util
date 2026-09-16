@@ -26,14 +26,17 @@ import numpy as np
 import h5py
 from scipy.ndimage import uniform_filter
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR    = os.path.join(SCRIPT_DIR, 'test_output')
+TEST_DIR   = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(TEST_DIR)
+OUT_DIR    = os.path.join(TEST_DIR, 'test_output')
 DUMP_DIR   = os.path.join(OUT_DIR, 'dumps')
 H5_DIR     = os.path.join(OUT_DIR, 'h5')
 TRAJ_H5    = os.path.join(OUT_DIR, 'trajectory.h5')
 
 Y_CENTER = 30.0
 Z_CENTER = 30.0
+BUBBLE_RADIUS = 10.0   # jet tip rod half-width; both ix=3,4 atoms at y,z=35,35
+                        # (distance 5 from center) are well within this rod
 
 NX, NY, NZ   = 5, 6, 6
 VOXEL_SIZE   = 10.0
@@ -76,13 +79,21 @@ def write_dump(path, timestep, atoms):
 #   ix=0, iy=0, iz=0 : 1 Si                → silica, si_surface
 #   ix=1, iy=2, iz=2 : O + 3H (1.2 Å)     → hydronium
 #   ix=2, iy=2, iz=2 : 2 O, ±v, ±f        → temperature / pressure
-#   ix=3, iy=3, iz=3 : 1 O, v=0            → placeholder (speed < 30)
-#   ix=4, iy=3, iz=3 : O+H, v=40           → jet tip
+#   ix=3, iy=3, iz=3 : 1 O, v=35           → low density, not a jet tip candidate
+#   ix=4, iy=3, iz=3 : O+H, v=40           → low density, not a jet tip candidate
+# detect_jet_tip is now density-based (JET_TIP_DENSITY_THRESHOLD=0.15 g/cm^3),
+# and runs on SMOOTHED density. This test grid is sparse (5 populated voxels
+# in a 5x6x6 grid) with a 7-wide smoothing kernel that spans the whole grid,
+# so every voxel smooths to roughly the same low density (~0.037 g/cm^3) —
+# well below threshold. Both frames should report jet_tip_x = NaN, which
+# confirms isolated low-density atoms no longer register as a false jet tip.
+# The rod-restriction / smallest-x / density-threshold logic itself is
+# covered by a focused unit test on detect_jet_tip below.
 #
 # Frame 2 changes:
 #   Si moved to x=8  → si_surface[0,0] = 8
-#   ix=3 O speed=35  → jet tip moves to ix=3
-#   ix=4 atoms v=0   → no longer jet tip
+#   ix=3 O speed=35  → unchanged (no longer relevant — density based now)
+#   ix=4 atoms v=0   → unchanged
 
 FRAME1_ATOMS = [
     # id  type   x      y      z     vx    vy  vz  fx   fy  fz
@@ -93,8 +104,8 @@ FRAME1_ATOMS = [
     (  5,   3, 15.8, 25.0, 25.0,   0.0, 0.0, 0.0, 0.0, 0.0, 0.0),  # H
     (  6,   2, 24.0, 25.0, 25.0,  10.0, 0.0, 0.0, 1.0, 0.0, 0.0),  # O   ix=2 temp/pressure
     (  7,   2, 26.0, 25.0, 25.0, -10.0, 0.0, 0.0,-1.0, 0.0, 0.0),  # O   ix=2
-    (  8,   2, 35.0, 35.0, 35.0,   0.0, 0.0, 0.0, 0.0, 0.0, 0.0),  # O   ix=3 placeholder
-    (  9,   2, 45.0, 35.0, 35.0,  40.0, 0.0, 0.0, 0.0, 0.0, 0.0),  # O   ix=4 jet tip
+    (  8,   2, 35.0, 35.0, 35.0,  35.0, 0.0, 0.0, 0.0, 0.0, 0.0),  # O   ix=3 jet tip candidate
+    (  9,   2, 45.0, 35.0, 35.0,  40.0, 0.0, 0.0, 0.0, 0.0, 0.0),  # O   ix=4 jet tip candidate
     ( 10,   3, 45.9, 35.0, 35.0,  40.0, 0.0, 0.0, 0.0, 0.0, 0.0),  # H   ix=4
 ]
 
@@ -289,7 +300,7 @@ def run_pipeline():
 
     for dump, h5 in [(dump1, h5_1), (dump2, h5_2)]:
         r = subprocess.run(
-            [python, voxel_script, dump, h5, str(Y_CENTER), str(Z_CENTER)],
+            [python, voxel_script, dump, h5, str(Y_CENTER), str(Z_CENTER), str(BUBBLE_RADIUS)],
             capture_output=True, text=True
         )
         if r.returncode != 0:
@@ -325,7 +336,7 @@ def chk(label, got, expected, tol=1e-3):
 def verify():
     passes = fails = 0
 
-    raw1 = frame_raw_values(si_x=5.0,  v33_speed=0.0,  v43_speed=40.0)
+    raw1 = frame_raw_values(si_x=5.0,  v33_speed=35.0, v43_speed=40.0)
     raw2 = frame_raw_values(si_x=8.0,  v33_speed=35.0, v43_speed=0.0)
     sm1  = build_smoothed_grids(raw1)
     sm2  = build_smoothed_grids(raw2)
@@ -364,7 +375,7 @@ def verify():
 
         # --- frame-level scalars ---
         print("\n=== Frame 0 scalars ===")
-        ok = chk('jet_tip_x', float(f['jet_tip_x'][0]), 45.0)
+        ok = chk('jet_tip_x', float(f['jet_tip_x'][0]), np.nan)
         passes += ok; fails += not ok
         ok = chk('si_surface[0,0]', float(f['si_surface'][0, 0, 0]), 5.0)
         passes += ok; fails += not ok
@@ -374,7 +385,7 @@ def verify():
         passes += ok; fails += not ok
 
         print("\n=== Frame 1 scalars ===")
-        ok = chk('jet_tip_x', float(f['jet_tip_x'][1]), 35.0)
+        ok = chk('jet_tip_x', float(f['jet_tip_x'][1]), np.nan)
         passes += ok; fails += not ok
         ok = chk('si_surface[0,0]', float(f['si_surface'][1, 0, 0]), 8.0)
         passes += ok; fails += not ok
@@ -441,6 +452,44 @@ def verify():
             ok = np.isnan(float(sr[0])) and np.isnan(float(sr[1]))
             print(f"  [{'PASS' if ok else 'FAIL'}] sphere_radius NaN for both frames (no crater): {sr}")
             passes += ok; fails += not ok
+
+    # --- jet tip detection (focused unit test on detect_jet_tip directly) ---
+    # Single combined scenario testing rod restriction, density threshold,
+    # and smallest-of-multiple-qualifying-candidates selection together:
+    #   ix=0, y,z=(5,5)   [OUTSIDE rod]:  density=1.0 (high) → excluded by rod
+    #   ix=1, y,z=(35,35) [WITHIN rod]:   density=0.05 (low) → excluded by density threshold
+    #   ix=2, y,z=(35,35) [WITHIN rod]:   density=1.0 (high) → valid, smallest qualifying
+    #   ix=3, y,z=(35,35) [WITHIN rod]:   density=1.0 (high) → valid, but larger ix than ix=2
+    # Expected jet tip: ix=2 (15+10=25.0 Å), not ix=0/1 (wrongly excluded
+    # candidates that would otherwise win) and not ix=3 (larger of two valid).
+    print("\n=== jet tip detection (rod + density threshold + smallest-x) ===")
+    sys.path.insert(0, SCRIPT_DIR)
+    import voxel_analysis as va
+
+    nx, ny, nz = 5, 6, 6
+    vs = 10.0
+    attrs = {'nx': nx, 'ny': ny, 'nz': nz, 'voxel_size': vs,
+             'xlo': 0.0, 'ylo': 0.0, 'zlo': 0.0}
+
+    density    = np.zeros((nx, ny, nz), dtype=np.float32)
+    voxel_type = np.zeros((nx, ny, nz), dtype=np.uint8)
+
+    voxel_type[0, 0, 0] = 1; density[0, 0, 0] = 1.0    # outside rod
+    voxel_type[1, 3, 3] = 1; density[1, 3, 3] = 0.05   # in rod, below density threshold
+    voxel_type[2, 3, 3] = 1; density[2, 3, 3] = 1.0    # in rod, valid (expected answer)
+    voxel_type[3, 3, 3] = 1; density[3, 3, 3] = 1.0    # in rod, valid but larger ix
+
+    h5_unit = h5py.File('jet_tip_unit_test.h5', 'w', driver='core', backing_store=False)
+    h5_unit.create_dataset('density', data=density)
+    h5_unit.create_dataset('voxel_type', data=voxel_type)
+
+    tip_x = va.detect_jet_tip(h5_unit, attrs, y_center=30.0, z_center=30.0, bubble_radius=10.0)
+    h5_unit.close()
+
+    expected = (2 + 0.5) * vs
+    ok = abs(float(tip_x) - expected) < 1e-3
+    print(f"  [{'PASS' if ok else 'FAIL'}] jet tip (rod+density+min): got={float(tip_x):.3f}  expected={expected:.3f}")
+    passes += ok; fails += not ok
 
     print(f"\n{'='*40}")
     print(f"Results: {passes} PASS  {fails} FAIL")
