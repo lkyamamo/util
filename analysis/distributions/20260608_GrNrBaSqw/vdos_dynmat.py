@@ -196,11 +196,15 @@ OUTPUT
 - <date>_vdos_dynmat.csv — freq_meV, freq_THz, freq_cm-1, freq_eV, then
                            DoS(<element>) per element and DoS(Total). Same column
                            layout as vdos.py's CSV so the two can be overlaid.
-- <date>_vdos_dynmat.png — all curves on one axes, x-axis in XUNIT
+
+This script writes NO plots. Figures come from the plotting pipeline
+(jobs/pipeline/plotting/plot_pipeline.sh), which reads the CSVs above and
+writes one PNG per quantity. Run it in this directory, or let the analysis
+runner call it via RUN_PLOTS=1.
 
 DEPENDENCIES
 ------------
-  pip install numpy matplotlib
+  pip install numpy
 """
 
 import os
@@ -224,9 +228,6 @@ if _THREADS not in ("", "0"):
 from datetime import date
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # =============================================================================
 # CONFIGURATION — edit these variables between runs
@@ -356,16 +357,13 @@ BOND_CUTOFF      = float(_env("VDOS_DYNMAT_BOND_CUTOFF", "2.2"))   # Angstrom
 if BOND_CUTOFF <= 0:
     raise ValueError(f"VDOS_DYNMAT_BOND_CUTOFF must be positive, got {BOND_CUTOFF}.")
 
-# Output basename; .csv and .png are appended (set either to None to skip).
+# Output basename; .csv is appended (set to None to skip).
 _OUTPUT_BASE = _env("VDOS_DYNMAT_OUTPUT", "vdos_dynmat")
 OUTPUT_CSV   = f"{_OUTPUT_BASE}.csv"
-OUTPUT_PLOT  = f"{_OUTPUT_BASE}.png"
 # Written only when CHARACTER='yes'.
 OUTPUT_MODES     = f"{_OUTPUT_BASE}_modes.csv"
-OUTPUT_CHARACTER = f"{_OUTPUT_BASE}_character.png"
 
-# Plot appearance
-PLOT_DPI = 150
+
 
 # =============================================================================
 # END CONFIGURATION
@@ -376,9 +374,7 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_CSV       = _dated(OUTPUT_CSV)
-OUTPUT_PLOT      = _dated(OUTPUT_PLOT)
 OUTPUT_MODES     = _dated(OUTPUT_MODES)
-OUTPUT_CHARACTER = _dated(OUTPUT_CHARACTER)
 
 # The three orthogonal directions the bridging atom can move in, in the order
 # they are reported. Names follow the silica-glass literature.
@@ -1097,42 +1093,6 @@ def save_modes_csv(freqs, freq_by_unit_of, pr, character, element_fracs, filenam
     print(f"Per-mode table saved to {filename}  ({len(freqs)} modes)")
 
 
-def plot_character(grid, character_curves, total, pr, mode_freqs, filename, xunit=XUNIT):
-    """
-    Three stacked panels: what kind of motion each band is, how localized its
-    modes are, and the reduced DOS that exposes the boson peak.
-    """
-    fig, axes = plt.subplots(3, 1, figsize=(8, 11), sharex=True)
-
-    ax = axes[0]
-    ax.plot(grid, total, color='0.3', linewidth=1.6, label='total')
-    for name in CHARACTER_NAMES:
-        ax.plot(grid, character_curves[name], linewidth=1.2, label=name)
-    ax.set_ylabel('DOS (states / atom / ' + xunit + ')')
-    ax.set_title('Character-resolved DOS (bridging-atom motion)')
-    ax.legend()
-
-    ax = axes[1]
-    # One point per mode: scatter rather than a curve, because the spread of PR
-    # at a given frequency is itself the information — a tight low band means
-    # every mode there is equally extended, a wide one means they are not.
-    ax.plot(mode_freqs, pr, '.', markersize=2, alpha=0.4)
-    ax.set_ylabel('participation ratio')
-    ax.set_title('Localization (1 = every atom moves, 1/N = one atom moves)')
-    ax.set_ylim(0, 1)
-
-    ax = axes[2]
-    ax.plot(grid, reduced_dos(total, grid), color='C3', linewidth=1.2)
-    ax.set_ylabel(f'g / {xunit}²')
-    ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
-    ax.set_title('Reduced DOS g(ν)/ν² — a peak here is the boson peak')
-
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Character plot saved to {filename}")
-
-
 def report_census(census, bridge_element, neighbor_element, cutoff):
     """
     Report the coordination of every bridge atom. In a quenched glass some
@@ -1170,22 +1130,6 @@ def report_census(census, bridge_element, neighbor_element, cutoff):
               f"arbitrary — only\n"
               f"        their SUM (the transverse motion) is meaningful for those. Stretch is "
               f"unaffected.")
-
-
-def plot_vdos(results, freq_by_unit, filename, xunit=XUNIT):
-    x = freq_by_unit[xunit]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for label, curve in results.items():
-        ax.plot(x, curve, label=label, linewidth=1.5 if label.startswith('total_') else 1.0)
-    ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
-    ax.set_ylabel('DOS (states / atom / ' + xunit + ')' if NORMALIZATION == 'phonon'
-                  else 'VDOS (unit-area normalized)')
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Plot saved to {filename}")
 
 
 def snap_zero_modes(freqs, tolerance):
@@ -1378,12 +1322,7 @@ if __name__ == '__main__':
 
     if OUTPUT_CSV is not None:
         save_csv(results, freq_by_unit, OUTPUT_CSV, extra=extra)
-    if OUTPUT_PLOT is not None:
-        plot_vdos(results, freq_by_unit, OUTPUT_PLOT)
     if CHARACTER == 'yes':
         if OUTPUT_MODES is not None:
             save_modes_csv(freqs, _freq_all_units(freqs, XUNIT), pr, character,
                            element_fracs, OUTPUT_MODES)
-        if OUTPUT_CHARACTER is not None:
-            plot_character(grid, character_curves, results['total_unity'], pr, freqs,
-                           OUTPUT_CHARACTER)

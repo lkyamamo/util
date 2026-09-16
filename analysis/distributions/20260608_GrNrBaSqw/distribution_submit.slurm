@@ -44,6 +44,15 @@ RUN_MSD="${RUN_MSD:-1}"
 # with RUN_DYNMAT=1 — so unlike the others this defaults to off.
 RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 
+# Turn the CSVs above into figures, as a separate stage (see the Plot section at
+# the end). 1 by default: plotting is cheap next to the analysis, and a run with
+# no figures is rarely what anyone wanted. Set 0 to compute only, then plot later
+# by running plot_pipeline.sh in this directory — that is the point of the split.
+RUN_PLOTS="${RUN_PLOTS:-1}"
+# The plotting pipeline in the util checkout. Override if your checkout is not
+# at $HOME/util, the same way ANALYSIS_TEMPLATE_DIR is set for the analysis code.
+PLOT_PIPELINE="${PLOT_PIPELINE:-$HOME/util/jobs/pipeline/plotting/plot_pipeline.sh}"
+
 ############################
 # Analysis parameters
 ############################
@@ -57,6 +66,11 @@ RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 # submitters (submit_pipeline.sh / submit_pipeline_local.sh) can drive this
 # script without their settings being clobbered by the edits here.
 #
+# PLOTS are not made here. The .py scripts write CSVs only; figures come from
+# jobs/pipeline/plotting/plot_pipeline.sh, run as a separate stage at the end of
+# this script when RUN_PLOTS=1. Its own plot_pipeline.conf controls how they
+# look — style, format, which calculations, the frequency axis — so none of
+# that appears among the analysis parameters below.
 # vdos.py and msd.py read the same dynamics.lammpstrj but want different
 # settings — VDOS needs a short CORR_LENGTH for frequency resolution, MSD a
 # long one to reach the diffusive regime — so each has its own prefixed
@@ -116,8 +130,17 @@ RDF_BINS="${RDF_BINS:-}"                # number of r-bins
 RDF_NORMALIZATION="${RDF_NORMALIZATION:-}"        # semicolon list: unity | FZ | absolute
 RDF_FUNCTIONS="${RDF_FUNCTIONS:-}"                # semicolon list: g | h | D | T
 RDF_RESOLUTION_SIGMA="${RDF_RESOLUTION_SIGMA:-}"  # Å; Gaussian resolution broadening, 0 disables
-RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch
+RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch |
+                                        # modified_lorch (Soper eq. 60: a uniform
+                                        # sphere smeared in r space, never negative;
+                                        # meant for h, whose baseline is already
+                                        # subtracted so the grid ending at R_MAX
+                                        # costs the convolution nothing)
 RDF_LORCH_QMAX="${RDF_LORCH_QMAX:-}"              # Å⁻¹; needed by mode=lorch
+RDF_MODIFIED_LORCH_DELTA="${RDF_MODIFIED_LORCH_DELTA:-}"  # Å; radius of the smearing
+                                        # sphere for mode=modified_lorch. NOT the
+                                        # resolution: FWHM = sqrt(2)*Δ, so divide a
+                                        # quoted FWHM by 1.4142 to get it
 RDF_LORCH_DR="${RDF_LORCH_DR:-}"                  # Å; the parameter INSIDE M(Q), not the
                                         # resolution a paper quotes. Blank = pi/Q_MAX, the
                                         # standard Lorch choice — leave it blank unless the
@@ -159,8 +182,6 @@ VDOS_WINDOW="${VDOS_WINDOW:-}"
 VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"      # phonon | unit_area (sum rule)
 VDOS_WEIGHTING="${VDOS_WEIGHTING:-}"              # semicolon list: unity | coherent |
                                                   # incoherent | total (species weight)
-VDOS_PLOT_XUNIT="${VDOS_PLOT_XUNIT:-}"            # meV | THz | cm-1 | eV (plot axis only;
-                                                  # the CSV always carries all four)
 
 # msd.py
 MSD_N_FRAMES="${MSD_N_FRAMES:-}"
@@ -208,10 +229,10 @@ for _var in DYNAMICS_DT \
             DSF_MAX_Q_POINTS_DYN DSF_NEUTRON_WEIGHTING \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
             RDF_RESOLUTION_MODE RDF_LORCH_QMAX RDF_ATOMS_PER_FORMULA_UNIT \
-            RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR \
+            RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR RDF_MODIFIED_LORCH_DELTA \
             ELEMENTS R_CUTOFF R_MINCUT TRIPLET_CUTOFFS BAD_BINS \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
-            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING VDOS_PLOT_XUNIT \
+            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \
             MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION \
             DYNMAT_FILE DYNMAT_BINARY \
             VDOS_DYNMAT_MAX_FREQUENCY VDOS_DYNMAT_XUNIT VDOS_DYNMAT_BINS \
@@ -225,6 +246,8 @@ for _var in DYNAMICS_DT \
     fi
 done
 unset _var
+
+
 
 ############################
 # Paths
@@ -305,3 +328,25 @@ echo "analysis finished **************************************"
 echo
 
 exit 0
+
+############################
+# Plot
+############################
+
+# Figures are a separate stage: the .py scripts above write CSVs only, and
+# jobs/pipeline/plotting/plot_pipeline.sh turns those into one PNG per quantity.
+# Keeping them apart means a figure can be restyled, re-unit'd or redrawn
+# without recomputing anything, and there is exactly one place that draws.
+#
+# The plotting pipeline reads plot_pipeline.conf from THIS directory if there is
+# one, and otherwise the tracked default next to plot_pipeline.sh. Drop a copy
+# in here to give one analysis its own look.
+if [ "$RUN_PLOTS" -eq 1 ]; then
+    echo "--- plot_pipeline.sh ---"
+    if [ -x "$PLOT_PIPELINE" ]; then
+        "$PLOT_PIPELINE" "$PWD"
+    else
+        echo "Skipping plots: $PLOT_PIPELINE not found or not executable." >&2
+        echo "Set PLOT_PIPELINE to jobs/pipeline/plotting/plot_pipeline.sh in the util checkout." >&2
+    fi
+fi

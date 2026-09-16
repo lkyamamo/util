@@ -243,6 +243,20 @@ ANALYSIS_NODELIST=""
 #                      transform is convolved with the correlation function. It
 #                      matches a Gaussian in WIDTH but not in shape - the Lorch
 #                      kernel has negative side lobes a Gaussian cannot produce.
+#   RDF_MODIFIED_LORCH_DELTA_VAL
+#                      Radius of the smearing sphere, A, for resolution-mode
+#                      'modified_lorch' — Soper eq. (60), L' = 3/(4 pi D^3) inside
+#                      |r| <= D. A 3D top hat convolved in r space rather than a
+#                      window applied in Q space, so it is everywhere non-negative
+#                      and cannot drive a correlation function negative between
+#                      peaks the way the Q-space Lorch side lobes can. It matches
+#                      no real truncation, so it smooths rather than reproduces an
+#                      instrument. Intended for h: h -> 0 at large r, so the part
+#                      of the convolution that falls off the end of the grid at
+#                      R_MAX contributes nothing, while a column still carrying
+#                      its baseline loses that baseline over the last D.
+#                      NOT the resolution: FWHM = sqrt(2)*D, so divide a quoted
+#                      FWHM by 1.4142 to get D.
 #   RDF_LORCH_QMAX_VAL The measurement's Fourier truncation, A^-1. dr defaults to
 #                      pi/Q_max, the standard Lorch choice. Papers quote the
 #                      RESULTING resolution (the peak FWHM), which is ~1.73x
@@ -257,6 +271,7 @@ ANALYSIS_NODELIST=""
 #                      together with the T0(r) baseline it oscillates about.
 #                      Bundles function + normalization + broadening so the three
 #                      cannot disagree. Needs the two keys above.
+
 #   RDF_WRIGHT_QMAX_VAL  A^-1; the paper's truncation, e.g. 45.2 for Wright's
 #                      vitreous-silica work.
 #                      Check after running: the printed T0 slope 4*pi*rho*Sum(w)
@@ -275,6 +290,7 @@ RDF_FUNCTIONS_VAL=""
 RDF_RESOLUTION_SIGMA_VAL=""
 RDF_RESOLUTION_MODE_VAL=""
 RDF_LORCH_QMAX_VAL=""
+RDF_MODIFIED_LORCH_DELTA_VAL=""
 RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
 RDF_WRIGHT_VAL=""
 RDF_WRIGHT_QMAX_VAL=""

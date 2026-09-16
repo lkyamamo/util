@@ -13,8 +13,12 @@ QUICK START
 
 OUTPUT
 ------
-- A PNG plot of all BAD curves  (OUTPUT_PLOT)
 - A CSV table of angle vs P(θ)  (OUTPUT_CSV; set to None to skip)
+
+This script writes NO plots. Figures come from the plotting pipeline
+(jobs/pipeline/plotting/plot_pipeline.sh), which reads the CSVs above and
+writes one PNG per quantity. Run it in this directory, or let the analysis
+runner call it via RUN_PLOTS=1.
 
 DEFAULT TRIPLET SWEEP
 ----------------------
@@ -52,9 +56,6 @@ from typing import NamedTuple
 
 import numpy as np
 import freud
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # =============================================================================
 # CONFIGURATION — edit these variables between runs
@@ -62,9 +63,6 @@ import matplotlib.pyplot as plt
 
 # Input trajectory file
 DUMP_FILE = os.environ.get("TRAJ", "../OH.lammpstrj")
-
-# Output plot file
-OUTPUT_PLOT = "bads.png"
 
 # Output data table (CSV); set to None to skip
 OUTPUT_CSV = "bads.csv"
@@ -160,9 +158,7 @@ TRIPLET_CUTOFFS = _parse_triplet_cutoffs("TRIPLET_CUTOFFS", [
 # Number of bins spanning 0–180°
 BINS = int(os.environ.get("BAD_BINS", "180"))
 
-# Plot layout
-PLOT_NCOLS = 3
-PLOT_DPI   = 150
+
 
 # =============================================================================
 # END CONFIGURATION
@@ -172,9 +168,7 @@ PLOT_DPI   = 150
 def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
-OUTPUT_PLOT = _dated(OUTPUT_PLOT)
 OUTPUT_CSV  = _dated(OUTPUT_CSV)
-
 
 def _pair_key(el1, el2):
     """Return canonical pairwise key with elements sorted alphabetically."""
@@ -630,30 +624,6 @@ def save_csv(results, filename):
     print(f"Data table saved to {filename}")
 
 
-def plot_bads(results):
-    n     = len(results)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 3.5 * nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, (name, (angles, hist)) in zip(axes, results.items()):
-        ax.plot(angles, hist)
-        ax.set_xlabel('Angle (degrees)')
-        ax.set_ylabel('P(θ)')
-        ax.set_title(name)
-        ax.set_xlim(0, 180)
-
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Plot saved to {OUTPUT_PLOT}")
-
-
 if __name__ == '__main__':
     if not ELEMENTS:
         raise ValueError("ELEMENTS is empty — set it to the element symbols present in the simulation.")
@@ -688,4 +658,3 @@ if __name__ == '__main__':
     if OUTPUT_CSV is not None:
         save_csv(results, OUTPUT_CSV)
 
-    plot_bads(results)

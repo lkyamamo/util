@@ -63,6 +63,11 @@ Optional:
                                     e.g. "g;h;D" (h with absolute is Soper's G_n(r))
     --rdf-resolution-sigma FLOAT  rdf_freud.py RDF_RESOLUTION_SIGMA (Å), Gaussian
                                     resolution broadening; 0 disables (default 0.1)
+    --rdf-modified-lorch-delta FLOAT
+                                  rdf_freud.py RDF_MODIFIED_LORCH_DELTA (A), the radius
+                                    of the smearing sphere for resolution-mode
+                                    'modified_lorch' (Soper eq. 60). NOT the resolution:
+                                    FWHM = sqrt(2)*delta, so divide a quoted FWHM by 1.4142
     --rdf-resolution-mode STR     rdf_freud.py RDF_RESOLUTION_MODE: 'gaussian' (default)
                                     or 'lorch' (the neutron-diffraction modification
                                     function; needs --rdf-lorch-qmax)
@@ -77,6 +82,21 @@ Optional:
                                     neutron correlation function. Needs --rdf-wright-qmax
                                     and --rdf-atoms-per-formula-unit
     --rdf-wright-qmax FLOAT       rdf_freud.py RDF_WRIGHT_QMAX (A^-1), e.g. 45.2
+
+    Plotting is its own stage. The analysis scripts write CSVs only; figures come
+    from jobs/pipeline/plotting/plot_pipeline.sh, which reads those CSVs and
+    writes one PNG per quantity into <date>_rdf/, <date>_bad/ and so on. How they
+    look — style, format, frequency axis, which calculations — is set in
+    plot_pipeline.conf, not here, so figures can be redrawn without recomputing.
+    --run-plots {0|1}             Run the plotting stage after the analysis
+                                    (default 1). 0 computes only; run
+                                    plot_pipeline.sh in the analysis directory
+                                    later to draw.
+    --plot-pipeline PATH          plot_pipeline.sh to use
+                                    (default: <repo>/jobs/pipeline/plotting/plot_pipeline.sh)
+    --plot-config PATH            A plot_pipeline.conf copied into the analysis
+                                    directory, so that run's figures differ from
+                                    the tracked default without editing it
     --bad-elements STR            bad_freud.py ELEMENTS, SEMICOLON-separated, e.g. "Si;O;H"
     --bad-r-cutoff STR             bad_freud.py R_CUTOFF, semicolon-separated pair:value
                                     entries, e.g. "H-H:2.0;H-O:1.4;O-O:2.8"
@@ -243,14 +263,14 @@ LOG_FILE="$RUN_DIR/overwrite.log"
 # one does. Keep in sync with the OUTPUT_* constants in the .py files.
 outputs_for() {
   case "$1" in
-    dsf)  echo "sq.csv sq.png dsf.csv dsf.png" ;;
-    rdf)  echo "rdfs.csv rdfs.png nrs.csv nrs.png" ;;
-    bad)  echo "bads.csv bads.png" ;;
-    vdos) echo "vdos.csv vdos.png" ;;
-    msd)  echo "msd.csv msd.png" ;;
+    dsf)  echo "sq.csv dsf.csv" ;;
+    rdf)  echo "rdfs.csv nrs.csv" ;;
+    bad)  echo "bads.csv" ;;
+    vdos) echo "vdos.csv" ;;
+    msd)  echo "msd.csv" ;;
     vdos_dynmat)
       local b="${VDOS_DYNMAT_OUTPUT:-vdos_dynmat}"
-      echo "$b.csv $b.png ${b}_modes.csv ${b}_character.png" ;;
+      echo "$b.csv ${b}_modes.csv" ;;
   esac
 }
 
@@ -330,9 +350,13 @@ RDF_FUNCTIONS_VAL=""
 RDF_RESOLUTION_SIGMA_VAL=""
 RDF_RESOLUTION_MODE_VAL=""
 RDF_LORCH_QMAX_VAL=""
+RDF_MODIFIED_LORCH_DELTA_VAL=""
 RDF_ATOMS_PER_FORMULA_UNIT_VAL=""
 RDF_WRIGHT_VAL=""
 RDF_WRIGHT_QMAX_VAL=""
+RUN_PLOTS="1"
+PLOT_PIPELINE="$REPO_ROOT/jobs/pipeline/plotting/plot_pipeline.sh"
+PLOT_CONFIG=""
 BAD_ELEMENTS=""
 BAD_R_CUTOFF=""
 BAD_R_MINCUT=""
@@ -418,9 +442,13 @@ while [[ $# -gt 0 ]]; do
     --rdf-resolution-sigma) RDF_RESOLUTION_SIGMA_VAL="$2"; shift 2 ;;
     --rdf-resolution-mode) RDF_RESOLUTION_MODE_VAL="$2"; shift 2 ;;
     --rdf-lorch-qmax) RDF_LORCH_QMAX_VAL="$2"; shift 2 ;;
+    --rdf-modified-lorch-delta) RDF_MODIFIED_LORCH_DELTA_VAL="$2"; shift 2 ;;
     --rdf-atoms-per-formula-unit) RDF_ATOMS_PER_FORMULA_UNIT_VAL="$2"; shift 2 ;;
     --rdf-wright) RDF_WRIGHT_VAL="$2"; shift 2 ;;
     --rdf-wright-qmax) RDF_WRIGHT_QMAX_VAL="$2"; shift 2 ;;
+    --run-plots) RUN_PLOTS="$2"; shift 2 ;;
+    --plot-pipeline) PLOT_PIPELINE="$2"; shift 2 ;;
+    --plot-config) PLOT_CONFIG="$2"; shift 2 ;;
     --bad-elements) BAD_ELEMENTS="$2"; shift 2 ;;
     --bad-r-cutoff) BAD_R_CUTOFF="$2"; shift 2 ;;
     --bad-r-mincut) BAD_R_MINCUT="$2"; shift 2 ;;
@@ -639,6 +667,18 @@ cp "$ANALYSIS_TEMPLATE_DIR/dsf.py" \
    "$ANALYSIS_TEMPLATE_DIR/msd.py" \
    "$ANALYSIS_TEMPLATE_DIR/vdos_dynmat.py" \
    "$STAGE2_DIR/"
+
+# A plot config placed in the analysis directory is what plot_pipeline.sh picks
+# up ahead of its own tracked default, so this is how one run's figures are made
+# to differ without editing anything tracked.
+if [[ -n "$PLOT_CONFIG" ]]; then
+  if [[ ! -f "$PLOT_CONFIG" ]]; then
+    echo "Error: --plot-config file not found: $PLOT_CONFIG" >&2
+    exit 1
+  fi
+  cp "$PLOT_CONFIG" "$STAGE2_DIR/plot_pipeline.conf"
+  echo "Plot config: $PLOT_CONFIG -> $STAGE2_DIR/plot_pipeline.conf"
+fi
 link_input "$STAGE1_DIR/run/$DUMP_FILE" "$STAGE2_DIR/$DUMP_FILE"
 link_input "$STAGE1_DIR/run/$DYNAMICS_DUMP_FILE" "$STAGE2_DIR/$DYNAMICS_DUMP_FILE"
 # The dynamical matrix is consumed read-only like the trajectories. Nothing extra
@@ -718,9 +758,13 @@ echo "Running distribution analysis locally in $STAGE2_DIR ..."
   [[ -n "$RDF_RESOLUTION_SIGMA_VAL" ]] && export RDF_RESOLUTION_SIGMA="$RDF_RESOLUTION_SIGMA_VAL"
   [[ -n "$RDF_RESOLUTION_MODE_VAL" ]] && export RDF_RESOLUTION_MODE="$RDF_RESOLUTION_MODE_VAL"
   [[ -n "$RDF_LORCH_QMAX_VAL" ]] && export RDF_LORCH_QMAX="$RDF_LORCH_QMAX_VAL"
+  [[ -n "$RDF_MODIFIED_LORCH_DELTA_VAL" ]] && export RDF_MODIFIED_LORCH_DELTA="$RDF_MODIFIED_LORCH_DELTA_VAL"
   [[ -n "$RDF_ATOMS_PER_FORMULA_UNIT_VAL" ]] && export RDF_ATOMS_PER_FORMULA_UNIT="$RDF_ATOMS_PER_FORMULA_UNIT_VAL"
   [[ -n "$RDF_WRIGHT_VAL" ]] && export RDF_WRIGHT="$RDF_WRIGHT_VAL"
   [[ -n "$RDF_WRIGHT_QMAX_VAL" ]] && export RDF_WRIGHT_QMAX="$RDF_WRIGHT_QMAX_VAL"
+
+  export RUN_PLOTS
+  [[ -n "$PLOT_PIPELINE" ]] && export PLOT_PIPELINE
   [[ -n "$BAD_ELEMENTS" ]]        && export ELEMENTS="$BAD_ELEMENTS"
   [[ -n "$BAD_R_CUTOFF" ]]        && export R_CUTOFF="$BAD_R_CUTOFF"
   [[ -n "$BAD_R_MINCUT" ]]        && export R_MINCUT="$BAD_R_MINCUT"

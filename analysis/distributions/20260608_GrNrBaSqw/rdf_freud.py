@@ -11,13 +11,16 @@ QUICK START
 
 OUTPUT
 ------
-- rdfs.png  — subplot grid: one panel per element pair, plus one per convention column
 - rdfs.csv  — r (Å), partial g_AB(r), one column per requested convention
                                                               (set OUTPUT_CSV=None to skip)
-- nrs.png   — cumulative coordination number n(r) plots       (set OUTPUT_NR_PLOT=None to skip)
 - nrs.csv   — r (Å), n(r) both directions per pair            (set OUTPUT_NR_CSV=None to skip)
-- wright.csv/.png — a single T(r) built to overlay directly on a published
+- wright.csv — a single T(r) built to overlay directly on a published
                     neutron correlation function        (only when RDF_WRIGHT=yes)
+
+This script writes NO plots. Figures come from the plotting pipeline
+(jobs/pipeline/plotting/plot_pipeline.sh), which reads the CSVs above and
+writes one PNG per quantity. Run it in this directory, or let the analysis
+runner call it via RUN_PLOTS=1.
 
 CONVENTIONS
 -----------
@@ -86,6 +89,22 @@ whose cosine transform is the real-space peak function convolved with the
 correlation function. dr defaults to pi/Q_max, the standard Lorch choice that
 places M's first zero at the truncation.
 
+RDF_RESOLUTION_MODE=modified_lorch with RDF_MODIFIED_LORCH_DELTA is Soper's
+eq. (60): instead of a window in Q space, smear h(r) in r space with a uniform
+sphere of radius D,
+
+    L'(r, D) = 3/(4 pi D^3)   |r| <= D,   0 above
+
+applied as a true 3D convolution. It is meant for h, the baseline-subtracted
+form: h → 0 at large r, so the part of the integral that falls off the end of a
+finite grid contributes nothing, whereas a column carrying a baseline loses that
+baseline at the edge. Being a top hat in real space it is everywhere
+non-negative, so unlike the Q-space Lorch window it cannot push a correlation
+function negative between peaks; the trade is that it corresponds to no actual
+measurement's truncation, so it smooths rather than reproduces an instrument.
+Its resolution is FWHM = sqrt(2) D, so D is 1.41x SMALLER than a quoted
+resolution — divide, do not substitute.
+
 Papers quote the RESULTING resolution (the FWHM of that peak function) rather
 than dr, and the two differ by ~1.73x: Q_max = 45.2 gives dr = 0.0695 and
 FWHM = 0.120 A. Passing the quoted resolution as dr instead doubles the
@@ -101,7 +120,7 @@ output, so none of them has to be remembered separately:
 
     RDF_WRIGHT=yes RDF_WRIGHT_QMAX=45.2 RDF_ATOMS_PER_FORMULA_UNIT=3
 
-writes <date>_wright.csv and .png with T(r) Lorch-broadened, per formula unit,
+writes <date>_wright.csv with T(r) Lorch-broadened, per formula unit,
 alongside the unbroadened curve and the T0(r) baseline it oscillates about. It
 prints Sum(w), the resolution FWHM and the T0 slope 4*pi*rho*Sum(w) — that last
 number is the check worth making, since the slope of the paper's average-density
@@ -175,9 +194,6 @@ import freud
 # $(nproc), which does not exist on macOS and exports the variable empty.
 freud.parallel.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "").strip() or 0))
 from scipy.ndimage import gaussian_filter1d
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # =============================================================================
 # CONFIGURATION — edit these variables between runs
@@ -185,9 +201,6 @@ import matplotlib.pyplot as plt
 
 # Input trajectory file
 DUMP_FILE = os.environ.get("TRAJ", "../int_dump.lammpstrj")
-
-# Output plot file
-OUTPUT_PLOT = "rdfs.png"
 
 # Output data table (CSV); set to None to skip
 OUTPUT_CSV = "rdfs.csv"
@@ -220,10 +233,19 @@ RDF_RESOLUTION_SIGMA = float(os.environ.get("RDF_RESOLUTION_SIGMA", "0.1"))
 # the correlation function. A Gaussian matches its WIDTH but not its shape: the
 # Lorch kernel has negative side lobes (~-9% of peak) that a Gaussian cannot
 # reproduce, which matters between and beside strong peaks.
+# 'modified_lorch' is Soper's eq. (60): rather than windowing in Q space, smear
+# h(r) in r space with a uniform sphere of radius Δ, L' = 3/(4πΔ³) for |r| <= Δ.
+# It is meant for h rather than g because h → 0 at large r, which is what lets
+# the convolution be evaluated against a grid that stops at R_MAX — see
+# apply_modified_lorch() for the measured difference. It is a 3D top hat, so it
+# is everywhere non-negative — it cannot drive a correlation function negative
+# between peaks the way the Q-space Lorch window's side lobes can — at the price
+# of not corresponding to any real truncation.
 RDF_RESOLUTION_MODE = os.environ.get("RDF_RESOLUTION_MODE", "gaussian")
-if RDF_RESOLUTION_MODE not in ("gaussian", "lorch"):
+if RDF_RESOLUTION_MODE not in ("gaussian", "lorch", "modified_lorch"):
     raise ValueError(
-        f"Unknown RDF_RESOLUTION_MODE={RDF_RESOLUTION_MODE!r}; use 'gaussian' or 'lorch'.")
+        f"Unknown RDF_RESOLUTION_MODE={RDF_RESOLUTION_MODE!r}; use 'gaussian', "
+        f"'lorch' or 'modified_lorch'.")
 RDF_LORCH_QMAX = float(os.environ.get("RDF_LORCH_QMAX", "0") or 0)   # Å⁻¹
 # The parameter INSIDE M(Q) = sin(dr Q)/(dr Q). Defaults to the standard Lorch
 # choice pi/Q_max, which puts M's first zero exactly at the truncation so the
@@ -233,6 +255,16 @@ RDF_LORCH_QMAX = float(os.environ.get("RDF_LORCH_QMAX", "0") or 0)   # Å⁻¹
 # 0.120 A, which is the number his text quotes. Setting this to the quoted
 # resolution instead is the easy mistake, and it doubles the broadening.
 RDF_LORCH_DR = float(os.environ.get("RDF_LORCH_DR", "0") or 0)       # Å; 0 = pi/Q_max
+# Radius of the smearing sphere for 'modified_lorch', in Angstroms. NOT the
+# resolution: the resulting FWHM is sqrt(2)*Δ, so a paper quoting 0.12 Å wants
+# Δ = 0.0849. The same trap as RDF_LORCH_DR above, with a different factor.
+RDF_MODIFIED_LORCH_DELTA = float(os.environ.get("RDF_MODIFIED_LORCH_DELTA", "0") or 0)
+if RDF_RESOLUTION_MODE == "modified_lorch" and RDF_MODIFIED_LORCH_DELTA <= 0:
+    raise ValueError(
+        "RDF_RESOLUTION_MODE=modified_lorch needs RDF_MODIFIED_LORCH_DELTA (Å), the "
+        "radius of the smearing sphere in Soper eq. (60). The resolution it produces "
+        "is sqrt(2) x that, so divide a quoted FWHM by 1.4142 to get it.")
+
 if RDF_RESOLUTION_MODE == "lorch":
     if RDF_LORCH_QMAX <= 0:
         raise ValueError(
@@ -247,14 +279,9 @@ if RDF_RESOLUTION_MODE == "lorch":
 # reason a published curve sits a constant factor above a per-atom calculation.
 RDF_ATOMS_PER_FORMULA_UNIT = float(os.environ.get("RDF_ATOMS_PER_FORMULA_UNIT", "0") or 0)
 
-# Plot layout: how many columns in the subplot grid
-PLOT_NCOLS = 2
 
-# DPI for saved plot
-PLOT_DPI = 150
 
-# n(r) output files; set to None to skip
-OUTPUT_NR_PLOT = "nrs.png"
+# n(r) output file; set to None to skip
 OUTPUT_NR_CSV  = "nrs.csv"
 
 # ---- Wright comparison output -------------------------------------------
@@ -280,7 +307,6 @@ if RDF_WRIGHT == "yes":
             "RDF_WRIGHT=yes needs RDF_ATOMS_PER_FORMULA_UNIT — the number of atoms in "
             "the formula unit the paper quotes its cross-section per (SiO2 -> 3).")
 OUTPUT_WRIGHT_CSV  = "wright.csv"
-OUTPUT_WRIGHT_PLOT = "wright.png"
 
 # =============================================================================
 # END CONFIGURATION
@@ -290,12 +316,9 @@ OUTPUT_WRIGHT_PLOT = "wright.png"
 def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
-OUTPUT_PLOT    = _dated(OUTPUT_PLOT)
 OUTPUT_CSV     = _dated(OUTPUT_CSV)
-OUTPUT_NR_PLOT = _dated(OUTPUT_NR_PLOT)
 OUTPUT_NR_CSV  = _dated(OUTPUT_NR_CSV)
 OUTPUT_WRIGHT_CSV  = _dated(OUTPUT_WRIGHT_CSV)
-OUTPUT_WRIGHT_PLOT = _dated(OUTPUT_WRIGHT_PLOT)
 
 # Coherent neutron scattering lengths (fm).  Add elements as needed.
 # Values from NIST: https://www.ncnr.nist.gov/resources/n-lengths/
@@ -678,8 +701,9 @@ def build_conventions(partial_results, elements, concentrations, rho_mean,
     Build every requested (function, normalization) column from the partials.
 
     Returns (results, meta) where results is {label: (r, y)} and meta is
-    {label: {...}} carrying the defining equation, Σw, asymptotic limits, units,
-    and the y value of the plot's reference line (None for no line).
+    {label: {...}} carrying the defining equation, Σw, asymptotic limits and
+    units.  The limits are printed, not drawn: the plotting pipeline draws only
+    curves, and a printed limit checked against one is the stronger test.
     """
     r = next(iter(partial_results.values()))[0]
     results, meta = {}, {}
@@ -700,7 +724,6 @@ def build_conventions(partial_results, elements, concentrations, rho_mean,
                 'limit_0':   {'g': '0', 'h': f'{-sum_w:.4f}', 'D': '0', 'T': '0'}[func],
                 'limit_inf': {'g': f'{sum_w:.4f}', 'h': '0', 'D': '0 (oscillates)',
                               'T': f'4πrρ·{sum_w:.4f}'}[func],
-                'reference': {'g': sum_w, 'h': 0.0, 'D': 0.0, 'T': None}[func],
             }
 
     if not results:
@@ -754,6 +777,106 @@ def apply_lorch(r, y, delta_r, q_max, chunk=512):
     return out
 
 
+def modified_lorch_kernel(r_block, r_grid, delta):
+    """
+    The radial kernel K(r, r') for Soper's modified Lorch function, eq. (60):
+
+        L'(r, Δ) = 3/(4πΔ³)   |r| <= Δ
+                 = 0          |r| >  Δ
+
+    a uniform sphere of radius Δ and unit volume integral. Unlike the standard
+    Lorch function this is applied in r space, not as a window in Q space, so it
+    is a genuine 3D convolution rather than a 1D one.
+
+    IN PRACTICE THIS IS APPLIED TO h(r), the baseline-subtracted correlation
+    function, and the derivation below is written with that in mind. h is not an
+    arbitrary choice of column: it is the one this kernel can be evaluated on
+    honestly against a truncated grid. See apply_modified_lorch() for the
+    measurement that makes the point.
+
+    For spherically symmetric h and L' the 3D convolution collapses to a single
+    radial integral,
+
+        (h * L')(r) = (2π/r) ∫ dr' r' h(r') ∫_{|r-r'|}^{r+r'} du u L'(u)
+
+    and with L' constant out to Δ the inner integral is elementary:
+
+        r (h * L')(r) = 3/(4Δ³) ∫ dr' [r' h(r')] K(r, r')
+        K(r, r')      = min(r + r', Δ)² − min(|r − r'|, Δ)²
+
+    The two min()s are what carry the geometry: when |r − r'| >= Δ the shells do
+    not overlap and K is identically zero, so no separate cutoff is needed. This
+    was checked against direct 3D quadrature (agreement to ~1e-10) and against
+    the requirement that a constant convolve to itself.
+    """
+    return (np.minimum(r_block + r_grid, delta) ** 2
+            - np.minimum(np.abs(r_block - r_grid), delta) ** 2)
+
+
+def apply_modified_lorch(r, y, delta, r_weighted, chunk=512):
+    """
+    Convolve one column with the uniform sphere of Soper eq. (60).
+
+    MEANT FOR h(r). h → 0 at large r, and that is what makes this kernel usable
+    on a finite grid: the integral wants r' out to r + Δ, and past R_MAX there
+    is nothing there. For h the missing shell contributes nothing, because h is
+    already zero out there. For a column carrying a baseline it contributes the
+    baseline, and losing it shows.
+
+    Measured on an R_MAX = 8 Å grid with Δ = 0.2, structure decaying to its
+    far-field value:
+
+        h convolved, last Δ of the grid : 0.00000        (truth 0)
+        g convolved, last Δ of the grid : 0.50 .. 1.00   (truth 1)
+
+    Analytically the two carry the same information — the kernel has unit volume
+    integral, so it maps the constant 1 to itself and (g * L') = (h * L') + 1
+    exactly. On a truncated grid that identity holds in the bulk (agreement to
+    1.6e-4 here) and fails at the edges (0.50 discrepancy in the last 2Δ),
+    because the shell beyond R_MAX is precisely the part that would have
+    supplied the baseline. Subtracting the baseline first is what removes the
+    artifact rather than hiding it.
+
+    Nothing here refuses another column, and the r_weighted flag below is what a
+    different one would need. It says whether the column already carries a
+    factor of r, because the convolution acts on the underlying 3D radial
+    function and not on the plotted curve: h is that function, so it is
+    multiplied by r going in and divided by r coming out, while D and T are
+    4πrρ × it and pass through as they stand. Getting that backwards changes the
+    answer without changing its shape enough to notice, which is why it is an
+    explicit argument rather than a guess — but note that D and T also carry the
+    r-weighting that makes the edge loss above worse, not better.
+    """
+    if delta <= 0:
+        raise ValueError("modified Lorch needs a positive Δ.")
+    dr_grid = r[1] - r[0]
+    g = y if r_weighted else r * y
+    out = np.empty_like(y)
+    for start in range(0, len(r), chunk):
+        stop = min(start + chunk, len(r))
+        kernel = modified_lorch_kernel(r[start:stop, None], r[None, :], delta)
+        out[start:stop] = kernel @ g * dr_grid
+    out *= 3.0 / (4.0 * delta ** 3)
+    return out if r_weighted else out / r
+
+
+def modified_lorch_fwhm(delta):
+    """
+    Real-space resolution of eq. (60), for checking against a quoted number.
+
+    Far from the origin the sphere smears a shell by its own projection onto one
+    axis, p(x) = 3(Δ² − x²)/(4Δ³), a parabola on [−Δ, Δ]. Half maximum sits at
+    x = Δ/√2, so
+
+        FWHM = √2 Δ ≈ 1.4142 Δ
+
+    Confirmed numerically against a delta shell put through the full radial
+    convolution. Δ is therefore NOT the resolution — it is about 1.41x smaller,
+    the same trap as the standard Lorch function's Δr.
+    """
+    return np.sqrt(2.0) * delta
+
+
 def lorch_fwhm(delta_r, q_max):
     """
     FWHM of the resulting peak function — the number papers actually quote as
@@ -769,21 +892,40 @@ def lorch_fwhm(delta_r, q_max):
     return 2 * half.max(), bool(x[np.argmax(p)] > 1e-3)
 
 
-def broaden(results, meta, sigma, dr, mode='gaussian', delta_r=0.0, q_max=0.0):
+def broaden(results, meta, sigma, dr, mode='gaussian', delta_r=0.0, q_max=0.0,
+            delta=0.0):
     """
     Add a *_broadened twin of every convention column, so modeled peaks are not
     sharper than measured ones purely for instrumental reasons.  Mutates both
     dicts.
 
-    'gaussian' is the generic stand-in (Soper used ~0.1 Å).  'lorch' reproduces
-    the modification function neutron glass diffraction actually uses; it matches
-    a Gaussian in width but has negative side lobes a Gaussian cannot produce.
+    'gaussian'        the generic stand-in (Soper used ~0.1 Å).
+    'lorch'           the modification function neutron glass diffraction
+                      actually uses: a window in Q space, cosine-transformed to
+                      a 1D peak function. Matches a Gaussian in width but has
+                      negative side lobes a Gaussian cannot produce.
+    'modified_lorch'  Soper eq. (60): a uniform sphere of radius Δ convolved in
+                      r space instead of a window applied in Q space, and meant
+                      for h — the baseline-subtracted form is the one whose
+                      convolution survives the grid ending at R_MAX. Being a 3D
+                      top hat it is strictly non-negative — no side lobes at all
+                      — so it cannot push a correlation function negative
+                      between peaks the way 'lorch' can. The cost is that it has
+                      no Q-space counterpart, so it does not correspond to any
+                      particular measurement's truncation.
     """
     if mode == 'gaussian' and sigma <= 0:
         return
     for label in list(results):
         r, y = results[label]
-        if mode == 'lorch':
+        if mode == 'modified_lorch':
+            # h is the intended column and is not r-weighted; D and T carry an
+            # explicit factor of r. See apply_modified_lorch().
+            r_weighted = label.split('_')[0] in ('D', 'T')
+            wide = apply_modified_lorch(r, y, delta, r_weighted)
+            note = (f"⊗ modified Lorch (Soper eq. 60) Δ={delta:.4f} Å "
+                    f"-> resolution FWHM {modified_lorch_fwhm(delta):.4f} Å")
+        elif mode == 'lorch':
             wide = apply_lorch(r, y, delta_r, q_max)
             fwhm, double = lorch_fwhm(delta_r, q_max)
             note = (f"⊗ Lorch Δr={delta_r:.4f} Å, Q_max={q_max} Å⁻¹ "
@@ -900,25 +1042,6 @@ def report_wright(info):
     print(f"                   density alone, so it needs no fitting.")
 
 
-def plot_wright(columns, r, info, filename):
-    """T(r) against its own T0 baseline, the way published figures show it."""
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(r, columns['T_wright'], color='C0', linewidth=1.6, label='T(r), Lorch-broadened')
-    ax.plot(r, columns['T_wright_unbroadened'], color='C0', linewidth=0.8, alpha=0.45,
-            label='T(r), unbroadened')
-    ax.plot(r, columns['T0_baseline'], color='0.4', linestyle='--', linewidth=1.0,
-            label=r'$T^0(r)=4\pi r\rho^0\langle b\rangle^2$')
-    ax.set_xlabel('r (Å)')
-    ax.set_ylabel(r'T(r)  (barn sr$^{-1}$ formula-unit$^{-1}$ Å$^{-2}$)')
-    ax.set_title(f"Wright comparison — Lorch Q$_{{max}}$={info['q_max']:g} Å⁻¹, "
-                 f"FWHM {info['fwhm']:.3f} Å")
-    ax.legend(fontsize=8)
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Wright-comparison plot saved to {filename}")
-
-
 def save_csv(results, filename):
     """Save results dict {label: (r, y)} to CSV with one column per label."""
     r = next(iter(results.values()))[0]
@@ -926,64 +1049,6 @@ def save_csv(results, filename):
     data = np.column_stack([r] + [y for _, y in results.values()])
     np.savetxt(filename, data, delimiter=',', header=header, comments='', fmt='%.6f')
     print(f"Data table saved to {filename}")
-
-
-def plot_rdfs(results, meta):
-    """
-    Plot partials and convention columns.  meta carries per-column units and the
-    reference level, since these panels no longer share one y axis: a partial is
-    a dimensionless g(r) about 1, while h_absolute is barn/sr/atom about 0.
-    """
-    n = len(results)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, (name, (r, g)) in zip(axes, results.items()):
-        ax.plot(r, g)
-        m         = meta.get(name)
-        reference = 1.0 if m is None else m['reference']       # partials: g(r) -> 1
-        if reference is not None:
-            ax.axhline(reference, color='gray', linestyle='--', linewidth=0.8)
-        ax.set_xlabel('r (Å)')
-        ax.set_ylabel('g(r)' if m is None else f"{name} ({m['units']})")
-        ax.set_title(name)
-
-    # hide any unused subplots
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-    if OUTPUT_PLOT is not None:
-        fig.savefig(OUTPUT_PLOT, dpi=PLOT_DPI)
-        print(f"Plot saved to {OUTPUT_PLOT}")
-    plt.close(fig)
-
-
-def plot_nrs(nr_results):
-    n = len(nr_results)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6 * ncols, 4 * nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, (name, (r, nr)) in zip(axes, nr_results.items()):
-        ax.plot(r, nr)
-        ax.set_xlabel('r (Å)')
-        ax.set_ylabel('n(r)')
-        ax.set_title(name)
-
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-    if OUTPUT_NR_PLOT is not None:
-        fig.savefig(OUTPUT_NR_PLOT, dpi=PLOT_DPI)
-        print(f"n(r) plot saved to {OUTPUT_NR_PLOT}")
-    plt.close(fig)
 
 
 if __name__ == '__main__':
@@ -1051,7 +1116,8 @@ if __name__ == '__main__':
     )
     r_grid = next(iter(gr_results.values()))[0]
     broaden(conventions, meta, RDF_RESOLUTION_SIGMA, r_grid[1] - r_grid[0],
-            mode=RDF_RESOLUTION_MODE, delta_r=RDF_LORCH_DR, q_max=RDF_LORCH_QMAX)
+            mode=RDF_RESOLUTION_MODE, delta_r=RDF_LORCH_DR, q_max=RDF_LORCH_QMAX,
+            delta=RDF_MODIFIED_LORCH_DELTA)
     print_convention_table(meta)
     gr_results.update(conventions)
 
@@ -1069,9 +1135,6 @@ if __name__ == '__main__':
     if OUTPUT_NR_CSV is not None:
         save_csv(nr_results, OUTPUT_NR_CSV)
 
-    plot_rdfs(gr_results, meta)
-    if OUTPUT_NR_PLOT is not None:
-        plot_nrs(nr_results)
 
     if RDF_WRIGHT == 'yes':
         wright_cols, wright_info = build_wright(
@@ -1082,5 +1145,3 @@ if __name__ == '__main__':
         report_wright(wright_info)
         if OUTPUT_WRIGHT_CSV is not None:
             save_csv({k: (r_grid, v) for k, v in wright_cols.items()}, OUTPUT_WRIGHT_CSV)
-        if OUTPUT_WRIGHT_PLOT is not None:
-            plot_wright(wright_cols, r_grid, wright_info, OUTPUT_WRIGHT_PLOT)

@@ -77,11 +77,15 @@ OUTPUT
 ------
 - msd.csv       — time_fs, then MSD_<element> per element and MSD_total (Å²)
 - diffusion.csv — label, D (1e-5 cm²/s) per element and total
-- msd.png       — all curves overlaid on one axes  (set OUTPUT_PLOT=None to skip)
+
+This script writes NO plots. Figures come from the plotting pipeline
+(jobs/pipeline/plotting/plot_pipeline.sh), which reads the CSVs above and
+writes one PNG per quantity. Run it in this directory, or let the analysis
+runner call it via RUN_PLOTS=1.
 
 DEPENDENCIES
 ------------
-  pip install numpy matplotlib
+  pip install numpy
 
 COLUMN LAYOUT
 -------------
@@ -98,9 +102,6 @@ import os
 from datetime import date
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # =============================================================================
 # CONFIGURATION — edit these variables between runs
@@ -228,10 +229,7 @@ OUTPUT_CSV  = "msd.csv"
 # temperatures and reads this file; a regex over stdout would break the first
 # time someone reformats a print statement.
 OUTPUT_DIFFUSION_CSV = "diffusion.csv"
-OUTPUT_PLOT = "msd.png"
 
-# Plot appearance
-PLOT_DPI = 150
 
 # =============================================================================
 # END CONFIGURATION
@@ -243,7 +241,6 @@ def _dated(filename):
 
 OUTPUT_CSV  = _dated(OUTPUT_CSV)
 OUTPUT_DIFFUSION_CSV = _dated(OUTPUT_DIFFUSION_CSV)
-OUTPUT_PLOT = _dated(OUTPUT_PLOT)
 
 # 1 Angstrom^2/fs = 1e-16 cm^2 / 1e-15 s = 0.1 cm^2/s = 1e4 x(1e-5 cm^2/s)
 ANG2_FS_TO_1E5_CM2_S = 1.0e4
@@ -435,19 +432,6 @@ def save_diffusion_csv(D, filename):
     print(f"Diffusion coefficients saved to {filename}")
 
 
-def plot_msd(results, time_fs, filename):
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for label, curve in results.items():
-        ax.plot(time_fs, curve, label=label, linewidth=1.5 if label == 'total' else 1.0)
-    ax.set_xlabel('t (fs)')
-    ax.set_ylabel('MSD (Å²)')
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Plot saved to {filename}")
-
-
 if __name__ == '__main__':
     print(f"Reading trajectory: {DUMP_FILE}")
     print(f"  N_FRAMES={N_FRAMES or 'all'}, STRIDE={STRIDE}, TIME_UNIT={TIME_UNIT} fs")
@@ -497,5 +481,4 @@ if __name__ == '__main__':
         save_csv(results, time_fs, OUTPUT_CSV)
     if OUTPUT_DIFFUSION_CSV is not None:
         save_diffusion_csv(D, OUTPUT_DIFFUSION_CSV)
-    if OUTPUT_PLOT is not None:
-        plot_msd(results, time_fs, OUTPUT_PLOT)
+

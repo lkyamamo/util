@@ -33,6 +33,15 @@ RUN_MSD="${RUN_MSD:-1}"
 # with RUN_DYNMAT=1 — so unlike the others this defaults to off.
 RUN_VDOS_DYNMAT="${RUN_VDOS_DYNMAT:-0}"
 
+# Turn the CSVs above into figures, as a separate stage (see the Plot section at
+# the end). 1 by default: plotting is cheap next to the analysis, and a run with
+# no figures is rarely what anyone wanted. Set 0 to compute only, then plot later
+# by running plot_pipeline.sh in this directory — that is the point of the split.
+RUN_PLOTS="${RUN_PLOTS:-1}"
+# The plotting pipeline in the util checkout. Override if your checkout is not
+# at $HOME/util, the same way ANALYSIS_TEMPLATE_DIR is set for the analysis code.
+PLOT_PIPELINE="${PLOT_PIPELINE:-$HOME/util/jobs/pipeline/plotting/plot_pipeline.sh}"
+
 ############################
 # Thread count
 ############################
@@ -68,6 +77,11 @@ echo "Threads: $OMP_NUM_THREADS"
 # submitters (submit_pipeline.sh / submit_pipeline_local.sh) can drive this
 # script without their settings being clobbered by the edits here.
 #
+# PLOTS are not made here. The .py scripts write CSVs only; figures come from
+# jobs/pipeline/plotting/plot_pipeline.sh, run as a separate stage at the end of
+# this script when RUN_PLOTS=1. Its own plot_pipeline.conf controls how they
+# look — style, format, which calculations, the frequency axis — so none of
+# that appears among the analysis parameters below.
 # vdos.py and msd.py read the same dynamics.lammpstrj but want different
 # settings — VDOS needs a short CORR_LENGTH for frequency resolution, MSD a
 # long one to reach the diffusive regime — so each has its own prefixed
@@ -120,15 +134,22 @@ DSF_MAX_Q_POINTS_DYN="${DSF_MAX_Q_POINTS_DYN:-}"  # prune target; 0 = no pruning
 # therefore REFUSES to neutron-weight an H- or D-bearing system; set this to
 # 'no' there to get the unweighted partials and total instead.
 DSF_NEUTRON_WEIGHTING="${DSF_NEUTRON_WEIGHTING:-}"  # yes | no
-
-# rdf_freud.py
 R_MAX="${R_MAX:-}"                      # Å; max r. Must be < half the shortest box edge
 RDF_BINS="${RDF_BINS:-}"                # number of r-bins
 RDF_NORMALIZATION="${RDF_NORMALIZATION:-}"        # semicolon list: unity | FZ | absolute
 RDF_FUNCTIONS="${RDF_FUNCTIONS:-}"                # semicolon list: g | h | D | T
 RDF_RESOLUTION_SIGMA="${RDF_RESOLUTION_SIGMA:-}"  # Å; Gaussian resolution broadening, 0 disables
-RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch
+RDF_RESOLUTION_MODE="${RDF_RESOLUTION_MODE:-}"    # gaussian (default) | lorch |
+                                        # modified_lorch (Soper eq. 60: a uniform
+                                        # sphere smeared in r space, never negative;
+                                        # meant for h, whose baseline is already
+                                        # subtracted so the grid ending at R_MAX
+                                        # costs the convolution nothing)
 RDF_LORCH_QMAX="${RDF_LORCH_QMAX:-}"              # Å⁻¹; needed by mode=lorch
+RDF_MODIFIED_LORCH_DELTA="${RDF_MODIFIED_LORCH_DELTA:-}"  # Å; radius of the smearing
+                                        # sphere for mode=modified_lorch. NOT the
+                                        # resolution: FWHM = sqrt(2)*Δ, so divide a
+                                        # quoted FWHM by 1.4142 to get it
 RDF_LORCH_DR="${RDF_LORCH_DR:-}"                  # Å; the parameter INSIDE M(Q), not the
                                         # resolution a paper quotes. Blank = pi/Q_MAX, the
                                         # standard Lorch choice — leave it blank unless the
@@ -140,8 +161,6 @@ RDF_ATOMS_PER_FORMULA_UNIT="${RDF_ATOMS_PER_FORMULA_UNIT:-}"  # SiO2 -> 3; neede
 # neutron correlation function. Needs QMAX and ATOMS_PER_FORMULA_UNIT above.
 RDF_WRIGHT="${RDF_WRIGHT:-}"            # yes | no (default no)
 RDF_WRIGHT_QMAX="${RDF_WRIGHT_QMAX:-}"  # Å⁻¹; the paper's Fourier truncation, e.g. 45.2
-
-# bad_freud.py — bond angle distributions. These keys are BARE rather than
 # BAD_-prefixed at the script level (the submitters map --bad-elements to
 # ELEMENTS, and so on); the prefix asymmetry is historical.
 #
@@ -156,8 +175,6 @@ R_MINCUT="${R_MINCUT:-}"                # same format; excludes unphysical close
 TRIPLET_CUTOFFS="${TRIPLET_CUTOFFS:-}"  # pipe-separated per-triplet overrides,
                                         # label:elA-elB-elC:r_max_ab:r_min_ab:r_max_cb:r_min_cb
 BAD_BINS="${BAD_BINS:-}"                # bins over 0-180 deg; 180 = 1 deg, 360 = 0.5 deg
-
-# vdos.py
 VDOS_N_FRAMES="${VDOS_N_FRAMES:-}"
 VDOS_STRIDE="${VDOS_STRIDE:-}"
 VDOS_CORR_LENGTH="${VDOS_CORR_LENGTH:-}"          # REQUIRED. fs; VACF max lag. Sets the
@@ -170,18 +187,12 @@ VDOS_WINDOW="${VDOS_WINDOW:-}"
 VDOS_NORMALIZATION="${VDOS_NORMALIZATION:-}"      # phonon | unit_area (sum rule)
 VDOS_WEIGHTING="${VDOS_WEIGHTING:-}"              # semicolon list: unity | coherent |
                                                   # incoherent | total (species weight)
-VDOS_PLOT_XUNIT="${VDOS_PLOT_XUNIT:-}"            # meV | THz | cm-1 | eV (plot axis only;
-                                                  # the CSV always carries all four)
-
-# msd.py
 MSD_N_FRAMES="${MSD_N_FRAMES:-}"
 MSD_STRIDE="${MSD_STRIDE:-}"
 MSD_CORR_LENGTH="${MSD_CORR_LENGTH:-}"            # REQUIRED. fs; max time lag. Also sets the
                                                   # diffusion fit window, so D depends on it
 MSD_CORR_INTERVAL="${MSD_CORR_INTERVAL:-}"        # REQUIRED. fs; spacing between reference frames
 MSD_FIT_FRACTION="${MSD_FIT_FRACTION:-}"          # REQUIRED. tail fraction used for the D fit
-
-# vdos_dynmat.py — the harmonic counterpart to vdos.py. It reads the dynamical
 # matrix LAMMPS wrote (not a trajectory), plus the first frame of $TRAJ for the
 # per-atom element labels. DYNMAT_FILE/DYNMAT_BINARY must match what the LAMMPS
 # stage used, which submit_pipeline.sh guarantees by sending both stages the same
@@ -210,8 +221,6 @@ DYNMAT_REF_TRAJ="${DYNMAT_REF_TRAJ:-}"                      # default dynmat_ref
 VDOS_DYNMAT_BRIDGE_ELEMENT="${VDOS_DYNMAT_BRIDGE_ELEMENT:-}"      # default O
 VDOS_DYNMAT_NEIGHBOR_ELEMENT="${VDOS_DYNMAT_NEIGHBOR_ELEMENT:-}"  # default Si
 VDOS_DYNMAT_BOND_CUTOFF="${VDOS_DYNMAT_BOND_CUTOFF:-}"      # Angstrom, default 2.2
-
-# Export only the ones actually set, so an empty value leaves the .py default
 # in effect rather than reaching Python as an empty string.
 for _var in DYNAMICS_DT \
             DSF_N_FRAMES DSF_STRIDE DSF_Q_MAX DSF_N_Q_BINS \
@@ -219,10 +228,10 @@ for _var in DYNAMICS_DT \
             DSF_MAX_Q_POINTS_DYN DSF_NEUTRON_WEIGHTING \
             R_MAX RDF_BINS RDF_NORMALIZATION RDF_FUNCTIONS RDF_RESOLUTION_SIGMA \
             RDF_RESOLUTION_MODE RDF_LORCH_QMAX RDF_ATOMS_PER_FORMULA_UNIT \
-            RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR \
+            RDF_WRIGHT RDF_WRIGHT_QMAX RDF_LORCH_DR RDF_MODIFIED_LORCH_DELTA \
             ELEMENTS R_CUTOFF R_MINCUT TRIPLET_CUTOFFS BAD_BINS \
             VDOS_N_FRAMES VDOS_STRIDE VDOS_CORR_LENGTH VDOS_CORR_INTERVAL \
-            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING VDOS_PLOT_XUNIT \
+            VDOS_MAX_FREQUENCY_EV VDOS_NUM_GRIDS VDOS_METHOD VDOS_WINDOW VDOS_NORMALIZATION VDOS_WEIGHTING \
             MSD_N_FRAMES MSD_STRIDE MSD_CORR_LENGTH MSD_CORR_INTERVAL MSD_FIT_FRACTION \
             DYNMAT_FILE DYNMAT_BINARY \
             VDOS_DYNMAT_MAX_FREQUENCY VDOS_DYNMAT_XUNIT VDOS_DYNMAT_BINS \
@@ -236,6 +245,8 @@ for _var in DYNAMICS_DT \
     fi
 done
 unset _var
+
+
 
 ############################
 # Load environment
@@ -277,4 +288,26 @@ fi
 if [ "$RUN_VDOS_DYNMAT" -eq 1 ]; then
     echo "--- vdos_dynmat.py ---"
     python vdos_dynmat.py
+fi
+
+############################
+# Plot
+############################
+
+# Figures are a separate stage: the .py scripts above write CSVs only, and
+# jobs/pipeline/plotting/plot_pipeline.sh turns those into one PNG per quantity.
+# Keeping them apart means a figure can be restyled, re-unit'd or redrawn
+# without recomputing anything, and there is exactly one place that draws.
+#
+# The plotting pipeline reads plot_pipeline.conf from THIS directory if there is
+# one, and otherwise the tracked default next to plot_pipeline.sh. Drop a copy
+# in here to give one analysis its own look.
+if [ "$RUN_PLOTS" -eq 1 ]; then
+    echo "--- plot_pipeline.sh ---"
+    if [ -x "$PLOT_PIPELINE" ]; then
+        "$PLOT_PIPELINE" "$PWD"
+    else
+        echo "Skipping plots: $PLOT_PIPELINE not found or not executable." >&2
+        echo "Set PLOT_PIPELINE to jobs/pipeline/plotting/plot_pipeline.sh in the util checkout." >&2
+    fi
 fi

@@ -16,11 +16,14 @@ OUTPUT
 ------
 COMPUTE_STATIC=True
   sq.csv    — q (Å⁻¹), partial S_AB(q), total S(q), neutron-weighted S(q)
-  sq.png    — line plot of all S(q) curves
 
 COMPUTE_DYNAMIC=True
   dsf.csv   — q (Å⁻¹), ω (THz), partial S_AB(q,ω), total, neutron-weighted
-  dsf.png   — 2D heatmap S(q,ω) for total and neutron-weighted
+
+This script writes NO plots. Figures come from the plotting pipeline
+(jobs/pipeline/plotting/plot_pipeline.sh), which reads the CSVs above and
+writes one PNG per quantity. Run it in this directory, or let the analysis
+runner call it via RUN_PLOTS=1.
 
 NEUTRON WEIGHTING
 -----------------
@@ -49,7 +52,7 @@ isotopes at natural abundance; both are defensible, so the check tolerates 2%.
 
 DEPENDENCIES
 ------------
-  pip install dynasor matplotlib
+  pip install dynasor
   pip install icc_rt          # optional: 5–10× numba speedup
 
 PARALLELIZATION
@@ -165,13 +168,9 @@ if NEUTRON_WEIGHTING not in ("yes", "no"):
 
 # Output files (set to None to skip writing)
 OUTPUT_SQ_CSV   = "sq.csv"
-OUTPUT_SQ_PLOT  = "sq.png"
 OUTPUT_DSF_CSV  = "dsf.csv"
-OUTPUT_DSF_PLOT = "dsf.png"
 
-# Plot layout
-PLOT_NCOLS = 2
-PLOT_DPI   = 150
+
 
 # =============================================================================
 # END CONFIGURATION
@@ -232,9 +231,7 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_SQ_CSV   = _dated(OUTPUT_SQ_CSV)
-OUTPUT_SQ_PLOT  = _dated(OUTPUT_SQ_PLOT)
 OUTPUT_DSF_CSV  = _dated(OUTPUT_DSF_CSV)
-OUTPUT_DSF_PLOT = _dated(OUTPUT_DSF_PLOT)
 
 # Must be set before importing dynasor/numba — numba reads thread count at JIT time.
 # os.environ.setdefault only writes when OMP_NUM_THREADS is not already present
@@ -245,9 +242,6 @@ if N_THREADS > 0:
 import warnings
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # MDAnalysis' LAMMPSDUMP topology parser emits both of these for any dump that has
 # an `element` column but no `type`/`mass` column — which is exactly the layout
@@ -534,41 +528,6 @@ def save_csv_sq(sample, sample_neutron, filename):
     print(f"  S(q) data saved to {filename}")
 
 
-def plot_sq(sample, sample_neutron, filename):
-    """Line plot: one panel per partial + total + neutron-weighted."""
-    q = sample.q_norms
-
-    curves = {f'{a}-{b}': sample[f'Sq_{a}_{b}'] for (a, b) in sample.pairs}
-    curves['total'] = sample.Sq
-    if sample_neutron is not None:
-        curves['neutron'] = sample_neutron.Sq
-
-    n     = len(curves)
-    ncols = PLOT_NCOLS
-    nrows = (n + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols,
-                              figsize=(6 * ncols, 4 * nrows), squeeze=False)
-    axes = axes.flatten()
-
-    for ax, (label, sq) in zip(axes, curves.items()):
-        ax.plot(q, sq)
-        ax.set_xlabel('q (Å⁻¹)')
-        ax.set_ylabel('S(q)')
-        ax.set_title(label)
-
-    for ax in axes[n:]:
-        ax.set_visible(False)
-
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"  S(q) plot saved to {filename}")
-
-
-# ---------------------------------------------------------------------------
-# Dynamic S(q,ω) — I/O
-# ---------------------------------------------------------------------------
-
 def _omega_THz(sample):
     """Convert sample.omega (rad/fs) to THz.  1 rad/fs = 1e3/(2π) THz."""
     return sample.omega * 1e3 / (2.0 * np.pi)
@@ -611,49 +570,6 @@ def save_csv_dsf(sample, sample_neutron, filename):
                delimiter=',', header=header, comments='', fmt='%.6f')
     print(f"  S(q,ω) data saved to {filename}")
 
-
-def plot_dsf(sample, sample_neutron, filename):
-    """2D imshow heatmaps: total S(q,ω) and neutron-weighted S(q,ω)."""
-    q     = sample.q_norms          # (N_Q_BINS,)
-    omega = _omega_THz(sample)      # (N_omega,)
-
-    # sample.Sqw_coh shape: (N_Q_BINS, N_omega) — q on axis-0, omega on axis-1
-    panels = {'S(q,ω) total': sample.Sqw_coh}
-    if sample_neutron is not None:
-        panels['S(q,ω) neutron'] = sample_neutron.Sqw_coh
-
-    n_panels = len(panels)
-    fig, axes = plt.subplots(1, n_panels,
-                              figsize=(7 * n_panels, 5), squeeze=False)
-    axes = axes.flatten()
-
-    extent = [omega[0], omega[-1], q[0], q[-1]]
-
-    for ax, (title, Sqw) in zip(axes, panels.items()):
-        vmax = np.nanpercentile(Sqw, 99)
-        im = ax.imshow(
-            Sqw,
-            origin='lower',
-            aspect='auto',
-            extent=extent,
-            vmin=0,
-            vmax=vmax,
-            cmap='inferno',
-        )
-        ax.set_xlabel('ω (THz)')
-        ax.set_ylabel('q (Å⁻¹)')
-        ax.set_title(title)
-        fig.colorbar(im, ax=ax, label='S(q,ω)')
-
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"  S(q,ω) plot saved to {filename}")
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
     print(f"Reading trajectory: {DUMP_FILE}")
@@ -710,8 +626,6 @@ if __name__ == '__main__':
 
         if OUTPUT_SQ_CSV:
             save_csv_sq(static_avg, static_neutron, OUTPUT_SQ_CSV)
-        if OUTPUT_SQ_PLOT:
-            plot_sq(static_avg, static_neutron, OUTPUT_SQ_PLOT)
 
     # ------------------------------------------------------------------
     # Dynamic S(q,ω)
@@ -753,7 +667,5 @@ if __name__ == '__main__':
 
         if OUTPUT_DSF_CSV:
             save_csv_dsf(dynamic_avg, dynamic_neutron, OUTPUT_DSF_CSV)
-        if OUTPUT_DSF_PLOT:
-            plot_dsf(dynamic_avg, dynamic_neutron, OUTPUT_DSF_PLOT)
 
     print("Done.")

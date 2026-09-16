@@ -138,7 +138,11 @@ OUTPUT
              column naming follows msd.cpp's dos.dat (Freq(meV), DoS(<el>)),
              with THz/cm-1/eV as extras. The plain DoS(Total) this script wrote
              before weighting existed is now DoS(Total_unity), unchanged.
-- vdos.png — all curves overlaid on one axes  (set OUTPUT_PLOT=None to skip)
+
+This script writes NO plots. Figures come from the plotting pipeline
+(jobs/pipeline/plotting/plot_pipeline.sh), which reads the CSVs above and
+writes one PNG per quantity. Run it in this directory, or let the analysis
+runner call it via RUN_PLOTS=1.
 
 Not replicated from msd.cpp: real-space MSD (a different quantity; use a
 dedicated script if needed) and the charge-weighted current-current spectrum
@@ -147,7 +151,7 @@ not part of this generic pipeline).
 
 DEPENDENCIES
 ------------
-  pip install numpy matplotlib
+  pip install numpy
   pip install scipy   # optional: multi-threaded FFT via VDOS_THREADS (fft_periodogram only)
 
 COLUMN LAYOUT
@@ -170,9 +174,6 @@ import os
 from datetime import date
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 # =============================================================================
 # CONFIGURATION — edit these variables between runs
@@ -286,17 +287,15 @@ VDOS_WEIGHTING = _env("VDOS_WEIGHTING", "unity")
 # installed; 0 = all available cores.
 N_THREADS = int(_env("VDOS_THREADS", "0"))
 
-# x-axis unit for vdos.png — 'meV', 'THz', 'cm-1', or 'eV'. The CSV always
+# x-axis unit for the DOS plots — 'meV', 'THz', 'cm-1', or 'eV'. The CSV always
 # contains all four regardless of this setting. Defaults to meV (msd.cpp's
 # own dos.dat convention) under vacf_cosine_transform, THz otherwise.
 PLOT_XUNIT = _env("VDOS_PLOT_XUNIT", "meV" if METHOD == "vacf_cosine_transform" else "THz")
 
 # Output files (set to None to skip writing)
 OUTPUT_CSV  = "vdos.csv"
-OUTPUT_PLOT = "vdos.png"
 
-# Plot appearance
-PLOT_DPI = 150
+
 
 # =============================================================================
 # END CONFIGURATION
@@ -307,7 +306,6 @@ def _dated(filename):
     return None if filename is None else f"{date.today():%Y%m%d}_{filename}"
 
 OUTPUT_CSV  = _dated(OUTPUT_CSV)
-OUTPUT_PLOT = _dated(OUTPUT_PLOT)
 
 try:
     import scipy.fft as _fft
@@ -836,23 +834,6 @@ def save_csv(results, freq_by_unit, filename):
     print(f"Data table saved to {filename}")
 
 
-def plot_vdos(results, freq_by_unit, filename, xunit=PLOT_XUNIT):
-    if xunit not in FREQ_UNIT_LABELS:
-        raise ValueError(f"Unknown PLOT_XUNIT={xunit!r}; use one of {list(FREQ_UNIT_LABELS)}.")
-    x = freq_by_unit[xunit]
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for label, curve in results.items():
-        ax.plot(x, curve, label=label, linewidth=1.5 if label.startswith('total_') else 1.0)
-    ax.set_xlabel(FREQ_UNIT_LABELS[xunit])
-    ax.set_ylabel('DOS (phonon-normalized)' if VDOS_NORMALIZATION == 'phonon' else 'VDOS (unit-area normalized)')
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(filename, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"Plot saved to {filename}")
-
-
 if __name__ == '__main__':
     print(f"Reading trajectory: {DUMP_FILE}")
     print(f"  N_FRAMES={N_FRAMES or 'all'}, STRIDE={STRIDE}, TIME_UNIT={TIME_UNIT} fs")
@@ -924,5 +905,4 @@ if __name__ == '__main__':
 
     if OUTPUT_CSV is not None:
         save_csv(results, freq_by_unit, OUTPUT_CSV)
-    if OUTPUT_PLOT is not None:
-        plot_vdos(results, freq_by_unit, OUTPUT_PLOT)
+
