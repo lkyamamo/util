@@ -204,7 +204,67 @@ done
 wait
 
 cat energies_*.txt > energies.txt
-wc -l energies.txt
+echo "energy lines: $(wc -l < energies.txt)  (expected {expected_lines})"
+
+############################
+# Collect and plot
+#
+# So a finished job leaves tables and figures rather than energy dumps that
+# still need a second pass by hand.
+#
+# Deliberately non-fatal. LAMMPS has already done the expensive part by this
+# point, and a missing venv or a plotting error should not make a good run look
+# like a failed one - it is reported and the job still exits 0.
+############################
+
+VENV="{venv}"
+TOOLS="{tools}"
+CASE_DIR="$(cd "$RUN_DIR/.." && pwd)"
+
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "NOTE: no python at $VENV/bin/python - skipping post-processing."
+  echo "      Collect by hand with:"
+  echo "        source $VENV/bin/activate"
+  echo "        python $TOOLS/collect_survey.py --survey $CASE_DIR/setup/survey --run-dir $RUN_DIR --rings $CASE_DIR/setup/rings.csv --per-size 3"
+  echo "        python $TOOLS/plot_ring_paths.py --results $RUN_DIR"
+else
+  echo "post-processing with $VENV"
+
+  # SUMMARY.txt is the human-readable one: the per-size barrier table, how the
+  # barrier correlates with size and with aperture, and the chosen
+  # representatives. tee so it lands both in the job output and on disk.
+  "$VENV/bin/python" "$TOOLS/collect_survey.py" \\
+      --survey "$CASE_DIR/setup/survey" \\
+      --run-dir "$RUN_DIR" \\
+      --rings "$CASE_DIR/setup/rings.csv" \\
+      --per-size 3 2>&1 | tee "$RUN_DIR/SUMMARY.txt"
+  collected=${{PIPESTATUS[0]}}
+
+  if [ "$collected" -ne 0 ]; then
+    echo "WARNING: collect_survey.py exited $collected; see SUMMARY.txt. Energies are"
+    echo "         intact in energies.txt, so this can be re-run without re-running LAMMPS."
+  else
+    "$VENV/bin/python" "$TOOLS/plot_ring_paths.py" --results "$RUN_DIR"
+    if [ $? -ne 0 ]; then
+      echo "WARNING: plot_ring_paths.py failed; the CSVs are still good."
+    fi
+  fi
+fi
+
+############################
+# What the run produced
+############################
+
+echo
+echo "results in $RUN_DIR:"
+for f in SUMMARY.txt representatives.csv barriers.csv paths.csv frames.csv energies.txt; do
+  [ -f "$RUN_DIR/$f" ] && printf "  %-22s %8s lines  %s\\n" \\
+      "$f" "$(wc -l < "$RUN_DIR/$f")" "$(du -h "$RUN_DIR/$f" | cut -f1)"
+done
+if [ -d "$RUN_DIR/plots" ]; then
+  echo "  plots/                 $(find "$RUN_DIR/plots" -name '*.png' | wc -l) figures"
+  find "$RUN_DIR/plots" -name '*.png' | sed "s|$RUN_DIR/plots/|    |" | sort
+fi
 
 date
 echo "survey finished **************************************"
@@ -246,6 +306,13 @@ def parse_args(argv=None):
                         help="how many serial LAMMPS processes to split the cases over "
                              "(default: 64)")
     parser.add_argument("--walltime", default="02:00:00")
+    parser.add_argument("--venv", default="/home1/lkyamamo/venv/struc_analysis",
+                        help="the python environment the submit script uses to collect and "
+                             "plot once LAMMPS is done. Post-processing is skipped, with "
+                             "instructions printed, if it is not there")
+    parser.add_argument("--tools", default="/home1/lkyamamo/util/md_setup/ring_path",
+                        help="where collect_survey.py and plot_ring_paths.py live on the "
+                             "machine the job runs on")
     parser.add_argument("--size", type=int, action="append", default=None,
                         help="only rings of this size (repeatable)")
     parser.add_argument("--limit", type=int, default=None,
@@ -384,6 +451,8 @@ def main(argv=None) -> int:
     (input_dir / "in.survey").write_text(IN_SURVEY.replace("@PREFIX@", prefix))
     (run_dir / "submit_survey.slurm").write_text(SUBMIT.format(
         shards=shards, walltime=args.walltime,
+        venv=args.venv, tools=args.tools,
+        expected_lines=len(cases) * n_frames,
         shard_list=" ".join(f"{s:03d}" for s in range(shards))))
 
     with open(outdir / "cases.csv", "w", newline="") as handle:

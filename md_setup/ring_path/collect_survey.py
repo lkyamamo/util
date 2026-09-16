@@ -167,12 +167,18 @@ def choose(rows: list[dict], per_size: int) -> list[dict]:
             continue
         # Evenly spaced percentiles centred on the median: one pick is the
         # median, three are the quartiles, and so on.
-        if per_size == 1:
-            fractions = [0.5]
-        else:
-            fractions = list(np.linspace(0.25, 0.75, per_size))
+        fractions = [0.5] if per_size == 1 else list(np.linspace(0.25, 0.75, per_size))
+
+        # Deduplicate the indices, not just the rows. In a small size class two
+        # percentiles land on the same ring - with two 8-rings, the 25th and
+        # 50th are both ring zero - and picking it twice would look like two
+        # independent representatives agreeing.
+        picked = []
         for fraction in fractions:
             index = int(round(fraction * (len(group) - 1)))
+            if index not in picked:
+                picked.append(index)
+        for index in picked:
             row = dict(group[index])
             row["percentile"] = round(100 * index / max(len(group) - 1, 1), 1)
             chosen.append(row)
