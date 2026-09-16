@@ -45,6 +45,12 @@ each type's name to its element symbol (case-insensitive) and --type-si/
 --type-o/--type-h are ignored. If the file only has opaque numeric types (no
 element names), --type-si/--type-o/--type-h are required.
 
+With --surface-method alpha-shape, the area of the surface mesh separating
+the slab from the surrounding medium (i.e. both exposed surfaces) is measured
+per frame in nm^2, and a surface silanol density (silanols in that frame
+divided by that frame's surface area, nm^-2) is reported alongside the raw
+counts. The padded-extent method has no mesh, so it reports counts only.
+
 Output behavior:
     - Creates an "output" directory next to this script (not next to the
       trajectory source) and writes:
@@ -65,8 +71,9 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy as np
 from ovito.io import import_file
 from ovito.modifiers import ConstructSurfaceModifier, CreateBondsModifier, SelectTypeModifier
 
@@ -76,68 +83,105 @@ from ovito.modifiers import ConstructSurfaceModifier, CreateBondsModifier, Selec
 # ---------------------------------------------------------------------------
 
 @dataclass
-class SilanolStatistics:
-    """Summary statistics over all analysed frames."""
+class SeriesStatistics:
+    """Summary statistics for one per-frame series of values."""
 
-    counts_per_frame: List[int] = field(default_factory=list)
-
-    # Populated by finalize().
     n_frames: int = 0
     mean: float = 0.0
     median: float = 0.0
     std: float = 0.0
     sem: float = 0.0          # standard error of the mean
     variance: float = 0.0
-    minimum: int = 0
-    maximum: int = 0
-    count_range: int = 0      # max - min
+    minimum: float = 0.0
+    maximum: float = 0.0
+    value_range: float = 0.0  # max - min
     q1: float = 0.0
     q3: float = 0.0
     iqr: float = 0.0
 
-    def finalize(self) -> None:
-        """Compute all derived statistics from counts_per_frame."""
-        n = len(self.counts_per_frame)
-        if n == 0:
-            return
-
-        self.n_frames = n
-        self.minimum = min(self.counts_per_frame)
-        self.maximum = max(self.counts_per_frame)
-        self.count_range = self.maximum - self.minimum
-
-        self.mean = sum(self.counts_per_frame) / n
-        self.variance = sum((x - self.mean) ** 2 for x in self.counts_per_frame) / n
-        self.std = math.sqrt(self.variance)
-        self.sem = self.std / math.sqrt(n) if n > 1 else 0.0
-
-        sorted_counts = sorted(self.counts_per_frame)
-        self.median = _percentile(sorted_counts, 50)
-        self.q1 = _percentile(sorted_counts, 25)
-        self.q3 = _percentile(sorted_counts, 75)
-        self.iqr = self.q3 - self.q1
-
-    def as_text(self) -> str:
+    def as_text(self, title: str, *, fmt: str = ".4f",
+                extreme_fmt: Optional[str] = None) -> str:
+        ext = fmt if extreme_fmt is None else extreme_fmt
         lines = [
-            "Silanol count statistics",
-            "========================",
+            title,
+            "=" * len(title),
             f"  Frames analysed : {self.n_frames}",
-            f"  Mean            : {self.mean:.4f}",
-            f"  Median          : {self.median:.4f}",
-            f"  Std dev         : {self.std:.4f}",
-            f"  Variance        : {self.variance:.4f}",
-            f"  Std error       : {self.sem:.4f}",
-            f"  Minimum         : {self.minimum}",
-            f"  Maximum         : {self.maximum}",
-            f"  Range           : {self.count_range}",
-            f"  Q1 (25th pct)   : {self.q1:.4f}",
-            f"  Q3 (75th pct)   : {self.q3:.4f}",
-            f"  IQR             : {self.iqr:.4f}",
+            f"  Mean            : {self.mean:{fmt}}",
+            f"  Median          : {self.median:{fmt}}",
+            f"  Std dev         : {self.std:{fmt}}",
+            f"  Variance        : {self.variance:{fmt}}",
+            f"  Std error       : {self.sem:{fmt}}",
+            f"  Minimum         : {self.minimum:{ext}}",
+            f"  Maximum         : {self.maximum:{ext}}",
+            f"  Range           : {self.value_range:{ext}}",
+            f"  Q1 (25th pct)   : {self.q1:{fmt}}",
+            f"  Q3 (75th pct)   : {self.q3:{fmt}}",
+            f"  IQR             : {self.iqr:{fmt}}",
         ]
         return "\n".join(lines) + "\n"
 
 
-def _percentile(sorted_data: List[int], pct: float) -> float:
+def _summarize(values: Sequence[float]) -> SeriesStatistics:
+    """Compute the full summary of one per-frame series."""
+    summary = SeriesStatistics()
+    n = len(values)
+    if n == 0:
+        return summary
+
+    summary.n_frames = n
+    summary.minimum = float(min(values))
+    summary.maximum = float(max(values))
+    summary.value_range = summary.maximum - summary.minimum
+
+    summary.mean = sum(values) / n
+    summary.variance = sum((x - summary.mean) ** 2 for x in values) / n
+    summary.std = math.sqrt(summary.variance)
+    summary.sem = summary.std / math.sqrt(n) if n > 1 else 0.0
+
+    ordered = sorted(float(v) for v in values)
+    summary.median = _percentile(ordered, 50)
+    summary.q1 = _percentile(ordered, 25)
+    summary.q3 = _percentile(ordered, 75)
+    summary.iqr = summary.q3 - summary.q1
+    return summary
+
+
+@dataclass
+class SilanolStatistics:
+    """Per-frame series over all analysed frames, plus their summaries.
+
+    surface_areas_per_frame (nm^2) and densities_per_frame (nm^-2) are only
+    populated by the alpha-shape surface method, which is the only one that
+    builds a mesh to measure an area with; they stay empty otherwise.
+    """
+
+    counts_per_frame: List[int] = field(default_factory=list)
+    surface_areas_per_frame: List[float] = field(default_factory=list)
+    densities_per_frame: List[float] = field(default_factory=list)
+
+    # Populated by finalize(); area/density stay None without a surface mesh.
+    counts: SeriesStatistics = field(default_factory=SeriesStatistics)
+    area: Optional[SeriesStatistics] = None
+    density: Optional[SeriesStatistics] = None
+
+    def finalize(self) -> None:
+        """Compute all derived statistics from the per-frame series."""
+        self.counts = _summarize(self.counts_per_frame)
+        if self.densities_per_frame:
+            self.area = _summarize(self.surface_areas_per_frame)
+            self.density = _summarize(self.densities_per_frame)
+
+    def as_text(self) -> str:
+        text = self.counts.as_text("Silanol count statistics", extreme_fmt=".0f")
+        if self.area is not None and self.density is not None:
+            text += "\n" + self.area.as_text("Surface area statistics (nm^2)")
+            text += "\n" + self.density.as_text(
+                "Surface silanol density statistics (nm^-2)"
+            )
+        return text
+
+
+def _percentile(sorted_data: Sequence[float], pct: float) -> float:
     """Linear-interpolation percentile on a pre-sorted list."""
     n = len(sorted_data)
     if n == 1:
@@ -229,8 +273,30 @@ def _ensure_alpha_shape_surface(
     ))
 
 
-def _alpha_shape_surface_si_indices(data) -> set[int]:
-    """Particle indices of Si atoms on the true surrounding-medium surface, any shape.
+def _minimum_image_delta(cell):
+    """Return a delta(a, b) -> a - b that applies the minimum image convention.
+
+    Mesh vertices are stored wrapped into the cell, so a face straddling a
+    periodic boundary has edge vectors that look box-sized unless they are
+    folded back. Faces are far smaller than the cell, so the minimum image is
+    always the intended edge.
+    """
+    matrix = np.asarray(cell[...], dtype=float)[:, :3]
+    inverse = np.linalg.inv(matrix)
+    pbc = [bool(flag) for flag in cell.pbc]
+
+    def delta(a, b):
+        reduced = inverse @ (np.asarray(a, dtype=float) - np.asarray(b, dtype=float))
+        for k, periodic in enumerate(pbc):
+            if periodic:
+                reduced[k] -= round(reduced[k])
+        return matrix @ reduced
+
+    return delta
+
+
+def _alpha_shape_surface_si_and_area(data) -> Tuple[set[int], float]:
+    """Si atoms on the true surrounding-medium surface, and that surface's area.
 
     Distinguishes the real surface from internal voids/pores by region
     topology (OVITO's identify_regions), not by position, so it treats flat
@@ -246,6 +312,16 @@ def _alpha_shape_surface_si_indices(data) -> set[int]:
     into the filled region, one into whatever region is on the other side),
     so filtering faces to those pointing into the largest non-filled region
     picks out exactly the true-surface triangles.
+
+    The returned area is the summed area of exactly those triangles, i.e. the
+    whole slab/medium interface. For a slab that is periodic in the two
+    in-plane directions this is the combined area of both exposed surfaces
+    (internal void surfaces are excluded, since their faces point into other
+    regions). Each boundary triangle contributes once, because only one of
+    its two oppositely-oriented faces is tagged with the medium region.
+
+    The area is in A^2, the units of the mesh vertex coordinates; callers
+    convert (see SQ_ANGSTROM_PER_SQ_NM).
     """
     surf = data.surfaces["surface"]
     filled = surf.regions["Filled"].array
@@ -257,20 +333,36 @@ def _alpha_shape_surface_si_indices(data) -> set[int]:
 
     face_region = surf.faces["Region"].array
     particle_index = surf.vertices["Particle Index"].array
+    vertex_pos = surf.vertices["Position"].array
     topo = surf.topology
+    delta = _minimum_image_delta(surf.domain)
 
     surface_si_indices: set[int] = set()
+    surface_area = 0.0
     for face in range(topo.face_count):
         if int(face_region[face]) != medium_region_id:
             continue
+
+        face_vertices: List[int] = []
         e0 = topo.first_face_edge(face)
         e = e0
         while True:
-            surface_si_indices.add(int(particle_index[topo.first_edge_vertex(e)]))
+            v = topo.first_edge_vertex(e)
+            face_vertices.append(v)
+            surface_si_indices.add(int(particle_index[v]))
             e = topo.next_face_edge(e)
             if e == e0:
                 break
-    return surface_si_indices
+
+        # Fan-triangulate from the first vertex; alpha-shape faces are already
+        # triangles, so this is a single cross product in practice.
+        origin = vertex_pos[face_vertices[0]]
+        for k in range(1, len(face_vertices) - 1):
+            edge_a = delta(vertex_pos[face_vertices[k]], origin)
+            edge_b = delta(vertex_pos[face_vertices[k + 1]], origin)
+            surface_area += 0.5 * float(np.linalg.norm(np.cross(edge_a, edge_b)))
+
+    return surface_si_indices, surface_area
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +370,7 @@ def _alpha_shape_surface_si_indices(data) -> set[int]:
 # ---------------------------------------------------------------------------
 
 SI_EDGE_PADDING_ANGSTROM = 2.0
+SQ_ANGSTROM_PER_SQ_NM = 100.0
 
 def compute_silanols(
     pipeline,
@@ -317,10 +410,14 @@ def compute_silanols(
     - "alpha-shape": builds an alpha-shape surface mesh from the Si
       sublattice (radius=alpha_shape_radius, smoothing_level=
       alpha_shape_smoothing) and, via region topology, finds Si atoms
-      bordering the surrounding medium (see _alpha_shape_surface_si_indices)
+      bordering the surrounding medium (see _alpha_shape_surface_si_and_area)
       — a silanol counts if its bonded Si is one of those atoms. Shape-agnostic:
       treats flat and curved surfaces identically, with no distance
       threshold. surface_thickness_angstrom is not used by this method.
+      This method also measures the area of that mesh surface per frame
+      (nm^2) and records a surface silanol density in nm^-2 (that frame's
+      silanol count divided by that frame's surface area) on the returned
+      statistics.
 
     Assumes the surface axis is non-periodic and all Si atoms sit strictly
     inside the box. The other two axes may still be periodic; OVITO's
@@ -410,9 +507,16 @@ def compute_silanols(
             neighbors[j].append(i)
 
         surface_si_indices: set[int] = set()
+        surface_area: Optional[float] = None
         if apply_surface_filter:
             if surface_method == "alpha-shape":
-                surface_si_indices = _alpha_shape_surface_si_indices(data)
+                surface_si_indices, surface_area = _alpha_shape_surface_si_and_area(data)
+                if surface_area <= 0.0:
+                    raise ValueError(
+                        f"Frame {frame}: the alpha-shape mesh has no surface "
+                        "bordering the surrounding medium (zero area); try a "
+                        "different --alpha-shape-radius."
+                    )
             elif surface_thickness_angstrom > 0:
                 thickness = float(surface_thickness_angstrom)
                 surface_si_indices = {
@@ -468,6 +572,10 @@ def compute_silanols(
             silanol_atom_ids = sorted(atom_id_set)
 
         stats.counts_per_frame.append(len(matched_ids))
+        if surface_area is not None:
+            area_nm2 = surface_area / SQ_ANGSTROM_PER_SQ_NM
+            stats.surface_areas_per_frame.append(area_nm2)
+            stats.densities_per_frame.append(len(matched_ids) / area_nm2)
         ids.append(matched_ids)
 
     stats.finalize()
@@ -488,10 +596,22 @@ def _boundary_si_csv(boundary_si_ids_per_frame: List[Tuple[int, int]]) -> str:
 
 
 def _counts_per_frame_csv(stats: SilanolStatistics) -> str:
-    lines = ["frame,silanol_count"]
+    """Per-frame counts, plus area and density columns when a mesh was built."""
+    if not stats.densities_per_frame:
+        lines = ["frame,silanol_count"]
+        lines.extend(
+            f"{frame},{count}"
+            for frame, count in enumerate(stats.counts_per_frame)
+        )
+        return "\n".join(lines) + "\n"
+
+    lines = ["frame,silanol_count,surface_area_nm2,surface_density_per_nm2"]
     lines.extend(
-        f"{frame},{count}"
-        for frame, count in enumerate(stats.counts_per_frame)
+        f"{frame},{count},{area:.6f},{density:.6f}"
+        for frame, (count, area, density) in enumerate(
+            zip(stats.counts_per_frame, stats.surface_areas_per_frame,
+                stats.densities_per_frame)
+        )
     )
     return "\n".join(lines) + "\n"
 
@@ -599,7 +719,9 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         "surface mesh from the Si sublattice and uses region "
                         "topology to find Si atoms bordering the surrounding "
                         "medium (vacuum, water, etc.); shape-agnostic (works "
-                        "for curved surfaces too).")
+                        "for curved surfaces too), and additionally reports "
+                        "the per-frame mesh surface area and surface silanol "
+                        "density.")
     p.add_argument("--surface-thickness", type=float, default=5.0,
                    help="Depth in Å inward from the padded Si extent "
                         "(lowest/highest Si position, each extended by "
