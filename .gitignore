@@ -20,3 +20,4 @@ NAS/pipeline/logs/
 
 # LAMMPS data files: structures written by setup scripts and write_data.
 *.data
+analysis/shock/etc/test_output/
