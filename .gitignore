@@ -21,3 +21,7 @@ NAS/pipeline/logs/
 # LAMMPS data files: structures written by setup scripts and write_data.
 *.data
 analysis/shock/etc/test_output/
+
+# Exception: starting-structures/ holds reference inputs, not output. Kept last
+# so it overrides every pattern above (*.data included) for anything in there.
+!starting-structures/**
