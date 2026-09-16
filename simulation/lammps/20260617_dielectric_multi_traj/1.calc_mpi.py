@@ -10,11 +10,20 @@ rank's files are appended, in order, to a single ranks/dipole_rank_N.txt;
 checkpointing is by line count in that file so restarts resume from wherever
 the rank left off, in whichever of its assigned files that falls in.
 
+With --delete-processed-dumps, a trajectory file is removed once every frame
+in it has become a line in the rank's output and those lines are fsynced —
+each line carries everything the dielectric constant needs from its frame, so
+the dump has no further use. This is irreversible: recovering a deleted dump
+means re-running LAMMPS. It also means the file list has to come from
+ranks/dumps_manifest.txt rather than a live glob, since assign_files slices by
+position and a shrinking directory would silently repartition the work.
+
 Usage: launched via srun from 0.submit.slurm — not called directly.
 """
 
 import argparse
 import glob
+import json
 import os
 import re
 import sys
@@ -38,6 +47,13 @@ def parse_args():
     p.add_argument("--type-h",     type=int, required=True)
     p.add_argument("--charge-h",   type=float, required=True)
     p.add_argument("--output-dir", required=True)
+    p.add_argument(
+        "--delete-processed-dumps", action="store_true",
+        help="Delete each trajectory file once every frame in it has been "
+             "reduced to dipole lines and those lines are fsynced. IRREVERSIBLE: "
+             "the dumps cannot be recomputed without re-running LAMMPS. Off by "
+             "default; the sweep pipeline turns it on.",
+    )
     return p.parse_args()
 
 
@@ -62,6 +78,36 @@ def discover_files(dump_dir, dump_glob):
         return int(m.group(1))
 
     return sorted(paths, key=extract_index)
+
+
+def resolve_files(dump_dir, dump_glob, ranks_dir):
+    """The trajectory file list for this run, pinned across restarts.
+
+    A live glob cannot be used once --delete-processed-dumps is in play.
+    assign_files slices the list BY POSITION, so a resumed run that globbed a
+    directory with the processed files removed would hand every rank a
+    different block than the one its checkpointed frame count describes, and
+    the dipole output would be silently wrong rather than merely incomplete.
+
+    So the list is globbed once and written to a manifest, and every later run
+    reads the manifest instead. It records what the run was launched against,
+    not what happens to still be on disk.
+    """
+    manifest = os.path.join(ranks_dir, "dumps_manifest.txt")
+
+    if os.path.isfile(manifest):
+        with open(manifest) as f:
+            files = [line.strip() for line in f if line.strip()]
+        if not files:
+            raise ValueError(f"{manifest} is empty; remove {ranks_dir} to start over")
+        return files
+
+    files = discover_files(dump_dir, dump_glob)
+    tmp = f"{manifest}.partial"
+    with open(tmp, "w") as f:
+        f.write("".join(f"{p}\n" for p in files))
+    os.replace(tmp, manifest)
+    return files
 
 
 def assign_files(files, rank, size):
@@ -234,29 +280,26 @@ def main():
 
     args = parse_args()
 
-    # --- File discovery and validation ---
-    files = discover_files(args.dump_dir, args.dump_glob)
-    N = len(files)
-
-    if size > N:
-        if rank == 0:
-            print(
-                f"ERROR: ntasks ({size}) must not exceed number of trajectory files ({N}).\n"
-                f"Set --ntasks to at most {N} in your SLURM script.",
-                file=sys.stderr,
-            )
-        comm.Abort(1)
-
-    # --- Restart safety ---
-    # Rank->file assignment is a function of rank count (size). If a partial
-    # run resumes with a different size, ranks get reassigned different
-    # files than whatever their checkpointed frame counts actually cover,
-    # silently corrupting output. Record the rank count a run started with
-    # and refuse to resume under a different one.
+    # --- Discovery and restart safety (rank 0 only, then broadcast) ---
+    #
+    # Rank 0 owns the three files in ranks/ that have to agree with each other
+    # — the rank-count marker, the trajectory manifest and the structure cache
+    # — and hands the results to everyone else. Having every rank glob the same
+    # directory and re-read the same first file bought nothing and, once the
+    # manifest exists, would be a write race.
     ranks_dir = os.path.join(args.output_dir, "ranks")
-    nranks_marker = os.path.join(ranks_dir, "nranks_used.txt")
+    structure_cache = os.path.join(ranks_dir, "structure.json")
+
+    payload = None
     if rank == 0:
         os.makedirs(ranks_dir, exist_ok=True)
+
+        # Rank->file assignment is a function of rank count (size). If a partial
+        # run resumes with a different size, ranks get reassigned different
+        # files than whatever their checkpointed frame counts actually cover,
+        # silently corrupting output. Record the rank count a run started with
+        # and refuse to resume under a different one.
+        nranks_marker = os.path.join(ranks_dir, "nranks_used.txt")
         if os.path.isfile(nranks_marker):
             with open(nranks_marker) as f:
                 prev_size = int(f.read().strip())
@@ -274,16 +317,53 @@ def main():
             with open(nranks_marker, "w") as f:
                 f.write(f"{size}\n")
 
-    # --- Structure discovery (rank 0, then broadcast) ---
-    if rank == 0:
         try:
-            info = discover_structure(files[0])
-        except Exception as e:
-            print(f"ERROR during structure discovery: {e}", file=sys.stderr)
+            files = resolve_files(args.dump_dir, args.dump_glob, ranks_dir)
+        except (OSError, ValueError) as e:
+            print(f"ERROR resolving trajectory files: {e}", file=sys.stderr)
             comm.Abort(1)
-    else:
-        info = None
-    info = comm.bcast(info, root=0)
+
+        if size > len(files):
+            print(
+                f"ERROR: ntasks ({size}) must not exceed number of trajectory files "
+                f"({len(files)}).\nSet --ntasks to at most {len(files)} in your "
+                f"SLURM script.",
+                file=sys.stderr,
+            )
+            comm.Abort(1)
+
+        # Cached rather than re-derived, because with --delete-processed-dumps
+        # a resumed run may find files[0] already gone. The layout is a property
+        # of the trajectory as a whole, so reading it once is also just cheaper.
+        if os.path.isfile(structure_cache):
+            with open(structure_cache) as f:
+                info = json.load(f)
+        else:
+            first_present = next((p for p in files if os.path.isfile(p)), None)
+            if first_present is None:
+                print(
+                    f"ERROR: none of the {len(files)} files in the manifest exist, and "
+                    f"there is no {structure_cache} to fall back on. If the dumps were "
+                    f"deleted after processing, re-run LAMMPS to regenerate them.",
+                    file=sys.stderr,
+                )
+                comm.Abort(1)
+            try:
+                info = discover_structure(first_present)
+            except Exception as e:
+                print(f"ERROR during structure discovery: {e}", file=sys.stderr)
+                comm.Abort(1)
+            tmp = f"{structure_cache}.partial"
+            with open(tmp, "w") as f:
+                json.dump(info, f)
+            os.replace(tmp, structure_cache)
+
+        payload = {"files": files, "info": info}
+
+    payload = comm.bcast(payload, root=0)
+    files = payload["files"]
+    info = payload["info"]
+    N = len(files)
 
     num_atoms       = info["num_atoms"]
     lines_per_frame = info["lines_per_frame"]
@@ -330,6 +410,19 @@ def main():
     resume_file_idx = frames_done // processable_per_file
     resume_frame_offset = frames_done % processable_per_file
     files_to_process = assigned_files[resume_file_idx:]
+
+    # Files before resume_file_idx are fully reduced to dipole lines already.
+    # If they survived an earlier run that had deletion off, drop them now —
+    # the flag means "processed dumps do not stay on disk", and the usual
+    # reason to turn it on mid-sweep is that the disk is already filling up.
+    if args.delete_processed_dumps:
+        for spent in assigned_files[:resume_file_idx]:
+            try:
+                os.remove(spent)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                print(f"Rank {rank}: could not delete {spent}: {e}", file=sys.stderr)
 
     # --- Process frames ---
     errors = 0
@@ -381,6 +474,26 @@ def main():
                                 f"n_O={bond_stats['type_o_count']} "
                                 f"n_H={bond_stats['type_h_count']}\n"
                             )
+
+            # This file is now fully reduced: every frame in it has become a
+            # line in rank_output, and each line carries everything the
+            # dielectric constant needs from the frame it came from.
+            #
+            # fsync before unlinking, not just flush. flush() only pushes the
+            # lines out of Python's buffer into the page cache; a node that
+            # dies before writeback would take the dipole lines with it while
+            # the dump was already gone, and nothing could reconstruct either.
+            # Once per file, so the cost is irrelevant next to reading it.
+            if args.delete_processed_dumps:
+                out.flush()
+                os.fsync(out.fileno())
+                try:
+                    os.remove(assigned_file)
+                except OSError as e:
+                    print(
+                        f"Rank {rank}: could not delete {assigned_file}: {e}",
+                        file=sys.stderr,
+                    )
 
     if errors:
         print(f"Rank {rank}: {errors} frame(s) failed", file=sys.stderr)

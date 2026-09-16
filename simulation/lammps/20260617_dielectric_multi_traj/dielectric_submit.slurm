@@ -11,7 +11,7 @@
 # directory (unless NRANKS is set lower, in which case each rank processes
 # several files in sequence — see 1.calc_mpi.py), but configuration comes
 # from environment variables (set via sbatch --export by
-# submit_dielectric_pipeline.sh) instead of a hardcoded block at the top —
+# submit_temperature_sweep.sh) instead of a hardcoded block at the top —
 # mirrors analysis/distributions/20260608_GrNrBaSqw/distribution_submit.slurm.
 #
 # 0.submit.slurm itself is left untouched for manual/standalone runs.
@@ -38,18 +38,35 @@ LB="${LB:?LB must be set}"
 LC="${LC:?LC must be set}"
 AVERAGING_METHOD="${AVERAGING_METHOD:-cumulative}"
 
+# Delete each trajectory file once its frames have been reduced to dipole
+# lines and those lines are fsynced. IRREVERSIBLE — regenerating a deleted
+# dump means re-running LAMMPS. Off unless asked for.
+DELETE_PROCESSED_DUMPS="${DELETE_PROCESSED_DUMPS:-0}"
+
 VENV_PATH="${VENV_PATH:-/home1/lkyamamo/venv/struc_analysis}"
 
 # --- Setup ---
-NUM_FILES=$(ls "$DUMP_DIR"/$DUMP_GLOB 2>/dev/null | wc -l)
-if [ "$NUM_FILES" -eq 0 ]; then
-    echo "ERROR: No files matching $DUMP_GLOB found in $DUMP_DIR"
-    exit 1
+# The manifest, when 1.calc_mpi.py has written one, is what the run was
+# launched against — counting the directory instead would shrink as
+# DELETE_PROCESSED_DUMPS removes finished files, and a resumed run would then
+# default to fewer ranks than the run started with. 1.calc_mpi.py would refuse
+# that (rank->file assignment depends on the rank count), so the job would die
+# on a mismatch it created itself.
+MANIFEST="$OUTPUT_DIR/ranks/dumps_manifest.txt"
+if [ -s "$MANIFEST" ]; then
+    NUM_FILES=$(grep -c . "$MANIFEST")
+    echo "Trajectory count from $MANIFEST (the list this run started against)."
+else
+    NUM_FILES=$(ls "$DUMP_DIR"/$DUMP_GLOB 2>/dev/null | wc -l)
+    if [ "$NUM_FILES" -eq 0 ]; then
+        echo "ERROR: No files matching $DUMP_GLOB found in $DUMP_DIR"
+        exit 1
+    fi
 fi
 
 # Ranks may be fewer than trajectory files (each rank then processes several
 # files in sequence — see 1.calc_mpi.py's assign_files); NRANKS overrides
-# the default of one rank per file. Set via submit_dielectric_pipeline.sh's
+# the default of one rank per file. Set via submit_temperature_sweep.sh's
 # --dielectric-ntasks, or export NRANKS directly for standalone runs.
 NUM_RANKS="${NRANKS:-$NUM_FILES}"
 if [ "$NUM_RANKS" -gt "$NUM_FILES" ]; then
@@ -69,7 +86,14 @@ fi
 echo "Job ${SLURM_JOB_ID} starting at $(date)"
 echo "Trajectory files: ${NUM_FILES}  Ranks: ${NUM_RANKS}"
 
+calc_args=()
+if [ "$DELETE_PROCESSED_DUMPS" = "1" ]; then
+    calc_args+=(--delete-processed-dumps)
+    echo "Processed trajectory files WILL BE DELETED as each one is reduced."
+fi
+
 srun --ntasks="$NUM_RANKS" python "$SCRIPT_DIR/1.calc_mpi.py" \
+    "${calc_args[@]+"${calc_args[@]}"}" \
     --dump-dir        "$DUMP_DIR" \
     --dump-glob       "$DUMP_GLOB" \
     --dump-every      "$DUMP_EVERY" \
