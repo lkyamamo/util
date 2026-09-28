@@ -27,14 +27,19 @@ Three things get drawn:
                      predicts the barrier *within* a size class, which is the
                      claim that ring size is the weaker variable.
 
-Why symlog
-----------
-Nothing is relaxed, so a water pushed into a sealed ring is hugely repulsive:
-the single-point runs in this project reach +45,000 eV while the interesting
-structure is a few eV. A linear axis shows one spike and six flat lines. Every
-energy axis here is symlog with a linear region around zero, and the path figure
-carries a second linear panel zoomed on that region - the same treatment
-plot_sp_pe.py uses for the same reason.
+Linear axes, and what that costs
+--------------------------------
+Every energy axis here is linear. Nothing is relaxed, so a water pushed into a
+sealed ring is hugely repulsive: these runs reach +10^7 eV while the interesting
+structure is a few eV, and on a linear axis one such ring would flatten every
+other curve into the baseline. So the axis is clipped instead of transformed:
+the limit comes from a percentile of the data rather than its maximum, and every
+figure says how many rings or points leave the panel. Nothing is hidden - the
+numbers are all in barriers.csv and frames.csv - but a clipped figure shows the
+bulk of the distribution rather than its worst outlier.
+
+An earlier version of this script used symlog axes throughout; that is what the
+git history holds if the clipped linear ones ever need checking against it.
 
 Colour
 ------
@@ -81,8 +86,36 @@ BLUE_CMAP = LinearSegmentedColormap.from_list("ring_blue", BLUE_RAMP)
 # is between the two shells rather than on either.
 RADIUS_KEY = "mean_radius_inplane"
 
-LINTHRESH = 1.0         # eV; half-width of the linear region of the symlog axis
-ZOOM_EV = 5.0           # eV; half-width of the linear zoom panel
+ZOOM_EV = 5.0           # eV; half-width of the zoom panel on the path figure
+
+# Where a linear axis is clipped: the percentile of the per-ring peaks (or of the
+# barriers) that sets the top of the panel. 75 keeps the box of the distribution
+# and the median curve comfortably in view while the sealed rings run off the top.
+CLIP_PERCENTILE = 75
+
+
+def clipped_limits(peaks, floor: float, lowest: float = 0.0):
+    """
+    (low, high) for a linear energy axis, and how many values exceed the high.
+
+    `peaks` is one number per curve or per ring - the thing that would otherwise
+    set the top of the axis. The limit is a percentile of those, never less than
+    `floor` (the median curve's peak, so the series being read always fits).
+    """
+    peaks = np.asarray(peaks, dtype=float)
+    high = max(float(np.percentile(peaks, CLIP_PERCENTILE)), floor * 1.2)
+    high = float(np.ceil(high * 20) / 20) if high < 1 else float(np.ceil(high))
+    low = min(0.0, lowest * 1.15)
+    return low, high, int((peaks > high).sum())
+
+
+def clip_note(ax, clipped: int, total: int, what: str = "rings") -> None:
+    """Say on the figure how many curves run off the top of a clipped axis."""
+    if not clipped:
+        return
+    ax.annotate(f"{clipped} of {total} {what} go above the top of this panel",
+                xy=(0.97, 0.88), xycoords="axes fraction", ha="right", va="top",
+                fontsize=10, color=MUTED)
 
 
 def style_axes(ax):
@@ -118,7 +151,7 @@ def load_frames(path: Path) -> dict[str, dict[float, tuple[np.ndarray, np.ndarra
 
 
 def plot_path(ring_id: str, rolls: dict, meta: dict, out_png: Path) -> None:
-    """One ring: the full symlog scan beside a linear zoom on the low-energy region."""
+    """One ring: the full scan beside a zoom on the low-energy region."""
     best_roll = float(meta["best_roll"])
     barrier = float(meta["e_barrier"])
     peak_at = float(meta["barrier_position"])
@@ -137,9 +170,7 @@ def plot_path(ring_id: str, rolls: dict, meta: dict, out_png: Path) -> None:
         style_axes(panel)
         panel.set_xlabel("position along the ring axis (Å)", fontsize=13, color=TEXT)
 
-    ax.set_yscale("symlog", linthresh=LINTHRESH)
-    ax.set_ylabel(f"$\\Delta E$ vs the first frame (eV, symlog ±{LINTHRESH:g})",
-                  fontsize=13, color=TEXT)
+    ax.set_ylabel("$\\Delta E$ vs the first frame (eV)", fontsize=13, color=TEXT)
     ax.set_title("full scan, every roll", fontsize=12, color=TEXT)
     ax.plot([peak_at], [barrier], "o", ms=16, mfc="none", mec=ACCENT, mew=2.5, zorder=4)
     ax.annotate(f"barrier {barrier:,.1f} eV\n@ {peak_at:+.2f} Å, roll {best_roll:g}°",
@@ -193,9 +224,19 @@ def plot_summary(barriers: list[dict], out_png: Path) -> None:
                     xytext=(0, 4), textcoords="offset points", ha="center",
                     fontsize=9, color=MUTED)
     ax.set_xticks(range(len(sizes)), [str(n) for n in sizes])
-    ax.set_yscale("symlog", linthresh=LINTHRESH)
+    all_barriers = [e for n in sizes for e in by_size[n]]
+    # The whiskers, not the fliers, set the top: showfliers is off, so a panel
+    # sized by the maximum would be mostly empty space above the boxes.
+    whiskers = [np.percentile(by_size[n], 90) for n in sizes]
+    low, high, _ = clipped_limits(all_barriers, max(whiskers), min(all_barriers))
+    ax.set_ylim(low, high)
+    above = sum(1 for e in all_barriers if e > high)
+    if above:
+        ax.annotate(f"{above} of {len(all_barriers)} rings above the top",
+                    xy=(0.97, 0.95), xycoords="axes fraction", ha="right", va="top",
+                    fontsize=10, color=MUTED)
     ax.set_xlabel("ring size n (silicons)", fontsize=13, color=TEXT)
-    ax.set_ylabel("barrier (eV, symlog)", fontsize=13, color=TEXT)
+    ax.set_ylabel("barrier (eV)", fontsize=13, color=TEXT)
     ax.set_title("barrier by ring size", fontsize=12, color=TEXT)
     style_axes(ax)
 
@@ -207,9 +248,11 @@ def plot_summary(barriers: list[dict], out_png: Path) -> None:
     if aperture:
         ax2.plot(aperture, energy, "o", color=ACCENT, ms=4, alpha=0.45,
                  mew=0, zorder=3)
-        ax2.set_yscale("symlog", linthresh=LINTHRESH)
+        low2, high2, above2 = clipped_limits(energy, float(np.median(energy)), min(energy))
+        ax2.set_ylim(low2, high2)
+        clip_note(ax2, above2, len(energy))
         ax2.set_xlabel("aperture (Å)", fontsize=13, color=TEXT)
-        ax2.set_ylabel("barrier (eV, symlog)", fontsize=13, color=TEXT)
+        ax2.set_ylabel("barrier (eV)", fontsize=13, color=TEXT)
         ax2.set_title("barrier against the opening", fontsize=12, color=TEXT)
         r_ap = np.corrcoef(aperture, np.log10(np.clip(energy, 1e-3, None)))[0, 1]
         r_n = np.corrcoef([float(r["n"]) for r in barriers],
@@ -242,15 +285,22 @@ def plot_by_size(barriers: list[dict], out_png: Path) -> None:
     fig, axes = plt.subplots(1, len(sizes), figsize=(3.1 * len(sizes), 4.2), dpi=120,
                              sharex=True, sharey=True)
     axes = np.atleast_1d(axes)
+    everything = [e for n in sizes for _, e in by_size[n]]
+    low, high, _ = clipped_limits(everything, float(np.median(everything)), min(everything))
     for panel, n in zip(axes, sizes):
         x = [a for a, _ in by_size[n]]
         y = [e for _, e in by_size[n]]
         panel.plot(x, y, "o", color=ACCENT, ms=4, alpha=0.5, mew=0, zorder=3)
-        panel.set_yscale("symlog", linthresh=LINTHRESH)
-        panel.set_title(f"n = {n}   ({len(x)} rings)", fontsize=12, color=TEXT)
+        # Shared limits, so a panel is read against its neighbours; clipped, so
+        # one sealed ring does not set the scale for all six.
+        panel.set_ylim(low, high)
+        above = sum(1 for e in y if e > high)
+        panel.set_title(f"n = {n}   ({len(x)} rings"
+                        + (f", {above} above" if above else "") + ")",
+                        fontsize=12, color=TEXT)
         panel.set_xlabel("aperture (Å)", fontsize=12, color=TEXT)
         style_axes(panel)
-    axes[0].set_ylabel("barrier (eV, symlog)", fontsize=12, color=TEXT)
+    axes[0].set_ylabel("barrier (eV)", fontsize=12, color=TEXT)
 
     fig.suptitle("does the opening still predict the barrier within one ring size?",
                  fontsize=15, color="#222222")
@@ -259,26 +309,18 @@ def plot_by_size(barriers: list[dict], out_png: Path) -> None:
     plt.close(fig)
 
 
-def symlog(values, linthresh: float = LINTHRESH):
+def surface_ceiling(surface):
     """
-    Signed log for the surface's z axis: linear-ish inside +/-linthresh, log
-    beyond it. A plain log cannot show the shallow negative wells, and a linear
-    axis cannot show anything else once one ring reaches a keV.
+    Where to clip the surface's colour and z range.
+
+    Each cell is already a median over the rings in its radius bin, so it is far
+    below the worst ring; but the tight-radius bins still run to hundreds of eV
+    while the open ones live in single digits. Clipping at a percentile of the
+    filled cells keeps the open end readable.
     """
-    values = np.asarray(values, dtype=float)
-    return np.sign(values) * np.log10(1.0 + np.abs(values) / linthresh)
-
-
-def symlog_ticks(lo: float, hi: float):
-    """Tick positions in transformed space, labelled with real eV values."""
-    decades = [0.0]
-    step = linthresh = LINTHRESH
-    while step <= max(abs(lo), abs(hi)) * 10:
-        decades += [step, -step]
-        step *= 10
-    del linthresh
-    marks = sorted(v for v in decades if lo <= symlog(v) <= hi)
-    return [symlog(v) for v in marks], [f"{v:,.0f}" if abs(v) >= 1 else "0" for v in marks]
+    values = np.asarray(surface, dtype=float)
+    values = values[np.isfinite(values)]
+    return float(np.ceil(np.percentile(values, 98)))
 
 
 def best_roll_curves(frames: dict, barriers: list[dict]):
@@ -334,11 +376,13 @@ def plot_size_overlays(curves, outdir: Path) -> list[Path]:
         ax.plot(grid, median, "-", color=ACCENT, lw=2.5, zorder=4)
         ax.axhline(0.0, color=SPINE, lw=1, zorder=1)
         ax.axvline(0.0, color=GRID, lw=1, ls=":", zorder=1)
-        ax.set_yscale("symlog", linthresh=LINTHRESH)
+        low, high, clipped = clipped_limits(block.max(axis=1), float(np.max(median)),
+                                            float(block.min()))
+        ax.set_ylim(low, high)
+        clip_note(ax, clipped, len(block))
         ax.set_xlabel("distance from the ring centre along the axis (Å)",
                       fontsize=13, color=TEXT)
-        ax.set_ylabel(f"$\\Delta E$ vs the first frame (eV, symlog ±{LINTHRESH:g})",
-                      fontsize=13, color=TEXT)
+        ax.set_ylabel("$\\Delta E$ vs the first frame (eV)", fontsize=13, color=TEXT)
         peak = float(np.max(median))
         ax.annotate(f"median peak {peak:,.1f} eV @ {grid[int(np.argmax(median))]:+.2f} Å",
                     xy=(0.97, 0.95), xycoords="axes fraction", ha="right", va="top",
@@ -395,7 +439,10 @@ def plot_surface_3d(curves, out_png: Path, min_count: int = 3) -> None:
     centres, surface = centres[keep], surface[keep]
 
     x, y = np.meshgrid(grid, centres)
-    z = symlog(np.nan_to_num(surface, nan=0.0))
+    ceiling = surface_ceiling(surface)
+    # Clipped rather than transformed: the tight-radius ridge is cut off flat at
+    # the ceiling, which the title states, so the open end is not a flat plain.
+    z = np.clip(np.nan_to_num(surface, nan=0.0), None, ceiling)
 
     fig = plt.figure(figsize=(11, 8), dpi=120)
     ax = fig.add_subplot(111, projection="3d")
@@ -405,9 +452,6 @@ def plot_surface_3d(curves, out_png: Path, min_count: int = 3) -> None:
     ax.set_xlabel("ring radius (Å)", fontsize=12, color=TEXT, labelpad=10)
     ax.set_ylabel("distance from ring centre (Å)", fontsize=12, color=TEXT, labelpad=10)
     ax.set_zlabel("$\\Delta E$ (eV)", fontsize=12, color=TEXT, labelpad=12)
-    ticks, labels = symlog_ticks(float(np.nanmin(z)), float(np.nanmax(z)))
-    ax.set_zticks(ticks)
-    ax.set_zticklabels(labels)
     ax.tick_params(colors=TEXT, labelsize=10)
     ax.view_init(elev=26, azim=-128)
     ax.set_box_aspect((1.3, 1.5, 0.9))
@@ -416,7 +460,8 @@ def plot_surface_3d(curves, out_png: Path, min_count: int = 3) -> None:
         pane.pane.set_edgecolor(GRID)
 
     fig.suptitle("permeation barrier against ring radius and how far the water has gone\n"
-                 "median over rings in each radius bin, best roll, z on a signed log scale",
+                 f"median over rings in each radius bin, best roll, z clipped at "
+                 f"{ceiling:,.0f} eV",
                  fontsize=14, color="#222222", y=0.97)
     # tight_layout cannot measure a 3-D axes' decorations, so it leaves a band of
     # dead space under the title; set the margins directly instead.
@@ -439,13 +484,13 @@ def plot_surface_heatmap(curves, out_png: Path, min_count: int = 3) -> None:
     centres, surface, counts = centres[keep], surface[keep], counts[keep]
 
     fig, ax = plt.subplots(figsize=(10, 6), dpi=120)
-    z = symlog(np.ma.masked_invalid(surface))
-    mesh = ax.pcolormesh(grid, centres, z, cmap=BLUE_CMAP, shading="nearest")
-    bar = fig.colorbar(mesh, ax=ax, pad=0.02)
-    ticks, labels = symlog_ticks(float(np.min(z)), float(np.max(z)))
-    bar.set_ticks(ticks)
-    bar.set_ticklabels(labels)
-    bar.set_label("median $\\Delta E$ (eV, signed log scale)", fontsize=12, color=TEXT)
+    ceiling = surface_ceiling(surface)
+    z = np.ma.masked_invalid(surface)
+    mesh = ax.pcolormesh(grid, centres, z, cmap=BLUE_CMAP, shading="nearest",
+                         vmin=min(0.0, float(z.min())), vmax=ceiling)
+    bar = fig.colorbar(mesh, ax=ax, pad=0.02, extend="max")
+    bar.set_label(f"median $\\Delta E$ (eV, clipped at {ceiling:,.0f})",
+                  fontsize=12, color=TEXT)
     bar.ax.tick_params(colors=TEXT, labelsize=10)
 
     ax.axvline(0.0, color="#ffffff", lw=1, ls=":", zorder=3)
