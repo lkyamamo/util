@@ -1,0 +1,169 @@
+# Chunked NVT dielectric production for one temperature, run by
+# 0.production_submit.slurm in this directory.
+#
+# ${N_TIMES} chunks of ${NVT_LENGTH} NVT steps each, one
+# dumps/dielectric.${i}.custom per chunk, with a restart file and a
+# chunks_done.txt line after each one so a killed job resumes at the chunk it
+# was in. Started from an already-thermalized start.data.
+#
+# A copy of jobs/pipeline/lammps_to_temperature_sweep/dielectric-production.input
+# with its comments pointed at this directory's scripts; the physics is
+# identical.
+#################### setup ##################
+echo            both
+units           metal
+dimension       3
+boundary        p p p
+processors      * * *
+atom_style      atomic
+
+############### restart support ###############
+# START_CHUNK/RESTART_FILE are set by 0.production_submit.slurm, which works out
+# where a killed run got to by reading chunks_done.txt (see the chunk loop at
+# the bottom of this file). "variable ... index" is the LAMMPS form a
+# command-line -var overrides, so the values here are what applies to a fresh
+# run.
+#
+# START_CHUNK 1 means "start over": read the equilibrated structure. Anything
+# higher resumes, restoring the state written after the last chunk that
+# completed, and the loop below picks up at that chunk + 1.
+variable        START_CHUNK  index 1
+variable        RESTART_FILE index none
+
+if "${START_CHUNK} == 1" then "read_data start.data" else "read_restart ${RESTART_FILE}"
+
+# Re-issued after read_restart as well as read_data. A restart file already
+# carries the pair style and masses, so this is redundant on a resume — but
+# harmless, and it keeps one copy of the settings rather than two that could
+# drift apart.
+neighbor        0.3 bin
+neigh_modify    delay 0 every 1 check yes
+
+mass 1 15.9994  # O
+mass 2 1.00784  # H
+
+pair_style      usc
+pair_coeff  * * OH.usc O H
+
+#pair_modify    coord 2 1 2.0 0.3
+#pair_modify    coord 2 3 1.4 0.3
+
+############### dipole moment, computed by hand (sum of q*r) ###############
+# q_H comes from ${CHARGE_H}, set in 0.production_submit.slurm's Configuration
+# block — the same number 1.calc_submit.slurm passes to 2.calc_mpi.py as
+# --charge-h, so keep the two config blocks agreeing (there is no driver here to
+# do it for you; see README.md). q_O is derived from charge neutrality
+# (O = -2x H for 2:1 H:O stoichiometry), matching 2.calc_mpi.py's dipole
+# formula, which never looks up an oxygen charge and assumes exactly this.
+variable        q_H equal ${CHARGE_H}
+variable        q_O equal -2*${CHARGE_H}
+variable        q atom (type==1)*v_q_O+(type==2)*v_q_H
+
+# Unwrapped coordinates, not wrapped x/y/z, so the sum is a well-defined
+# dipole across periodic images rather than an artifact of where each atom
+# happens to be wrapped back into the box. xu/yu/zu are not valid bare
+# keywords in an atom-style variable formula (only x/y/z are) — they have
+# to come from compute property/atom instead.
+compute         unwrap all property/atom xu yu zu
+
+variable        dipx atom v_q*c_unwrap[1]
+variable        dipy atom v_q*c_unwrap[2]
+variable        dipz atom v_q*c_unwrap[3]
+
+compute         dipx_sum all reduce sum v_dipx
+compute         dipy_sum all reduce sum v_dipy
+compute         dipz_sum all reduce sum v_dipz
+
+# c_dip*_sum is in e*Angstrom (metal units: charge in e, distance in
+# Angstrom) — left unconverted so this is the same raw units as
+# 2.calc_mpi.py's per-frame dipole_output.txt, for direct comparison.
+variable        Mx equal c_dipx_sum
+variable        My equal c_dipy_sum
+variable        Mz equal c_dipz_sum
+variable        Mmag equal sqrt(v_Mx*v_Mx+v_My*v_My+v_Mz*v_Mz)
+##############################################################################
+
+thermo_style    custom step temp pe ke etotal press vol v_Mmag
+thermo          50
+
+# TARGET_TEMP/N_TIMES/NVT_LENGTH/DUMP_EVERY are passed in via LAMMPS -var flags
+# from 0.production_submit.slurm's Configuration block: the target temperature
+# in KELVIN, the number of chunk files, the NVT steps per chunk, and the steps
+# between dumped frames within a chunk.
+variable        nvt_length equal ${NVT_LENGTH}
+variable        n_times equal ${N_TIMES}
+variable        dielectric_dump_every equal ${DUMP_EVERY}
+########################################################
+
+# Dipole vector + magnitude (see the by-hand dipole block above), written to
+# an external file every dielectric_dump_every steps — same cadence as the
+# dielectric.*.custom dumps, for direct comparison against 2.calc_mpi.py's
+# raw per-frame dipole_output.txt (both in e*Angstrom).
+#
+# curstep must be its own equal-style variable, not an immediate $(step) —
+# fix print re-substitutes ${name} references on every invocation, but
+# $(...) immediate variables are evaluated once at parse time and would
+# otherwise freeze at whatever step the fix was defined on.
+variable        curstep equal step
+# "append", not "file": a resumed run must add to the series rather than
+# truncate what earlier chunks already wrote. That also means a genuinely fresh
+# run has to start with no dipole_by_hand.txt in this directory — delete it
+# along with chunks_done.txt and restart.* when starting over by hand, or the
+# new series is appended to the old one.
+fix             dipole_print all print ${dielectric_dump_every} "${curstep} ${Mx} ${My} ${Mz} ${Mmag}" &
+                append dipole_by_hand.txt screen no title "# step Mx My Mz |M| (e*Angstrom)"
+
+###################### run setup ###########################
+# start.data — the symlink 0.production_submit.slurm makes to
+# THERMALIZED_STRUCTURE — is assumed already equilibrated at ${TARGET_TEMP} and
+# already at the target density: there is no deform/anneal ramp here (unlike
+# OH-therm.input/b-SiO-therm.input). Thermalizing is a separate run.
+#
+# Only on a fresh run: a resume must keep counting from where the restart left
+# off, or the dipole_by_hand.txt step column would restart at 0 mid-series.
+if "${START_CHUNK} == 1" then "reset_timestep 0"
+
+# Hardcoded rather than a -var, as in the pipeline's copy of this input: 0.25 fs
+# in metal units. Change it here if a run needs a different one.
+timestep        0.00025
+
+############### chunk loop, restartable ###############
+# Two files per chunk make a resume possible:
+#
+#   restart.${i}      the state to resume FROM, written once the chunk's run
+#                     has finished and its dump is closed.
+#   chunks_done.txt   one chunk index per line, appended AFTER the restart is
+#                     safely on disk.
+#
+# The order matters. chunks_done.txt is the authority on what completed, and it
+# only ever names a restart file that was fully written — a job killed during
+# write_restart leaves a truncated restart.${i}, but chunks_done.txt still ends
+# at ${i}-1, so the resume falls back to the previous chunk's intact restart and
+# redoes this one. Detecting progress from the restart files themselves would
+# walk straight into the truncated one.
+#
+# Redoing a chunk is harmless: its dump is rewritten from scratch, so a
+# half-written dielectric.${i}.custom from the killed run is replaced rather
+# than appended to.
+label           start_loop
+variable        i loop ${START_CHUNK} ${n_times}
+
+        dump            1 all custom ${dielectric_dump_every} dumps/dielectric.${i}.custom id type x y z
+        dump_modify     1 sort id
+
+        ############### target-T therm ################
+        fix             1 all nvt temp ${TARGET_TEMP} ${TARGET_TEMP} $(100*dt)
+        run             ${nvt_length}
+        unfix           1
+        ##############################################
+
+        undump          1
+
+        write_restart   restart.${i}
+        print           "${i}" append chunks_done.txt screen no
+
+next            i
+jump            SELF start_loop
+
+
+write_data      final.data
