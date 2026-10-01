@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .config import Config
+from .describe import fmt_time
 
-CSV_PARAMS = ["units", "pair_style", "timestep", "total_steps", "T_start", "T_stop",
+CSV_PARAMS = ["ensemble", "T_target", "P_target", "box", "density", "composition", "simulated_time",
+              "units", "pair_style", "timestep", "total_steps",
               "ENCUT", "PREC", "ISMEAR", "IBRION", "ISIF", "NSW", "GGA", "METAGGA", "IVDW",
               "partition", "job_id", "exit_code"]
 CSV_RESULTS = ["energy_sigma0", "energy_per_atom", "pressure", "ionic_steps", "steps_completed",
@@ -85,6 +87,13 @@ def render_card(conn, run_key: str) -> str:
         "run_key", "project", "run_id", "label", "group_path", "code", "calc_type", "status",
         "n_atoms", "formula", "cores", "nodes", "job_name", "job_id", "start_time", "end_time",
         "wall_time_s", "n_subruns", "path", "last_changed", "missing"))
+    system = json.loads(r["system"]) if r["system"] else {}
+    for k in ("ensemble", "calc_type_text", "functional", "T_target", "P_target", "box", "density",
+              "composition", "simulated_time"):
+        if system.get(k) is not None:
+            front[k] = system[k]
+    if r["summary"]:
+        front["summary"] = r["summary"]
     tags = sorted({n["tags"] for n in notes if n["tags"]})
     if tags:
         front["tags"] = ",".join(tags)
@@ -96,6 +105,8 @@ def render_card(conn, run_key: str) -> str:
                + (f" · group `{r['group_path']}`" if r["group_path"] else ""))
     out.append("")
     out.append(f"`{r['path']}`")
+    if r["summary"]:
+        out += ["", f"> {r['summary']}"]
     if r["missing"]:
         out += ["", "> **Missing:** this directory was not found in the latest scan."]
     out.append("")
@@ -108,15 +119,31 @@ def render_card(conn, run_key: str) -> str:
     if r["readme"]:
         out += ["## README", "", r["readme"].strip(), ""]
 
-    if subs and (len(subs) > 1 or subs[0]["relpath"] != "run"):
+    multi = subs and (len(subs) > 1 or subs[0]["relpath"] != "run")
+    if multi:
         out.append(f"## Sub-runs ({len(subs)})")
         out.append("")
-        out.append(_table(["label", "dir", "code", "type", "status", "atoms", "wall", "evidence"],
-                          [[s["label"], s["relpath"], s["code"], s["calc_type"], s["status"], s["n_atoms"],
+        out.append(_table(["label", "dir", "conditions", "status", "atoms", "wall", "evidence"],
+                          [[s["label"], s["relpath"], s["conditions"], s["status"], s["n_atoms"],
                             human_time(s["wall_time_s"]), s["status_evidence"]] for s in subs]))
         out.append("")
 
-    out += _params_section(params)
+    if system:
+        ref = next((s for s in subs if s["system"] == r["system"]), None)
+        title = "## System" + (f" (from sub-run {ref['label']})" if multi and ref and ref["label"] else "")
+        out += [title, ""] + _system_table(system) + [""]
+    protos = [(s["label"], json.loads(s["protocol"])) for s in subs if s["protocol"]]
+    if protos:
+        out += ["## Protocol", ""]
+        unit = (system.get("time_unit") or "") if system else ""
+        for label, proto in protos[:12]:
+            if len(protos) > 1 or (label and label != "(top)"):
+                out += [f"### {label or '(main)'}", ""]
+            out += [_protocol_table(proto, unit), ""]
+        if len(protos) > 12:
+            out += [f"_{len(protos) - 12} more sub-runs; see `simledger sql` on subruns.protocol._", ""]
+
+    out += _params_section([p for p in params if p["source"] != "system"])
     if results:
         out.append("## Results")
         out.append("")
@@ -163,6 +190,89 @@ def render_card(conn, run_key: str) -> str:
         out += ["## Issues", ""] + [f"- `{i['path']}`: {i['message']}" for i in issues] + [""]
     out += _files_section(conn, run_key)
     return "\n".join(out) + "\n"
+
+
+LAMMPS_ROWS = [
+    ("Atoms", lambda s: f"{s['n_atoms']}" + (f" ({s['n_types']} types)" if s.get("n_types") else "")
+     if s.get("n_atoms") else None),
+    ("Composition", lambda s: s.get("composition")),
+    ("Elements by type", lambda s: s.get("elements")),
+    ("Box", lambda s: s.get("box") and (s["box"] + (f", tilt {s['box_tilt']}" if s.get("box_tilt") else ""))),
+    ("Volume", lambda s: s.get("volume") and f"{s['volume']:.6g} {s.get('length_unit', '')}³"),
+    ("Density (start)", lambda s: s.get("density") and f"{s['density']:.4g} g/cm³"),
+    ("Units / atom style", lambda s: " / ".join(x for x in (s.get("units"), s.get("atom_style")) if x) or None),
+    ("Potential", lambda s: s.get("pair_style") and (s["pair_style"] + (f" ({s['potential_files']})"
+                                                                         if s.get("potential_files") else ""))),
+    ("Starting structure", lambda s: s.get("data_file")),
+    ("Structure origin", lambda s: s.get("structure_origin") and f"{s['structure_origin']} (link target, not readable)"),
+    ("Initial velocities", lambda s: s.get("velocity_T") is not None and f"{s['velocity_T']:g} K"),
+    ("Timestep", lambda s: s.get("timestep") and f"{s['timestep']:g} {s.get('time_unit', '')}"),
+    ("Length", lambda s: s.get("total_steps") and
+     f"{s['total_steps']:,} steps = {fmt_time(s.get('simulated_time'), s.get('time_unit', ''))}"),
+    ("Main ensemble", lambda s: s.get("ensemble")),
+    ("Target T", lambda s: s.get("T_range")),
+    ("Target P", lambda s: s.get("P_target") is not None and f"{s['P_target']:g} {s.get('pressure_unit', '')}"),
+    ("Measured T (2nd half)", lambda s: s.get("T_measured") is not None and f"{s['T_measured']:.5g} K"),
+    ("Measured P (2nd half)", lambda s: s.get("P_measured") is not None and
+     f"{s['P_measured']:.5g} {s.get('pressure_unit', '')}"),
+    ("Measured density", lambda s: s.get("density_measured") and f"{s['density_measured']:.4g} g/cm³"),
+    ("Described from", lambda s: s.get("description_source")),
+    ("Unresolved variables", lambda s: s.get("unresolved")),
+]
+VASP_ROWS = [
+    ("Calculation", lambda s: s.get("calc_type_text")),
+    ("Atoms", lambda s: s.get("n_atoms") and f"{s['n_atoms']} ({s.get('formula')})"),
+    ("Composition", lambda s: s.get("composition")),
+    ("Cell", lambda s: s.get("box")),
+    ("Volume", lambda s: s.get("volume") and (f"{s['volume']:.6g} Å³" + (
+        f" → {s['volume_final']:.6g} Å³ final" if s.get("volume_final") and s["volume_final"] != s["volume"] else ""))),
+    ("Density", lambda s: s.get("density") and f"{s['density']:.4g} g/cm³"),
+    ("Functional", lambda s: s.get("functional")),
+    ("ENCUT", lambda s: s.get("encut") and f"{s['encut']:g} eV"),
+    ("k-points", lambda s: s.get("kpoints")),
+    ("Spin", lambda s: s.get("ispin") == 2 and "polarized (ISPIN=2)"),
+    ("EDIFF / EDIFFG", lambda s: (s.get("ediff") or s.get("ediffg")) and f"{s.get('ediff') or '-'} / {s.get('ediffg') or '-'}"),
+    ("ISIF / NSW", lambda s: (s.get("isif") is not None or s.get("nsw")) and
+     f"{s.get('isif') if s.get('isif') is not None else '-'} / {int(s['nsw']) if s.get('nsw') else '-'}"),
+    ("Selective dynamics", lambda s: s.get("selective_dynamics") and "yes"),
+    ("MD temperature", lambda s: s.get("T_range")),
+    ("MD length", lambda s: s.get("simulated_time") and
+     f"{int(s['nsw'])} × {s['timestep']:g} fs = {fmt_time(s['simulated_time'], 'ps')}"),
+    ("Measured T (2nd half)", lambda s: s.get("T_measured") and f"{s['T_measured']:.5g} K"),
+    ("POTCARs", lambda s: s.get("potcars")),
+]
+
+
+def _system_table(s: Dict) -> List[str]:
+    rows = VASP_ROWS if s.get("code") == "vasp" else LAMMPS_ROWS
+    out = []
+    for label, fn in rows:
+        try:
+            v = fn(s)
+        except (TypeError, ValueError, KeyError):
+            v = None
+        if v not in (None, False, ""):
+            out.append([label, v])
+    lines = [_table(["", ""], out)] if out else []
+    if s.get("vasp"):
+        lines += ["", "VASP in the same directory:", ""] + _system_table(s["vasp"])
+    return lines
+
+
+def _protocol_table(proto: List[Dict], time_unit: str) -> str:
+    rows = []
+    for i, p in enumerate(proto, 1):
+        T = p.get("T")
+        rows.append([i, p["ensemble"], (f"{T[0]:g}" if T[0] == T[1] else f"{T[0]:g}→{T[1]:g}") if T else "",
+                     (f"{p['P'][0]:g}" if p["P"][0] == p["P"][1] else f"{p['P'][0]:g}→{p['P'][1]:g}") if p.get("P") else "",
+                     (f"{p['steps']:,}" if p.get("steps") is not None else "?") + (f" × {p['count']}" if p["count"] > 1 else ""),
+                     f"{p['timestep']:g}" if p.get("timestep") else "",
+                     fmt_time(p["time"] * p["count"], time_unit) if p.get("time") else "",
+                     f"{p['T_mean']:.5g} ± {p['T_std']:.2g}" if p.get("T_mean") is not None and p.get("T_std") is not None else "",
+                     f"{p['P_mean']:.4g}" if p.get("P_mean") is not None else "",
+                     f"{p['density_mean']:.4g}" if p.get("density_mean") else ""])
+    return _table(["#", "ensemble", "T target (K)", "P target", "steps", "dt", "time", "⟨T⟩ (K)", "⟨P⟩", "⟨ρ⟩ (g/cm³)"],
+                  rows)
 
 
 def _params_section(params) -> List[str]:
@@ -241,11 +351,10 @@ def project_readme(conn, project: str) -> str:
     out += [", ".join(f"{n} {s}" for s, n in counts.most_common()), ""]
     rows = []
     for r in runs:
-        rows.append([f"[{r['run_id']}]({r['run_id'].replace('/', '_')}.md)", r["label"], r["group_path"], r["code"],
-                     r["calc_type"], r["status"] + (" (missing)" if r["missing"] else ""), r["n_subruns"],
-                     r["n_atoms"], r["formula"], human_time(r["wall_time_s"]), _key_result(conn, r["run_key"])])
-    out.append(_table(["id", "dir", "group", "code", "type", "status", "subs", "atoms", "formula", "wall", "key result"],
-                      rows))
+        rows.append([f"[{r['run_id']}]({r['run_id'].replace('/', '_')}.md)", r["label"], r["group_path"],
+                     r["status"] + (" (missing)" if r["missing"] else ""), r["summary"] or r["code"],
+                     human_time(r["wall_time_s"]), _key_result(conn, r["run_key"])])
+    out.append(_table(["id", "dir", "group", "status", "summary", "wall", "key result"], rows))
     for kind in ("potentials", "structures"):
         files = conn.execute("SELECT * FROM project_files WHERE project=? AND kind=? ORDER BY name",
                              (project, kind)).fetchall()
@@ -267,7 +376,7 @@ def project_readme(conn, project: str) -> str:
 
 def write_csv(conn, path: Path) -> None:
     runs = conn.execute("SELECT * FROM runs ORDER BY project, run_id").fetchall()
-    base = ["run_key", "project", "run_id", "label", "group_path", "code", "calc_type", "status",
+    base = ["run_key", "project", "run_id", "label", "group_path", "code", "calc_type", "status", "summary",
             "n_atoms", "formula", "cores", "nodes", "job_id", "start_time", "end_time", "wall_time_s",
             "n_subruns", "n_files", "total_bytes", "missing", "path"]
     with path.open("w", newline="") as f:

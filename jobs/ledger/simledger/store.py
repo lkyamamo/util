@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -28,12 +28,13 @@ CREATE TABLE IF NOT EXISTS runs (
     cores INTEGER, nodes INTEGER, job_name TEXT, job_id TEXT, n_subruns INTEGER,
     n_files INTEGER, total_bytes INTEGER, readme TEXT, fingerprint TEXT,
     parser_version INTEGER, first_seen TEXT, last_scanned TEXT, last_changed TEXT,
-    missing INTEGER DEFAULT 0);
+    missing INTEGER DEFAULT 0, summary TEXT, system TEXT);
 CREATE INDEX IF NOT EXISTS runs_id ON runs(run_id);
 
 CREATE TABLE IF NOT EXISTS subruns (
     run_key TEXT, label TEXT, relpath TEXT, code TEXT, calc_type TEXT, status TEXT,
     status_evidence TEXT, n_atoms INTEGER, start_time TEXT, end_time TEXT, wall_time_s REAL,
+    summary TEXT, conditions TEXT, system TEXT, protocol TEXT,
     PRIMARY KEY (run_key, label));
 
 CREATE TABLE IF NOT EXISTS params (
@@ -100,9 +101,25 @@ def connect(db_path: Path, readonly: bool = False) -> sqlite3.Connection:
             conn.execute(FTS_SCHEMA)
         except sqlite3.OperationalError:  # no FTS5: text search falls back to LIKE
             pass
+        migrate(conn)
         conn.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# Columns added after a table was first created: (table, column, type).
+ADDED_COLUMNS = [
+    ("runs", "summary", "TEXT"), ("runs", "system", "TEXT"),
+    ("subruns", "summary", "TEXT"), ("subruns", "conditions", "TEXT"),
+    ("subruns", "system", "TEXT"), ("subruns", "protocol", "TEXT"),
+]
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    for table, col, typ in ADDED_COLUMNS:
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if col not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
 
 
 def has_fts(conn: sqlite3.Connection) -> bool:

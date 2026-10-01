@@ -5,6 +5,7 @@ POTCAR content is never stored; only TITEL/VRHFIN/ZVAL/ENMAX values are kept.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Dict, Iterable, List, Optional
 
@@ -103,15 +104,27 @@ def parse_poscar(text: str) -> Dict:
             counts = [int(x) for x in lines[6].split()]
         except ValueError:
             return {"species": species}
+    if scale < 0:   # negative scale = target volume
+        raw_a, raw_b, raw_c = vecs
+        raw_vol = abs(raw_a[0] * (raw_b[1] * raw_c[2] - raw_b[2] * raw_c[1]) - raw_a[1] * (raw_b[0] * raw_c[2] - raw_b[2] * raw_c[0])
+                      + raw_a[2] * (raw_b[0] * raw_c[1] - raw_b[1] * raw_c[0]))
+        scale = (-scale / raw_vol) ** (1 / 3)
     vecs = [[scale * x for x in v] for v in vecs]
     a, b, c = vecs
     volume = abs(a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
                  + a[2] * (b[0] * c[1] - b[1] * c[0]))
     lengths = [sum(x * x for x in v) ** 0.5 for v in vecs]
+
+    def angle(u, v, lu, lv):
+        cosv = sum(x * y for x, y in zip(u, v)) / (lu * lv)
+        return math.degrees(math.acos(max(-1.0, min(1.0, cosv))))
+    angles = [angle(b, c, lengths[1], lengths[2]), angle(a, c, lengths[0], lengths[2]),
+              angle(a, b, lengths[0], lengths[1])]
     rest = lines[7].strip().lower() if len(lines) > 7 else ""
     formula = "".join(f"{s}{n}" for s, n in zip(species, counts)) if species else None
     return {"species": species, "counts": counts, "n_atoms": sum(counts), "formula": formula,
-            "lattice_lengths": [round(x, 4) for x in lengths], "volume": round(volume, 4),
+            "lattice_lengths": [round(x, 4) for x in lengths], "lattice_angles": [round(x, 2) for x in angles],
+            "volume": round(volume, 4),
             "selective_dynamics": rest.startswith("s")}
 
 
@@ -194,3 +207,62 @@ def parse_oszicar(tail: str) -> Dict:
     if last.group(2):
         out["T"] = to_num(last.group(2))
     return out
+
+
+GGA_NAMES = {"PE": "PBE", "PS": "PBEsol", "RP": "RPBE", "91": "PW91", "AM": "AM05", "RE": "revPBE",
+             "B3": "B3LYP", "BO": "optB86b", "MK": "optB88", "OR": "optPBE", "ML": "vdW-DF2"}
+IVDW_NAMES = {"1": "D2", "10": "D2", "11": "D3", "12": "D3(BJ)", "13": "D4", "2": "TS", "20": "TS",
+              "21": "TS-SCS", "202": "MBD", "4": "dDsC"}
+
+
+def functional(tags: Dict[str, str], potcar: List[Dict]) -> Optional[str]:
+    meta = tags.get("METAGGA", "").strip().upper()
+    gga = tags.get("GGA", "").strip().upper()
+    if tags.get("LHFCALC", "").upper().startswith((".T", "T")):
+        hf = to_num(tags.get("HFSCREEN", "0").split()[0]) or 0
+        name = "HSE06" if abs(hf - 0.2) < 1e-3 else ("HSE03" if abs(hf - 0.3) < 1e-3 else
+                                                     ("PBE0" if hf == 0 else f"hybrid(HFSCREEN={hf})"))
+    elif meta:
+        name = {"R2SCAN": "r2SCAN", "SCAN": "SCAN", "RTPSS": "revTPSS", "TPSS": "TPSS"}.get(meta, meta)
+    elif gga:
+        name = GGA_NAMES.get(gga, gga)
+    elif potcar and all("PBE" in t.get("titel", "") for t in potcar):
+        name = "PBE"
+    elif potcar:
+        name = "LDA"
+    else:
+        return None
+    ivdw = tags.get("IVDW", "").split()[0] if tags.get("IVDW") else ""
+    if ivdw and ivdw != "0":
+        name += f"+{IVDW_NAMES.get(ivdw, 'IVDW' + ivdw)}"
+    if tags.get("LDAU", "").upper().startswith((".T", "T")):
+        name += "+U"
+    return name
+
+
+def md_settings(tags: Dict[str, str]) -> Dict:
+    """Temperatures, timestep and length of an IBRION=0 run."""
+    if _tag_num(tags, "IBRION") != 0:
+        return {}
+    potim = _tag_num(tags, "POTIM")
+    nsw = _tag_num(tags, "NSW")
+    out = {"T_start": _tag_num(tags, "TEBEG"), "T_end": _tag_num(tags, "TEEND") or _tag_num(tags, "TEBEG"),
+           "potim_fs": potim, "nsw": int(nsw) if nsw else None}
+    if potim and nsw:
+        out["time_ps"] = potim * nsw / 1000
+    return out
+
+
+def oszicar_md(lines: Iterable[str]) -> Dict:
+    """Mean temperature over the second half of an MD OSZICAR."""
+    temps = []
+    for line in lines:
+        m = re.search(r"\bT=\s*([\d.]+)", line)
+        if m:
+            temps.append(float(m.group(1)))
+    if not temps:
+        return {}
+    half = temps[len(temps) // 2:]
+    mean = sum(half) / len(half)
+    return {"md_steps": len(temps), "T_mean": mean,
+            "T_std": (sum((t - mean) ** 2 for t in half) / len(half)) ** 0.5}

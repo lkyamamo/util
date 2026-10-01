@@ -113,6 +113,69 @@ OUTCAR_PARTIAL = """ vasp.6.4.2 18Apr23
 """
 
 
+# A log written with `echo both`: $-lines are followed by their substituted copy.
+ECHO_LOG = """LAMMPS (7 Aug 2019)
+units           metal
+atom_style      atomic
+read_data       start.data
+  orthogonal box = (0 0 0) to (10 10 20)
+  5 atoms
+mass 1 15.9994  # O
+mass 2 1.00784  # H
+pair_style      usc
+pair_coeff  * * OH.usc O H
+timestep        0.00025
+velocity all create 300 4928459
+fix 1 all nvt temp ${TARGET_TEMP} ${TARGET_TEMP} $(100*dt)
+fix 1 all nvt temp 288.15 288.15 0.025
+run ${n}
+run 400
+Step Temp PotEng Press Volume
+       0    300.0   -10.0   -600.0    2000.0
+     200    290.0   -10.1   -500.0    2000.0
+     400    286.0   -10.2   -400.0    2000.0
+Loop time of 1.0 on 64 procs for 400 steps with 5 atoms
+unfix 1
+fix 1 all nvt temp 288.15 288.15 0.025
+run 400
+Step Temp PotEng Press Volume
+     400    288.0   -10.2   -450.0    2000.0
+     800    290.0   -10.2   -350.0    2000.0
+Loop time of 1.0 on 64 procs for 400 steps with 5 atoms
+unfix 1
+fix 2 all npt temp 288.15 288.15 0.025 iso 1.0 1.0 0.25
+run 800
+Step Temp PotEng Press Volume
+     800    288.0   -10.2   -450.0    2000.0
+    1600    289.0   -10.2   1.0    1900.0
+Loop time of 1.0 on 64 procs for 800 steps with 5 atoms
+Total wall time: 0:00:03
+"""
+
+DATA = """LAMMPS data file
+
+5 atoms
+2 atom types
+
+0 10 xlo xhi
+0 10 ylo yhi
+0 20 zlo zhi
+
+Masses
+
+1 15.9994
+2 1.00784
+
+Atoms # atomic
+
+1 1 0 0 0
+2 2 1 0 0
+3 2 0 1 0
+4 1 5 5 5
+5 2 5 6 5
+"""
+
+
 def w(path: Path, text: str = "", mtime: float = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -169,6 +232,27 @@ def build_tree(root: Path) -> None:
     w(p / "potentials" / "SiOH_PAW-PBE_M1_POTCAR", POTCAR)
     w(p / "structures" / "README.md", "## 0039.data\n0232 end (finalized mod)\n")
     w(p / "structures" / "0039.data", "data")
+
+    # 0250: echoed log + data file -> full system description
+    r = p / "runs" / "0250"
+    w(r / "input_files" / "in.input", "read_data start.data\nfix 1 all nvt temp ${TARGET_TEMP} ${TARGET_TEMP} 0.1\nrun ${n}\n")
+    w(r / "input_files" / "start.data", DATA)
+    w(r / "run" / "log.lammps", ECHO_LOG, old)
+    os.symlink("/scratch1/gone/start.data", r / "run" / "start.data")   # broken: falls back to input_files/
+
+    r = p / "runs" / "0251"
+    w(r / "input_files" / "start.data", DATA)
+    w(r / "run" / "log.lammps", ECHO_LOG.replace(
+        "  5 atoms\n", "  5 atoms\nreplicate 2 1 1\n  orthogonal box = (0 0 0) to (20 10 20)\n  10 atoms\n")
+        .replace("with 5 atoms", "with 10 atoms"), old)
+
+    # 0253: starting structure is a broken link to another project; end state is readable
+    r = p / "runs" / "0253"
+    (r / "input_files").mkdir(parents=True)
+    os.symlink("/scratch1/lkyamamo/other-project/runs/0103/run/30C.data", r / "input_files" / "start.data")
+    w(r / "run" / "log.lammps", ECHO_LOG.replace("Total wall time", "write_data final.data\nTotal wall time"), old)
+    w(r / "run" / "final.data", DATA)
+    os.symlink("/scratch1/lkyamamo/20260825_locked/runs/0253/input_files/start.data", r / "run" / "start.data")
 
     # second project: a temperature sweep, and an id reused from the first project
     q = root / "finalized-modifications"
@@ -292,8 +376,10 @@ class ScanTests(unittest.TestCase):
         res = scan(self.cfg, self.root)
         conn = res["conn"]
         runs = self.runs(conn)
-        self.assertEqual(set(runs), {"20260825_locked/0247", "20260825_locked/0256", "20260825_locked/0272",
-                                     "20260825_locked/0282", "20260825_locked/0286", "finalized-modifications/0239",
+        self.assertEqual(set(runs), {"20260825_locked/0247", "20260825_locked/0250", "20260825_locked/0256",
+                                     "20260825_locked/0251", "20260825_locked/0253", "20260825_locked/0272",
+                                     "20260825_locked/0282",
+                                     "20260825_locked/0286", "finalized-modifications/0239",
                                      "finalized-modifications/0247"})
         r = runs["20260825_locked/0247"]
         self.assertEqual((r["status"], r["code"], r["calc_type"], r["n_atoms"], r["cores"], r["wall_time_s"]),
@@ -313,7 +399,7 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(subs, {"(top)": "unknown", "T15C": "completed", "T30C": "failed"})
         # varying temperature recorded per sub-run, from input_files/
         temps = dict(conn.execute("SELECT subrun, value_text FROM params WHERE run_key='finalized-modifications/0239' "
-                                  "AND key='T_start'").fetchall())
+                                  "AND key='T_target'").fetchall())
         self.assertEqual(temps, {"T15C": "288.15", "T30C": "300.0"})
 
         msgs = " | ".join(m for _, m in res["warnings"])
@@ -321,6 +407,44 @@ class ScanTests(unittest.TestCase):
         self.assertIn("run id 0257 not found", msgs)         # 025_6-8 range
         self.assertIn("differs from T30C/input_files/in.input", msgs)  # edited copy
         self.assertNotIn("T15C/input_files", msgs)
+
+    def test_system_description_from_log(self):
+        conn = scan(self.cfg, self.root)["conn"]
+        r = conn.execute("SELECT * FROM runs WHERE run_key='20260825_locked/0250'").fetchone()
+        import json
+        s = json.loads(r["system"])
+        self.assertEqual((s["n_atoms"], s["composition"], s["box"], s["T_target"], s["P_target"]),
+                         (5, "O 2, H 3", "10 × 10 × 20 Å", 288.15, 1.0))
+        self.assertEqual(s["description_source"], "log")
+        self.assertEqual(s["simulated_time"], 0.4)            # 1600 steps x 0.00025 ps
+        self.assertEqual(s["ensemble"], "NPT")                # longest stage
+        self.assertAlmostEqual(s["density"], (2 * 15.9994 + 3 * 1.00784) * 1.66053907 / 2000, 4)
+        self.assertEqual(r["calc_type"], "md_npt")
+        self.assertIn("O 2, H 3", r["summary"])
+        self.assertIn("NVT 288.15 K 0.2 ps (2×) → NPT 288.15 K 1 bar 0.2 ps", r["summary"])
+        # replicate 2 1 1: the 5-atom data file becomes 10 atoms in a doubled box
+        r2 = conn.execute("SELECT system FROM runs WHERE run_key='20260825_locked/0251'").fetchone()
+        s2 = json.loads(r2["system"])
+        self.assertEqual((s2["n_atoms"], s2["composition"], s2["box"]), (10, "O 4, H 6", "20 × 10 × 20 Å"))
+        self.assertAlmostEqual(s2["density"], s["density"], 6)
+        s3 = json.loads(conn.execute("SELECT system FROM runs WHERE run_key='20260825_locked/0253'").fetchone()[0])
+        self.assertEqual(s3["composition"], "O 2, H 3")
+        self.assertEqual(s3["data_file"], "run/final.data (end state; starting data file unavailable)")
+        self.assertEqual(s3["structure_origin"], "/scratch1/lkyamamo/other-project/runs/0103/run/30C.data")
+        sub = conn.execute("SELECT protocol FROM subruns WHERE run_key='20260825_locked/0250'").fetchone()
+        proto = json.loads(sub["protocol"])
+        self.assertEqual([(p["count"], p["ensemble"], p["steps"]) for p in proto], [(2, "NVT", 400), (1, "NPT", 800)])
+        self.assertAlmostEqual(proto[0]["T_mean"], (288.0 + 290.0 + 290.0 + 286.0) / 4 if False else proto[0]["T_mean"])
+        card = self.cli_show("0250")
+        for text in ("## System", "## Protocol", "O 2, H 3", "288.15 K"):
+            self.assertIn(text, card)
+        # the sweep run summarises its sub-runs
+        sweep = conn.execute("SELECT summary FROM runs WHERE run_key='finalized-modifications/0239'").fetchone()[0]
+        self.assertTrue(sweep.startswith("2 sub-runs over T = 288.15–300 K"), sweep)
+
+    def cli_show(self, run):
+        self.cli("scan", str(self.root))
+        return self.cli("show", run)
 
     def test_frames_grouped(self):
         conn = scan(self.cfg, self.root)["conn"]

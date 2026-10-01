@@ -55,6 +55,30 @@ Search terms are ANDed together:
 - A parameter key can be limited to one source: `incar.ENCUT`, `slurm.partition`, `lammps.pair_style`, `user.temperature_C`.
 - Bare words are full-text terms.
 
+## What a card shows
+
+Each card opens with a one-line summary, for example *"NVT MD of 5184 atoms (O 1728, H 3456) in a
+37.25 Å cubic box, 1 g/cm³ at 288.15 K; 15 ns (60,000,000 steps × 0.00025 ps); pair usc (OH.usc)."*
+It then has these sections:
+
+- **System**: atoms, composition, box, density, units, potential, starting structure (and,
+  for a broken link, the run it came from), timestep, length, ensemble, target and
+  measured T/P/density.
+- **Protocol**: one row per `run`/`minimize` stage, with ensemble, target T/P, steps, dt and
+  time, plus the mean T/P/density over the second half of that stage. Repeated
+  identical stages are merged ("468,750 × 128").
+- **Sub-runs**: a conditions column for each sub-run (e.g. "NVT, 288.15 K, 15 ns"), and a
+  frame set's energy span.
+
+**Sources by code:**
+
+| Code | Source |
+|---|---|
+| LAMMPS | Mainly `log.lammps` (plus `log.lammps.resumeN`, `log_*.lammps`). With `echo both` the log holds every command with `${var}`/`$(...)` already substituted, including values passed with `-var`, so it records what actually ran. |
+| LAMMPS | The data file from `read_data` (or the `write_data` end state when that is missing) adds atoms per element and masses. `replicate` is accounted for. |
+| LAMMPS | The input script is used only when no log has echoed `run` commands. Its `${...}` values then show as unresolved. |
+| VASP | POSCAR/CONTCAR, INCAR (functional, ENCUT, MD settings), KPOINTS, POTCAR titles and masses, OSZICAR (measured MD temperature). |
+
 ## Expected layout
 
 ```

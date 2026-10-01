@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import os
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from . import PARSER_VERSION, inbox, store
+from . import PARSER_VERSION, describe, inbox, store
 from .classify import code_from_categories
 from .config import Config
 from .discover import (AnalysisDir, FileEntry, Project, RunDir, calc_dirs, find_analysis,
@@ -90,6 +93,85 @@ def _job_script(by_path, dirs) -> Optional[str]:
     return None
 
 
+def _lammps_logs(by_path: Dict[str, FileEntry], calc: str) -> List[str]:
+    """log.lammps then log.lammps.resumeN in order (dielectric restarts write these)."""
+    logs = [p for p, f in by_path.items() if _dir(p) == calc and f.category == "lammps_log" and not f.broken]
+
+    def order(p):
+        n = _name(by_path[p])
+        m = re.search(r"(\d+)(?!.*\d)", n)   # last number in the name: resume3, log_050
+        return (0 if n == "log.lammps" else 1, int(m.group(1)) if m else 0, n)
+    return sorted(logs, key=order)
+
+
+def _data_file(name: str, dirs: List[Optional[str]], by_path: Dict[str, FileEntry]) -> Tuple[Optional[str], Optional[str]]:
+    """(readable relpath, target of a broken link with that name) for a read_data/write_data file.
+
+    The target records where a starting structure came from (often another run)."""
+    base = name.rsplit("/", 1)[-1]
+    broken_target = None
+    for d in dirs + ["input_files"]:
+        if d is None:
+            continue
+        for cand in (_join(d, name), _join(d, base)):
+            f = by_path.get(os.path.normpath(cand).replace(os.sep, "/"))
+            if f and not f.broken:
+                return f.relpath, broken_target
+            if f and f.broken:
+                # keep the last one: run/x -> input_files/x -> <real origin>, so input_files/ wins
+                broken_target = f.symlink
+    return None, broken_target
+
+
+def _lammps_description(root: Path, calc: str, logs: List[str], in_path: Optional[str],
+                        in_dirs: List[Optional[str]], by_path: Dict[str, FileEntry], cfg: Config,
+                        warnings: Warnings) -> Dict:
+    """System/protocol from the log (what actually ran); data file for per-element
+    counts and masses; the input script only when there is no usable log."""
+    log_info: Dict = {}
+    total = sum(by_path[l].size for l in logs)
+    if logs and total <= cfg.max_log_bytes:
+        log_info = lammps.parse_log_stream(itertools.chain.from_iterable(
+            iter_lines(root / l, cfg.max_log_bytes) for l in logs))
+    elif logs:
+        warnings.append((str(root / logs[0]), f"logs total {total} bytes > max_log_bytes; "
+                                              "protocol taken from the input script"))
+    source = "log"
+    if not log_info.get("segments") and in_path:   # log without echoed run/fix commands
+        inp = lammps.parse_log_stream(iter_lines(root / in_path, cfg.max_text_bytes), substituted=False)
+        for key in ("units", "atom_style", "pair_style", "pair_coeff", "masses", "data_files",
+                    "timestep", "segments", "unresolved", "velocity_T"):
+            if not log_info.get(key):
+                log_info[key] = inp.get(key)
+        log_info.setdefault("box", None)
+        source = "input script" + (" (log has no echoed commands)" if logs else " (no log yet)")
+    data_rel, origin, data_note = None, None, None
+    data: Dict = {}
+    for name in log_info.get("data_files") or []:
+        data_rel, target = _data_file(name, [calc] + in_dirs, by_path)
+        origin = origin or target
+        if data_rel:
+            break
+    if not data_rel:   # starting structure unreadable: the written end state has the same atoms
+        for name in log_info.get("write_data") or []:
+            data_rel, _ = _data_file(name, [calc], by_path)
+            if data_rel:
+                data_note = "end state; starting data file unavailable"
+                break
+    if data_rel:
+        f = by_path[data_rel]
+        count = f.size <= cfg.max_data_bytes
+        data = lammps.parse_data_file(iter_lines(root / data_rel, cfg.max_data_bytes if count else cfg.head_bytes),
+                                      log_info.get("atom_style"), count_types=count)
+    desc = describe.lammps_system(log_info, data, data_rel)
+    desc["system"]["description_source"] = source
+    if data_note:
+        desc["system"]["data_file"] = f"{data_rel} ({data_note})"
+    if origin:
+        desc["system"]["structure_origin"] = origin
+    return desc
+
+
 def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config,
                warnings: Warnings, driver: bool = False) -> Dict:
     """Status, params and results for one calc dir. Paths are relative to the run dir.
@@ -140,12 +222,6 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
         lp = dict(li["settings"])
         for fx in li["fixes"]:
             lp[f"fix:{fx['id']}"] = f"{fx['style']} {fx['args']}".strip()
-            if "temp" in fx:
-                lp["T_start"], _, rest = fx["temp"].partition(" ")
-                lp["T_stop"] = rest.split(" ")[0] if rest else None
-            for kw in ("iso", "aniso"):
-                if kw in fx:
-                    lp["P_start"] = fx[kw].split(" ")[0]
         if li["pair_coeff"]:
             lp["pair_coeff"] = " | ".join(li["pair_coeff"])
         lp["total_steps"] = li["total_steps"]
@@ -164,30 +240,32 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
                              "minimize" if li["minimize"] else None)
         info["input"] = in_path
         info["fts"].append(text[:20000])
-        if li["time_unit"]:
-            units["simulated_time"] = li["time_unit"]
-    log = _join(calc, "log.lammps")
-    if log in by_path and not by_path[log].broken:
-        lg = lammps.parse_log(read_head(root / log, cfg.head_bytes), read_tail(root / log, cfg.tail_bytes))
+    logs = _lammps_logs(by_path, calc)
+    if logs or in_path:
+        info.update(_lammps_description(root, calc, logs, in_path, in_dirs, by_path, cfg, warnings))
+    if logs:
+        log = logs[-1]   # a resumed run's newest log decides its status
+        lg = lammps.parse_log(read_head(root / logs[0], cfg.head_bytes), read_tail(root / log, cfg.tail_bytes))
         info["code"] = "lammps"
-        info["n_atoms"] = lg["n_atoms"]
+        info["n_atoms"] = info.get("n_atoms") or lg["n_atoms"]
         info["wall_time_s"] = lg["wall_time_s"]
         results.update({"lammps_version": lg["version"], "wall_time_s": lg["wall_time_s"],
                         "performance": lg["performance"], "procs": lg.get("procs"),
                         "steps_completed": sum(s["steps"] for s in lg["segments"]) or None,
                         "log_warnings": lg["warnings"] or None})
+        lname = _name(by_path[log])
         if lg["finished"]:
             status = "completed"
-            evidence.append("log.lammps: Total wall time")
+            evidence.append(f"{lname}: Total wall time")
         elif lg["errors"]:
             status = "failed"
-            evidence.append("log.lammps: " + lg["errors"][-1][:200])
+            evidence.append(f"{lname}: " + lg["errors"][-1][:200])
         elif now - by_path[log].mtime < cfg.running_window_s:
             status = "running"
-            evidence.append("log.lammps modified recently, no end marker")
+            evidence.append(f"{lname} modified recently, no end marker")
         else:
             status = "incomplete"
-            evidence.append("log.lammps has no Total wall time")
+            evidence.append(f"{lname} has no Total wall time")
 
     # --- VASP ------------------------------------------------------------
     incar = _pick(by_path, in_dirs, ["INCAR"])
@@ -200,10 +278,14 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
         info["calc_type"] = vasp.calc_type(tags)
         info["fts"].append(text)
     kp = _pick(by_path, in_dirs, ["KPOINTS"])
+    k: Dict = {}
     if kp:
         k = vasp.parse_kpoints(read_head(root / kp, 8192))
         params["kpoints"] = {key: v for key, v in k.items() if key != "comment"}
     pos = _pick(by_path, in_dirs, ["POSCAR"])
+    ps: Dict = {}
+    cs: Dict = {}
+    titles: List[Dict] = []
     if pos:
         ps = vasp.parse_poscar(read_head(root / pos, cfg.head_bytes))
         if ps:
@@ -215,13 +297,12 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
     contcar = _pick(by_path, [calc], ["CONTCAR"])
     if contcar and pos:
         cs = vasp.parse_poscar(read_head(root / contcar, cfg.head_bytes))
-        ps = params.get("poscar", {})
         if cs.get("volume") and ps.get("volume"):
             results["final_volume"] = cs["volume"]
             results["volume_change_pct"] = round(100 * (cs["volume"] / ps["volume"] - 1), 3)
     potcar = _pick(by_path, in_dirs, ["POTCAR"])
     if potcar:
-        titles = vasp.potcar_titles(iter_lines(root / potcar, 50 * 1024 * 1024))
+        titles = vasp.potcar_titles(iter_lines(root / potcar, 50 * 1024 * 1024)) or []
         if titles:
             params["potcar"] = {"titles": "; ".join(t["titel"] for t in titles),
                                 "enmax_max": max((t.get("enmax", 0) for t in titles), default=None)}
@@ -252,12 +333,20 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
             status = status or "incomplete"
             evidence.append("OUTCAR has no timing block")
     osz = _join(calc, "OSZICAR")
+    osz_md: Dict = {}
     if osz in by_path and not by_path[osz].broken:
         oz = vasp.parse_oszicar(read_tail(root / osz, 64 * 1024))
         if oz:
             results["ionic_steps"] = oz["ionic_steps"]
             if "T" in oz:
                 results["final_T"] = oz["T"]
+                osz_md = vasp.oszicar_md(iter_lines(root / osz, cfg.max_log_bytes))
+    if incar or pos:
+        desc = describe.vasp_system(tags, k, ps, cs, titles, osz_md)
+        if info.get("system"):   # LAMMPS + VASP in one dir: keep the LAMMPS one, note VASP
+            info["system"]["vasp"] = desc["system"]
+        else:
+            info.update(desc)
 
     if stdout_failures and status not in ("completed",):
         status = "failed"
@@ -274,6 +363,16 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
                 if twin and not twin.symlink and twin.size != f.size:
                     warnings.append((str(root / twin.relpath), f"differs from {inp}/{_name(f)}"))
 
+    sysd = info.get("system")
+    if sysd:
+        params["system"] = {k: v for k, v in sysd.items()
+                            if isinstance(v, (int, float, str)) and not isinstance(v, bool) and k != "code"}
+        info["n_atoms"] = info["n_atoms"] or sysd.get("n_atoms")
+        info["formula"] = info.get("formula") or sysd.get("formula")
+        ens = (sysd.get("ensemble") or "").split(" ")[0]
+        if info["code"] == "lammps" and ens:
+            info["calc_type"] = {"NVT": "md_nvt", "NPT": "md_npt", "NVE": "md_nve", "NPH": "md_nph",
+                                 "minimize": "minimize"}.get(ens, info["calc_type"])
     info.update(status=status, status_evidence="; ".join(evidence), params=params,
                 results=results, units=units)
     return info
@@ -315,6 +414,10 @@ def parse_frames(root: Path, parent: str, frames: List[str], by_path, cfg: Confi
                        energy_max_frame=int(frames[energies.index(max(valid))].rpartition("/")[2]))
     info["results"] = results
     info["units"] = {k: "eV" for k in ("energy_first", "energy_last", "energy_min", "energy_max", "energy_span")}
+    info["summary"] = describe.frames_summary(infos[0], len(infos), results)
+    info["conditions"] = f"{len(infos)} frames" + (f", span {results['energy_span']:.3g} eV"
+                                                    if results.get("energy_span") is not None else "")
+    info["protocol"] = []
     info["wall_time_s"] = sum(i["wall_time_s"] or 0 for i in infos) or None
     return info
 
@@ -345,6 +448,7 @@ def parse_run(run: RunDir, cfg: Config, warnings: Warnings) -> Dict:
             s["label"] = s["relpath"]
     statuses = [s["status"] for s in subruns if s["label"] != "(top)"] or [s["status"] for s in subruns]
     status, evidence = aggregate_status(statuses)
+    summary = (main or {}).get("summary") or describe.multi_summary(subruns)
     if len(subruns) == 1:
         evidence = subruns[0]["status_evidence"]
 
@@ -383,8 +487,10 @@ def parse_run(run: RunDir, cfg: Config, warnings: Warnings) -> Dict:
         "job_name": ref.get("job_name") or slurm.get("job-name"), "n_subruns": len(subruns),
         "n_files": len(run.files), "total_bytes": sum(f.size for f in run.files),
         "readme": readme_text.strip() or None,
+        "summary": summary,
+        "system": json.dumps(ref.get("system")) if ref.get("system") else None,
     }
-    fts = " ".join(filter(None, [run.label, run.group_path, run.project, readme_text,
+    fts = " ".join(filter(None, [run.label, run.group_path, run.project, readme_text, summary,
                                  row["job_name"], f"broken_symlinks={broken}" if broken else None]))
     fts += " " + " ".join(t for s in subruns for t in s["fts"])
     return {"row": row, "subruns": subruns, "fts": fts}
@@ -404,9 +510,13 @@ def write_run(conn, run: RunDir, parsed: Dict, fp: str, first_seen: Optional[str
                first_seen=first_seen or ts, last_scanned=ts, last_changed=ts, missing=0)
     store.upsert_row(conn, "runs", ["run_key"], row)
     for s in parsed["subruns"]:
-        conn.execute("INSERT OR REPLACE INTO subruns VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                     (run.run_key, s["label"], s["relpath"], s["code"], s["calc_type"], s["status"],
-                      s["status_evidence"], s["n_atoms"], s["start_time"], s["end_time"], s["wall_time_s"]))
+        store.upsert_row(conn, "subruns", ["run_key", "label"], {
+            "run_key": run.run_key, "label": s["label"], "relpath": s["relpath"], "code": s["code"],
+            "calc_type": s["calc_type"], "status": s["status"], "status_evidence": s["status_evidence"],
+            "n_atoms": s["n_atoms"], "start_time": s["start_time"], "end_time": s["end_time"],
+            "wall_time_s": s["wall_time_s"], "summary": s.get("summary"), "conditions": s.get("conditions"),
+            "system": json.dumps(s["system"]) if s.get("system") else None,
+            "protocol": json.dumps(s["protocol"]) if s.get("protocol") else None})
         sub = "" if s["is_main"] else s["label"]
         for source, items in s["params"].items():
             store.add_params(conn, run.run_key, sub, source, items)

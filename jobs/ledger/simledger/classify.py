@@ -19,7 +19,7 @@ RULES = [
     ("vasp_output", sorted(VASP_OUTPUTS)),
     ("trajectory", ["XDATCAR", "*.dump", "dump.*", "*.lammpstrj", "*.custom", "*.dcd", "*.xtc", "*.nc"]),
     ("large_binary", sorted(VASP_BINARIES) + ["restart.*", "*.restart", "*.rst"]),
-    ("lammps_log", ["log.lammps", "log.*.lammps", "log.lammps.*"]),
+    ("lammps_log", ["log.lammps", "log.*.lammps", "log.lammps.*", "log_*.lammps", "log-*.lammps"]),
     ("lammps_input", ["in.*", "*.in", "*.lmp", "*.lammps", "*.input"]),
     ("structure", ["*.data", "data.*", "*.xyz", "*.extxyz", "*.cif", "*.vasp", "POSCAR*", "CONTCAR*"]),
     ("potential", ["*.usc", "*.eam", "*.eam.alloy", "*.eam.fs", "*.meam", "*.tersoff", "*.sw",

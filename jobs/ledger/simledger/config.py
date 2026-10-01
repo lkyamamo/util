@@ -35,6 +35,8 @@ class Config:
     head_bytes: int = 64 * 1024      # how much of a file's start to read
     tail_bytes: int = 256 * 1024     # how much of a log's end to read
     max_text_bytes: int = 256 * 1024  # largest README/script stored as text
+    max_log_bytes: int = 1024 ** 3   # LAMMPS logs streamed in full up to this (all segments)
+    max_data_bytes: int = 200 * 1024 ** 2  # data files whose Atoms section is counted
     running_window_s: int = 3600     # log touched this recently + no end marker -> running
 
     @property
