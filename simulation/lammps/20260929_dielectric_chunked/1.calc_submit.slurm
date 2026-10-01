@@ -195,4 +195,13 @@ python "$SCRIPT_DIR/3.dipole_std.py" \
     "$AVERAGING_METHOD" \
     | tee "$OUTPUT_DIR/summary.txt"
 
+############################
+# Ledger: record job id, exit code and script for `simledger scan`.
+# Never fails the job.
+############################
+
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$SCRIPT_DIR" --type dielectric_constant \
+    --output "$OUTPUT_DIR/summary.txt" --field temperature="$TEMPERATURE" \
+  || echo "WARNING: ledger hook failed" >&2
+
 echo "Job ${SLURM_JOB_ID:-<interactive>} finished at $(date)"

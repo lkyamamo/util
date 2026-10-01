@@ -37,3 +37,11 @@ if [ -n "$TIME_BIN" ]; then
 else
     echo "GNU time not available — peak memory not logged (use seff/sacct after the job completes)"
 fi
+
+############################
+# Ledger
+############################
+
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$DUMP_DIR" --type voxel_shock_density \
+    --output "$FINAL_H5" \
+    || echo "WARNING: ledger hook failed" >&2

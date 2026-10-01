@@ -120,6 +120,7 @@ if [ "$START_CHUNK" -ne 1 ]; then
 fi
 echo "LAMMPS log: $LOG_NAME"
 
+LAMMPS_STATUS=0
 srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp \
   -log "$LOG_NAME" \
   -var TARGET_TEMP "$TARGET_TEMP" \
@@ -129,7 +130,19 @@ srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp \
   -var CHARGE_H "$CHARGE_H" \
   -var START_CHUNK "$START_CHUNK" \
   -var RESTART_FILE "$RESTART_FILE" \
-  -in in.input
+  -in in.input || LAMMPS_STATUS=$?
+
+############################
+# Ledger: record job id, exit code and script for `simledger scan`.
+# Never fails the job.
+############################
+
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$LAMMPS_STATUS" \
+  || echo "WARNING: ledger hook failed" >&2
+if [ "$LAMMPS_STATUS" -ne 0 ]; then
+  exit "$LAMMPS_STATUS"
+fi
+
 date
 echo “simulation finished **************************************”
 echo

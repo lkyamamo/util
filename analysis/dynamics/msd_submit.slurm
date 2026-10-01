@@ -125,3 +125,11 @@ cd "${OUT_DIR}" || exit 1
 
 echo "Wrote ${OUT_DIR}/msd.dat and ${OUT_DIR}/dos.dat"
 date
+
+############################
+# Ledger
+############################
+
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$INPUT_DIR" --type msd \
+    --output "${OUT_DIR}/msd.dat" --field temperature_C="${T}" \
+    || echo "WARNING: ledger hook failed" >&2
