@@ -18,7 +18,7 @@ CSV_PARAMS = ["ensemble", "T_target", "P_target", "box", "density", "composition
               "ENCUT", "PREC", "ISMEAR", "IBRION", "ISIF", "NSW", "GGA", "METAGGA", "IVDW",
               "partition", "job_id", "exit_code"]
 CSV_RESULTS = ["energy_sigma0", "energy_per_atom", "pressure", "ionic_steps", "steps_completed",
-               "performance", "elapsed_s"]
+               "performance", "elapsed_s", "eps_total", "D_total", "bulk_modulus_P", "energy_span"]
 
 
 def human_bytes(n: Optional[float]) -> str:
@@ -79,7 +79,7 @@ def render_card(conn, run_key: str) -> str:
     notes = conn.execute("SELECT * FROM user_notes WHERE run_key=? ORDER BY note_id", (run_key,)).fetchall()
     events = conn.execute("SELECT * FROM events WHERE run_key=? ORDER BY created", (run_key,)).fetchall()
     analyses = conn.execute(
-        "SELECT ar.*, a.path, a.n_files, a.readme FROM analysis_runs ar "
+        "SELECT ar.*, a.path, a.n_files, a.readme, a.description FROM analysis_runs ar "
         "LEFT JOIN analysis a ON a.analysis_key = ar.analysis_key WHERE ar.run_key=? "
         "ORDER BY ar.analysis_key", (run_key,)).fetchall()
 
@@ -147,12 +147,14 @@ def render_card(conn, run_key: str) -> str:
             out += [f"_{len(protos) - 12} more sub-runs; see `simledger sql` on subruns.protocol._", ""]
 
     out += _params_section([p for p in params if p["source"] != "system"])
+    if multi:
+        out += _pivot_section(results, [s["label"] for s in subs])
     if results:
         out.append("## Results")
         out.append("")
         rows = [[x["subrun"] or "(main)", x["key"], x["value_text"] if x["value_num"] is None else x["value_num"],
-                 x["unit"]] for x in results]
-        out.append(_table(["sub-run", "key", "value", "unit"], rows[:300]))
+                 x["unit"], _short_source(x["source"]), x["note"]] for x in results]
+        out.append(_table(["sub-run", "key", "value", "unit", "source", "note"], rows[:300]))
         if len(rows) > 300:
             out.append(f"\n_{len(rows) - 300} more rows in the database._")
         out.append("")
@@ -178,8 +180,16 @@ def render_card(conn, run_key: str) -> str:
     if analyses:
         out.append("## Analysis")
         out.append("")
-        rows = [[a["analysis_key"], a["subrun"] or "", a["source"], a["n_files"], a["path"]] for a in analyses]
-        out.append(_table(["analysis", "sub-run", "linked by", "files", "path"], rows))
+        rows = []
+        for a in analyses:
+            vals = conn.execute("SELECT key, value_num, value_text, unit FROM analysis_results "
+                                "WHERE analysis_key=? AND key != '__warning__' AND T IS NULL AND subrun IS NULL "
+                                "ORDER BY rowid LIMIT 5", (a["analysis_key"],)).fetchall()
+            shown = ", ".join(f"{v['key']}={_cell(v['value_num'] if v['value_num'] is not None else v['value_text'])}"
+                              + (f" {v['unit']}" if v["unit"] else "") for v in vals)
+            rows.append([a["analysis_key"].split("/", 1)[1], a["subrun"] or "", a["source"], a["n_files"],
+                         (a["description"] or "")[:160], shown])
+        out.append(_table(["analysis", "sub-run", "linked by", "files", "what it is", "results"], rows))
         figs = conn.execute(
             "SELECT analysis_key, relpath FROM analysis_files WHERE category='figure' AND analysis_key IN "
             f"({','.join('?' * len(analyses))}) ORDER BY analysis_key, relpath LIMIT 40",
@@ -283,6 +293,41 @@ def _protocol_table(proto: List[Dict], time_unit: str) -> str:
                   rows)
 
 
+# Results worth a column in sub-run pivots and project summaries, in priority order.
+KEY_RESULTS = ["eps_total", "D_total", "D_H", "D_O", "bulk_modulus_P", "bulk_modulus_E0K", "barrier",
+               "energy_span", "energy_per_atom", "avg_Temp", "avg_Press"]
+NOISY = {"lammps_version", "vasp_version", "procs", "cores", "performance", "wall_time_s", "elapsed_s",
+         "steps_completed", "log_warnings", "frame_energies", "dielectric_frames", "dipole_deviation",
+         "energy_first", "energy_last", "toten", "e_fermi", "frames_completed", "n_frames"}
+
+
+def _short_source(src: Optional[str]) -> str:
+    if not src or src == "calc":
+        return "calc"
+    return src.replace("analysis:", "analysis ").replace("file:", "file ")
+
+
+def _pivot_section(results, labels: List[str]) -> List[str]:
+    """Sub-run x result table for the values that differ by sub-run (ε(T), D(T), barriers)."""
+    by_key: Dict[str, Dict[str, float]] = {}
+    units: Dict[str, str] = {}
+    for x in results:
+        if x["value_num"] is None or x["key"] in NOISY:
+            continue
+        by_key.setdefault(x["key"], {}).setdefault(x["subrun"] or "(main)", x["value_num"])
+        if x["unit"]:
+            units[x["key"]] = x["unit"]
+    # headline results on any sub-run; other values only when they vary across sub-runs
+    keys = [k for k in KEY_RESULTS if set(by_key.get(k, {})) - {"(main)"}]
+    keys += [k for k, v in by_key.items() if k not in keys and len(v) >= 2][: max(0, 8 - len(keys))]
+    if not keys:
+        return []
+    rows = [[lab] + [by_key[k].get(lab) for k in keys[:8]] for lab in labels + ["(main)"]
+            if any(lab in by_key[k] for k in keys[:8])]
+    headers = ["sub-run"] + [k + (f" ({units[k]})" if k in units else "") for k in keys[:8]]
+    return ["## Results by sub-run", "", _table(headers, rows), ""]
+
+
 def _params_section(params) -> List[str]:
     """Parameters shared by all sub-runs once; varying ones as a sub-run x key table."""
     if not params:
@@ -340,12 +385,18 @@ def _files_section(conn, run_key: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 def _key_result(conn, run_key: str) -> str:
-    row = conn.execute(
-        "SELECT key, value_num, unit FROM results WHERE run_key=? AND subrun='' "
-        "AND key IN ('energy_per_atom','energy_sigma0') ORDER BY key='energy_per_atom' DESC LIMIT 1",
-        (run_key,)).fetchone()
-    if row and row["value_num"] is not None:
-        return f"{row['key']}={row['value_num']:.6g} {row['unit'] or ''}".strip()
+    """Most informative result: one value, or its range across sub-runs (e.g. ε over a sweep)."""
+    for key in KEY_RESULTS:
+        vals = [r[0] for r in conn.execute("SELECT DISTINCT value_num FROM results WHERE run_key=? AND key=? "
+                                           "AND value_num IS NOT NULL", (run_key, key))]
+        if not vals:
+            continue
+        unit = conn.execute("SELECT unit FROM results WHERE run_key=? AND key=? AND unit IS NOT NULL LIMIT 1",
+                            (run_key, key)).fetchone()
+        u = f" {unit[0]}" if unit else ""
+        if len(vals) == 1:
+            return f"{key}={vals[0]:.4g}{u}"
+        return f"{key} {min(vals):.4g}–{max(vals):.4g}{u} ({len(vals)} values)"
     return ""
 
 
@@ -372,13 +423,14 @@ def project_readme(conn, project: str) -> str:
                               [[f["name"], human_bytes(f["size"]), f["description"], f["mentioned_ids"]]
                                for f in files]))
     ana = conn.execute(
-        "SELECT a.name, a.n_files, a.missing, GROUP_CONCAT(DISTINCT ar.run_key) runs FROM analysis a "
+        "SELECT a.name, a.n_files, a.missing, a.description, GROUP_CONCAT(DISTINCT ar.run_key) runs FROM analysis a "
         "LEFT JOIN analysis_runs ar ON ar.analysis_key = a.analysis_key WHERE a.project=? "
         "GROUP BY a.analysis_key ORDER BY a.name", (project,)).fetchall()
     if ana:
         out += ["", "## Analysis", ""]
-        out.append(_table(["analysis", "files", "runs"],
-                          [[a["name"] + (" (missing)" if a["missing"] else ""), a["n_files"], a["runs"]] for a in ana]))
+        out.append(_table(["analysis", "files", "runs", "what it is"],
+                          [[a["name"] + (" (missing)" if a["missing"] else ""), a["n_files"], a["runs"],
+                            (a["description"] or "")[:160]] for a in ana]))
     return "\n".join(out) + "\n"
 
 

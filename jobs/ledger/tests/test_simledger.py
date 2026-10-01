@@ -177,6 +177,23 @@ Atoms # atomic
 """
 
 
+EOS = """scalefac,volume_A3,cg_PotEng_eV,cg_TotEng_eV,nve_Press_mean_GPa,nve_volume_A3
+0.985,74892.6280,-20067.401000,-20067.401000,2.472722,74892.6280
+0.99,76038.9240,-20079.822000,-20079.822000,1.871160,76038.9240
+0.995,77196.8580,-20087.257000,-20087.257000,1.238664,77196.8580
+1.0,78366.4870,-20089.817000,-20089.817000,0.618691,78366.4870
+1.005,79547.8720,-20087.675000,-20087.675000,0.129815,79547.8720
+1.01,80741.0700,-20081.075000,-20081.075000,-0.402879,80741.0700
+1.015,81946.1410,-20071.840000,-20071.840000,-0.792610,81946.1410
+"""
+
+DIELECTRIC_SUMMARY = """Processing frame 50,000
+Processing complete: 2,400,000 frames
+x_dev =   661.606343, y_dev =   628.430170, z_dev =   685.238616,deviation =     658.425043
+eps_x =    88.541493, eps_y =    84.101590, eps_z =    91.704155, eps_total =    88.115746
+"""
+
+
 def w(path: Path, text: str = "", mtime: float = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -221,6 +238,15 @@ def build_tree(root: Path) -> None:
         w(p / "runs" / "ring-barrier" / "0282" / "setup" / "poscars" / str(i) / "POSCAR", POSCAR)
         os.symlink(f"../../../setup/poscars/{i}/POSCAR", frame / "POSCAR")
     w(p / "runs" / "ring-barrier" / "0282" / "input_files" / "INCAR", "IBRION=-1\n")
+    for i in (1, 2):   # a second frame set, so each set is its own sub-run
+        w(p / "runs" / "ring-barrier" / "0282" / "run" / "size_04__ring_00140__roll_120" / str(i) / "OUTCAR",
+          OUTCAR_DONE.replace("reached required accuracy", ""), old)
+    w(p / "runs" / "ring-barrier" / "0282" / "run" / "SUMMARY.txt",
+      "\ncase                             frames  barrier (eV)     at  tail (eV) unconverged\n"
+      "size_03__ring_00008__roll_060         3         0.800      2    +0.1000           0\n")
+    w(p / "runs" / "vasp_0272" / "run" / "SUMMARY.txt",
+      "Traceback (most recent call last):\n  File \"x.py\", line 1\nRuntimeError: OUTCAR energy mismatch\n")
+    w(p / "analysis" / "0256_T303_dielectric_calc" / "dipole_output" / "summary.txt", DIELECTRIC_SUMMARY)
     # ring-barrier/0286: inputs only
     w(p / "runs" / "ring-barrier" / "0286" / "input_files" / "in.input", LMP_IN)
     # analysis
@@ -285,6 +311,13 @@ def build_tree(root: Path) -> None:
         w(r / t / "run" / "lammps_submit.slurm", SLURM)
     w(q / "runs" / "0247" / "run" / "log.lammps", LMP_LOG_OK, old)
     w(q / "analysis" / "0239_T15C_msd" / "msd.dat", "1 2\n")
+    w(q / "analysis" / "0239_T15C_msd" / "20260820_diffusion.csv", "label,D_1e-5_cm2_s\nH,2.1\nO,1.9\ntotal,2.03\n")
+    w(q / "analysis" / "0239_T15C_msd" / "msd.py",
+      '"""\nmsd.py — Mean Square Displacement from LAMMPS dump trajectories.\n\nDetails.\n"""\nimport sys\n')
+    w(q / "analysis" / "0239_Bulk_Modulus" / "eos_summary.csv", EOS)
+    w(r / "dielectric_vs_temperature.csv",
+      "temperature_C,temperature_K,eps_x,eps_y,eps_z,eps_total\n15.0,288.15,95.9,82.0,85.3,87.76\n"
+      "26.85,300.0,79.7,78.8,75.3,77.92\n")
 
 
 def snapshot(root: Path):
@@ -478,16 +511,56 @@ class ScanTests(unittest.TestCase):
         card = self.cli_show("0254")
         self.assertIn("from run [20260825_locked/0247](../20260825_locked/0247.md)", card)
 
+    def test_analysis_results(self):
+        res = scan(self.cfg, self.root)
+        conn = res["conn"]
+
+        def vals(run_key, key):
+            return {(r["subrun"], r["source"]): r["value_num"] for r in conn.execute(
+                "SELECT * FROM results WHERE run_key=? AND key=?", (run_key, key))}
+        sweep = "finalized-modifications/0239"
+        # sweep table rows land on the sub-run with that temperature
+        self.assertEqual(vals(sweep, "eps_total"), {("T15C", "file:dielectric_vs_temperature.csv"): 87.76,
+                                                    ("T30C", "file:dielectric_vs_temperature.csv"): 77.92})
+        # an analysis named 0239_T15C_msd lands on sub-run T15C
+        self.assertEqual(vals(sweep, "D_total"),
+                         {("T15C", "analysis:0239_T15C_msd/20260820_diffusion.csv"): 2.03})
+        b = conn.execute("SELECT * FROM results WHERE run_key=? AND key='bulk_modulus_P'", (sweep,)).fetchone()
+        self.assertAlmostEqual(b["value_num"], 37.51, 1)
+        self.assertIn("derived", b["note"])
+        # the single-calc run 0256 gets the dielectric result as its own value
+        self.assertEqual(vals("20260825_locked/0256", "eps_total"),
+                         {("", "analysis:0256_T303_dielectric_calc/dipole_output/summary.txt"): 88.115746})
+        # per-case barrier -> frame-set sub-run
+        self.assertEqual(vals("20260825_locked/0282", "barrier"),
+                         {("size_03__ring_00008__roll_060", "file:run/SUMMARY.txt"): 0.8})
+        issues = " ".join(m for _, _, m in res["open_issues"])
+        self.assertIn("SUMMARY.txt contains a Python traceback", issues)
+        self.assertIn("RuntimeError: OUTCAR energy mismatch", issues)
+        desc = conn.execute("SELECT description FROM analysis WHERE name='0239_T15C_msd'").fetchone()[0]
+        self.assertEqual(desc, "msd.py: msd.py — Mean Square Displacement from LAMMPS dump trajectories.")
+        out = self.cli("search", "eps_total>80")
+        self.assertIn("finalized-modifications/0239", out)
+        self.assertIn("20260825_locked/0256", out)
+        card = self.cli_show("0239")
+        self.assertIn("## Results by sub-run", card)
+        self.assertIn("| T15C | 87.76 | 2.03 |", card)
+        self.assertIn("Mean Square Displacement", card)
+        readme = (self.cfg.cards / "finalized-modifications" / "README.md").read_text()
+        self.assertIn("eps_total 77.92–87.76 (2 values)", readme)
+
     def cli_show(self, run):
         self.cli("scan", str(self.root))
         return self.cli("show", run)
 
     def test_frames_grouped(self):
         conn = scan(self.cfg, self.root)["conn"]
-        subs = conn.execute("SELECT * FROM subruns WHERE run_key='20260825_locked/0282'").fetchall()
+        subs = conn.execute("SELECT * FROM subruns WHERE run_key='20260825_locked/0282' ORDER BY label").fetchall()
         self.assertEqual([(s["label"], s["status"], s["n_atoms"]) for s in subs],
-                         [("size_03__ring_00008__roll_060", "completed", 28)])
-        res = dict(conn.execute("SELECT key, value_text FROM results WHERE run_key='20260825_locked/0282'").fetchall())
+                         [("size_03__ring_00008__roll_060", "completed", 28),
+                          ("size_04__ring_00140__roll_120", "completed", None)])
+        res = dict(conn.execute("SELECT key, value_text FROM results WHERE run_key='20260825_locked/0282' "
+                                "AND subrun='size_03__ring_00008__roll_060' AND source='calc'").fetchall())
         self.assertEqual((res["n_frames"], res["energy_max_frame"]), ("3", "2"))
         self.assertAlmostEqual(float(res["energy_span"]), 0.8)
         self.assertEqual(res["frame_energies"], "[-100.0, -99.2, -99.9]")

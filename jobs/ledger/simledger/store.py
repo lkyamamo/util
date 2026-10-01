@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS params (
 CREATE INDEX IF NOT EXISTS params_key ON params(key, run_key);
 
 CREATE TABLE IF NOT EXISTS results (
-    run_key TEXT, subrun TEXT, key TEXT, value_num REAL, value_text TEXT, unit TEXT);
+    run_key TEXT, subrun TEXT, key TEXT, value_num REAL, value_text TEXT, unit TEXT,
+    source TEXT DEFAULT 'calc', note TEXT);
 CREATE INDEX IF NOT EXISTS results_key ON results(key, run_key);
 
 CREATE TABLE IF NOT EXISTS files (
@@ -53,7 +54,13 @@ CREATE INDEX IF NOT EXISTS files_run ON files(run_key);
 CREATE TABLE IF NOT EXISTS analysis (
     analysis_key TEXT PRIMARY KEY, project TEXT, name TEXT, path TEXT, hint TEXT,
     run_ids TEXT, readme TEXT, n_files INTEGER, total_bytes INTEGER, fingerprint TEXT,
-    first_seen TEXT, last_scanned TEXT, missing INTEGER DEFAULT 0);
+    first_seen TEXT, last_scanned TEXT, missing INTEGER DEFAULT 0, description TEXT);
+
+-- Values read from files in an analysis dir; copied onto linked runs every scan.
+CREATE TABLE IF NOT EXISTS analysis_results (
+    analysis_key TEXT, file TEXT, kind TEXT, key TEXT, value_num REAL, value_text TEXT,
+    unit TEXT, subrun TEXT, T REAL, note TEXT);
+CREATE INDEX IF NOT EXISTS analysis_results_key ON analysis_results(analysis_key);
 
 CREATE TABLE IF NOT EXISTS analysis_runs (
     analysis_key TEXT, run_key TEXT, subrun TEXT, source TEXT);
@@ -112,6 +119,8 @@ ADDED_COLUMNS = [
     ("runs", "summary", "TEXT"), ("runs", "system", "TEXT"),
     ("subruns", "summary", "TEXT"), ("subruns", "conditions", "TEXT"),
     ("subruns", "system", "TEXT"), ("subruns", "protocol", "TEXT"),
+    ("results", "source", "TEXT DEFAULT 'calc'"), ("results", "note", "TEXT"),
+    ("analysis", "description", "TEXT"),
 ]
 
 
@@ -168,11 +177,14 @@ def add_params(conn, run_key: str, subrun: str, source: str, items: Dict) -> Non
     )
 
 
-def add_results(conn, run_key: str, subrun: str, items: Dict, units: Optional[Dict] = None) -> None:
-    units = units or {}
+def add_results(conn, run_key: str, subrun: str, items: Dict, units: Optional[Dict] = None,
+                source: str = "calc", notes: Optional[Dict] = None) -> None:
+    units, notes = units or {}, notes or {}
     conn.executemany(
-        "INSERT INTO results VALUES (?,?,?,?,?,?)",
-        [(run_key, subrun, k, _num(v), _text(v), units.get(k)) for k, v in items.items() if v is not None],
+        "INSERT INTO results (run_key, subrun, key, value_num, value_text, unit, source, note) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        [(run_key, subrun, k, _num(v), _text(v), units.get(k), source, notes.get(k))
+         for k, v in items.items() if v is not None],
     )
 
 

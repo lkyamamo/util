@@ -79,6 +79,32 @@ It then has these sections:
 | LAMMPS | The input script is used only when no log has echoed `run` commands. Its `${...}` values then show as unresolved. |
 | VASP | POSCAR/CONTCAR, INCAR (functional, ENCUT, MD settings), KPOINTS, POTCAR titles and masses, OSZICAR (measured MD temperature). |
 
+## Analysis results
+
+Each scan reads small result files and attaches their values to the matching run or sub-run.
+Every value records its source file, so it can be traced back:
+
+| File | Values | Attached to |
+|---|---|---|
+| `*_vs_temperature.csv` (sweep top) | every column, e.g. `eps_total`, `D_total` | the sub-run at that temperature |
+| `dipole_output/summary.txt` | `eps_x/y/z/total`, dipole deviation, frames | the run/sub-run the analysis is linked to |
+| `*diffusion.csv` (`label,D_...`) | `D_H`, `D_O`, `D_total` | " |
+| `eos_summary.csv` | `bulk_modulus_P` (−V₀·dP/dV), `bulk_modulus_E0K` (V₀·d²E/dV²), V₀ | " |
+| `SUMMARY.txt` (ring barriers) | per ring size: count and p10/median/p90/min barrier; or, per case, `barrier`, `barrier_frame`, `tail_dE` | the run, or the case's frame-set sub-run |
+| `output.txt` (one-row polars table) | `avg_<column>` | the linked run |
+| `*rdf*.csv` | `rdf_peak_r_<pair>`, `rdf_peak_g_<pair>` (position and height of the g(r) maximum) | " |
+| any other CSV | column names (searchable); its values if it has one row | " |
+
+Values the ledger computes rather than reads (bulk moduli, RDF peaks) carry a "derived: ..."
+note. A result file containing a Python traceback is reported as an open issue, naming the
+error. Each analysis folder also gets a "what it is" description, taken from its scripts'
+docstrings.
+
+Analysis folders link to runs by their name, e.g. `0239_T60C_msd` → sub-run `T60C` of 0239.
+A sweep's card has a **Results by sub-run** table (ε, D, ... per temperature). The project
+summary shows each run's headline result, as a range across its sub-runs where there is one.
+Search works on all of these values, e.g. `simledger search "eps_total>80"` or `"D_total>4"`.
+
 ## Expected layout
 
 ```

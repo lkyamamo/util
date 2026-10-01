@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from . import PARSER_VERSION, describe, inbox, store
+from . import PARSER_VERSION, describe, inbox, results as rx, store
 from .classify import code_from_categories
 from .config import Config
 from .discover import (AnalysisDir, FileEntry, Project, RunDir, calc_dirs, find_analysis,
@@ -465,6 +465,65 @@ def parse_frames(root: Path, parent: str, frames: List[str], by_path, cfg: Confi
     return info
 
 
+def _main_label(subruns: List[Dict]) -> Optional[str]:
+    """Label of the sub-run whose values are stored as the run's own ('' sub-run)."""
+    real = [s for s in subruns if s["label"] != "(top)"]
+    main = next((s for s in subruns if s["relpath"] == "run"), real[0] if len(real) == 1 else None)
+    return main["label"] if main else None
+
+
+def target_subrun(v: "rx.Value", file_dir: Optional[str], subs: List[Tuple[str, str, Optional[float]]],
+                  main: Optional[str], default: str = "") -> Tuple[str, Optional[str]]:
+    """(sub-run label, note) a result value belongs to.
+
+    subs: (label, relpath, T_target). Explicit labels win, then temperature
+    (sweeps), then the directory the file sits in."""
+    real = [s for s in subs if s[0] != "(top)"]
+    label, note = None, None
+    if v.subrun:
+        label = next((s[0] for s in subs if s[0] == v.subrun or s[0].endswith("/" + v.subrun)), v.subrun)
+    elif v.T is not None:
+        hits = [s for s in real if s[2] is not None and abs(s[2] - v.T) < 0.6]
+        if hits:
+            # several sub-runs at that T (e.g. T303 and T303/run2-files): the plainest label
+            label = min(hits, key=lambda s: (len(s[0]), s[0]))[0]
+        elif len(real) == 1:
+            label = real[0][0]
+        else:
+            note = f"T = {v.T:g} K (no single sub-run at that temperature)"
+    elif file_dir is not None:
+        best = max((s for s in subs if s[1] and (file_dir == s[1] or file_dir.startswith(s[1] + "/"))),
+                   key=lambda s: len(s[1]), default=None)
+        label = best[0] if best else None
+    if label is None:
+        label = default
+    if main is not None and label == main:
+        label = ""
+    return label, note
+
+
+def run_file_results(run: RunDir, subruns: List[Dict], warnings: Warnings, limit: int = 300):
+    """Results from analysis outputs written inside the run dir (sweep tables, SUMMARY.txt...)."""
+    subs = [(s["label"], s["relpath"], (s.get("system") or {}).get("T_target")) for s in subruns]
+    main = _main_label(subruns)
+    found, texts = [], []
+    cands = [f for f in run.files if not f.broken and rx.is_candidate(_name(f))
+             and not any(part in ("input_files", "setup") for part in f.relpath.split("/")[:-1])]
+    for f in cands[:limit]:
+        path = run.path / f.relpath
+        size = f.size if not f.symlink else (path.stat().st_size if path.exists() else 0)
+        got = rx.extract(path, size)
+        if not got:
+            continue
+        warnings.extend((str(path), w) for w in got.warnings)
+        if got.text:
+            texts.append(got.text)
+        for v in got.values:
+            label, note = target_subrun(v, _dir(f.relpath), subs, main)
+            found.append((label, v, f"file:{f.relpath}", "; ".join(x for x in (v.note, note) if x) or None))
+    return found, texts
+
+
 def parse_run(run: RunDir, cfg: Config, warnings: Warnings, tree: Optional[Path] = None) -> Dict:
     by_path = {f.relpath: f for f in run.files}
     calcs = calc_dirs(run.files)
@@ -533,10 +592,11 @@ def parse_run(run: RunDir, cfg: Config, warnings: Warnings, tree: Optional[Path]
         "summary": summary,
         "system": json.dumps(ref.get("system")) if ref.get("system") else None,
     }
-    fts = " ".join(filter(None, [run.label, run.group_path, run.project, readme_text, summary,
+    file_results, result_texts = run_file_results(run, subruns, warnings)
+    fts = " ".join(filter(None, [run.label, run.group_path, run.project, readme_text, summary, *result_texts,
                                  row["job_name"], f"broken_symlinks={broken}" if broken else None]))
     fts += " " + " ".join(t for s in subruns for t in s["fts"])
-    return {"row": row, "subruns": subruns, "fts": fts}
+    return {"row": row, "subruns": subruns, "fts": fts, "file_results": file_results}
 
 
 def _int(v) -> Optional[int]:
@@ -564,6 +624,8 @@ def write_run(conn, run: RunDir, parsed: Dict, fp: str, first_seen: Optional[str
         for source, items in s["params"].items():
             store.add_params(conn, run.run_key, sub, source, items)
         store.add_results(conn, run.run_key, sub, s["results"], s["units"])
+    for label, v, source, note in parsed.get("file_results", []):
+        store.add_results(conn, run.run_key, label, {v.key: v.value}, {v.key: v.unit}, source, {v.key: note})
     conn.executemany("INSERT INTO files VALUES (?,?,?,?,?,?,?)",
                      [(run.run_key, f.relpath, f.category, f.size, f.mtime, f.symlink, int(f.broken))
                       for f in run.files])
@@ -594,6 +656,73 @@ def scan_project_files(conn, project: Project, cfg: Config) -> None:
                           ",".join(readme.mentioned_ids(desc or "", cfg.id_width)) or None))
 
 
+def describe_analysis(conn, key: str, a: AnalysisDir, cfg: Config, warnings: Warnings,
+                      limit: int = 300) -> Tuple[Optional[str], str]:
+    """Extract result values into analysis_results; return (description, searchable text).
+
+    The description is each top-level script's docstring summary; job scripts
+    and small command files (e.g. silanol-run.txt) add searchable text."""
+    conn.execute("DELETE FROM analysis_results WHERE analysis_key=?", (key,))
+    descs, texts = [], []
+    for f in a.files[:2000]:
+        if f.broken:
+            continue
+        name, depth, path = _name(f), f.relpath.count("/"), a.path / f.relpath
+        if name.endswith(".py") and depth <= 1 and f.size <= cfg.max_text_bytes:
+            d = rx.script_description(read_head(path, 16384))
+            if d:
+                descs.append(f"{f.relpath}: {d}")
+        elif f.category == "job_script" and depth <= 1:
+            sched = scheduler.parse_script(read_head(path, 65536))
+            texts.append(" ".join(filter(None, [sched["directives"].get("job-name"), *sched["launch"][:2]])))
+        elif name.endswith(".txt") and f.size <= 4096 and name not in rx.TEXT_RESULT_NAMES and depth <= 2:
+            texts.append(read_head(path, 4096))
+        if limit and rx.is_candidate(name):
+            limit -= 1
+            got = rx.extract(path, f.size)
+            if not got:
+                continue
+            for w in got.warnings:
+                warnings.append((str(path), w))
+                conn.execute("INSERT INTO analysis_results (analysis_key, file, kind, key, value_text) "
+                             "VALUES (?,?,?,?,?)", (key, f.relpath, got.kind, "__warning__", w))
+            if got.text:
+                texts.append(got.text)
+            conn.executemany(
+                "INSERT INTO analysis_results VALUES (?,?,?,?,?,?,?,?,?,?)",
+                [(key, f.relpath, got.kind, v.key, store._num(v.value), store._text(v.value), v.unit,
+                  v.subrun, v.T, v.note) for v in got.values])
+    return (" | ".join(descs) or None), " ".join(t for t in texts if t)
+
+
+def materialize_analysis_results(conn) -> None:
+    """Copy analysis values onto every run/sub-run the analysis is linked to."""
+    conn.execute("DELETE FROM results WHERE source LIKE 'analysis:%'")
+    subs: Dict[str, List[Tuple[str, str, Optional[float]]]] = {}
+    for s in conn.execute("SELECT run_key, label, relpath, system FROM subruns"):
+        T = (json.loads(s["system"]) or {}).get("T_target") if s["system"] else None
+        subs.setdefault(s["run_key"], []).append((s["label"], s["relpath"], T))
+    links: Dict[Tuple[str, str], Optional[str]] = {}
+    for l in conn.execute("SELECT analysis_key, run_key, subrun FROM analysis_runs"):
+        k = (l["analysis_key"], l["run_key"])
+        links[k] = links.get(k) or l["subrun"]          # a sub-run link beats a whole-run link
+    rows: Dict[str, List] = {}
+    for r in conn.execute("SELECT * FROM analysis_results WHERE key != '__warning__'"):
+        rows.setdefault(r["analysis_key"], []).append(r)
+    for (akey, run_key), link_sub in links.items():
+        run_subs = subs.get(run_key, [])
+        real = [s for s in run_subs if s[0] != "(top)"]
+        main = next((s[0] for s in run_subs if s[1] == "run"), real[0][0] if len(real) == 1 else None)
+        for r in rows.get(akey, []):
+            v = rx.Value(r["key"], None, subrun=r["subrun"], T=r["T"])
+            label, note = target_subrun(v, None, run_subs, main, default=link_sub or "")
+            conn.execute(
+                "INSERT INTO results (run_key, subrun, key, value_num, value_text, unit, source, note) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (run_key, label, r["key"], r["value_num"], r["value_text"], r["unit"],
+                 f"analysis:{akey.split('/', 1)[1]}/{r['file']}", "; ".join(x for x in (r["note"], note) if x) or None))
+
+
 def scan_analysis(conn, a: AnalysisDir, cfg: Config, run_index: Dict[str, List[str]],
                   subrun_index: Dict[str, List[str]], warnings: Warnings, full: bool) -> str:
     key = f"{a.project}/{a.name}"
@@ -608,20 +737,21 @@ def scan_analysis(conn, a: AnalysisDir, cfg: Config, run_index: Dict[str, List[s
         for f in a.files:
             if f.category == "readme" and f.relpath.count("/") <= 1:
                 text += read_head(a.path / f.relpath, cfg.max_text_bytes) + "\n"
+        description, extra = describe_analysis(conn, key, a, cfg, warnings)
         ts = store.now()
         store.upsert_row(conn, "analysis", ["analysis_key"], {
             "analysis_key": key, "project": a.project, "name": a.name, "path": str(a.path),
             "hint": a.hint, "run_ids": ",".join(a.run_ids), "readme": text.strip() or None,
             "n_files": len(a.files), "total_bytes": sum(f.size for f in a.files),
             "fingerprint": fp, "first_seen": prev["first_seen"] if prev else ts, "last_scanned": ts,
-            "missing": 0})
+            "missing": 0, "description": description})
         conn.execute("DELETE FROM analysis_files WHERE analysis_key=?", (key,))
         conn.executemany("INSERT INTO analysis_files VALUES (?,?,?,?,?)",
                          [(key, f.relpath, f.category, f.size, f.mtime) for f in a.files])
         if store.has_fts(conn):
             conn.execute("DELETE FROM fts WHERE run_key=? AND kind='analysis'", (key,))
         figs = " ".join(_name(f) for f in a.files if f.category in ("figure", "data", "analysis_script"))
-        store.add_fts(conn, key, "analysis", f"{a.name} {a.hint} {text} {figs}")
+        store.add_fts(conn, key, "analysis", f"{a.name} {a.hint} {text} {figs} {description or ''} {extra}")
     else:
         conn.execute("UPDATE analysis SET last_scanned=?, missing=0 WHERE analysis_key=?", (store.now(), key))
 
@@ -709,6 +839,9 @@ def scan(cfg: Config, root: Path, full: bool = False, log=print) -> Dict:
     new_runs: List[str] = []
     changed_runs: List[str] = []
 
+    # analysis dirs have no per-row parser version; reparse them all when parsing changed
+    prev_pv = conn.execute("SELECT value FROM meta WHERE key='parser_version'").fetchone()
+    reparse_analysis = full or prev_pv is None or prev_pv[0] != str(PARSER_VERSION)
     projects = find_projects(root, cfg)
     if not projects:
         warnings.append((str(root), "no project (directory containing runs/) found"))
@@ -784,7 +917,7 @@ def scan(cfg: Config, root: Path, full: bool = False, log=print) -> Dict:
         for a in find_analysis(project, cfg):
             counts["analysis"] += 1
             seen_a.add(f"{a.project}/{a.name}")
-            if scan_analysis(conn, a, cfg, run_index, subrun_index, warnings, full) == "changed":
+            if scan_analysis(conn, a, cfg, run_index, subrun_index, warnings, reparse_analysis) == "changed":
                 counts["analysis_changed"] += 1
         for r in conn.execute("SELECT analysis_key FROM analysis WHERE project=? AND missing=0",
                               (project.name,)).fetchall():
@@ -793,9 +926,11 @@ def scan(cfg: Config, root: Path, full: bool = False, log=print) -> Dict:
         conn.commit()
 
     apply_events(conn)
+    materialize_analysis_results(conn)
     unlinked = conn.execute("SELECT COUNT(*) FROM events WHERE run_key IS NULL").fetchone()[0]
     if unlinked:
         warnings.append(("inbox", f"{unlinked} hook events not matched to any run yet"))
+    conn.execute("INSERT OR REPLACE INTO meta VALUES ('parser_version', ?)", (str(PARSER_VERSION),))
     conn.executemany("INSERT INTO scan_warnings VALUES (?,?,?)", [(scan_id, p, m) for p, m in warnings])
     counts["warnings"] = len(warnings)
     conn.execute("UPDATE scans SET finished=?, counts=? WHERE scan_id=?",
@@ -803,5 +938,8 @@ def scan(cfg: Config, root: Path, full: bool = False, log=print) -> Dict:
     conn.commit()
     open_issues = [(r["run_key"], r["path"], r["message"]) for r in conn.execute(
         "SELECT w.* FROM run_warnings w JOIN runs r USING (run_key) WHERE r.missing = 0 ORDER BY run_key")]
+    open_issues += [(r["analysis_key"], r["file"], r["value_text"]) for r in conn.execute(
+        "SELECT x.* FROM analysis_results x JOIN analysis a USING (analysis_key) "
+        "WHERE x.key = '__warning__' AND a.missing = 0 ORDER BY analysis_key")]
     return {"scan_id": scan_id, "counts": counts, "new": new_runs, "changed": changed_runs,
             "warnings": warnings, "open_issues": open_issues, "conn": conn}
