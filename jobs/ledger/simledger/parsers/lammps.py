@@ -306,8 +306,10 @@ def parse_log_stream(lines, substituted: bool = True) -> Dict:
             if substituted:
                 continue
             out["unresolved"].update(a or b for a, b in re.findall(r"\$\{(\w+)\}|\$(\w)", code))
-        out["has_commands"] = True
         cmd, args = tokens[0], tokens[1:]
+        if args and (args[0] == "CPU" or (len(args) > 1 and args[1] == "=")):
+            continue   # LAMMPS's own report, e.g. "  read_data CPU = 0.13 secs", not a command
+        out["has_commands"] = True
         if cmd in ("units", "atom_style", "pair_style") and args:
             out[cmd] = " ".join(args) if cmd == "pair_style" else args[0]
         elif cmd == "pair_coeff":
@@ -318,8 +320,10 @@ def parse_log_stream(lines, substituted: bool = True) -> Dict:
                 out["masses"][args[0]] = {"mass": m_val, "label": comment.strip() or None}
         elif cmd == "timestep" and args:
             out["timestep"] = to_num(args[0])
-        elif cmd in ("read_data", "read_restart") and args:
+        elif cmd == "read_data" and args:
             out["data_files"].append(args[0])
+        elif cmd == "read_restart" and args:   # continues the same system; not another structure
+            out.setdefault("restart_files", []).append(args[0])
         elif cmd == "write_data" and args:
             out["write_data"].append(args[0])
         elif cmd == "replicate" and len(args) >= 3:

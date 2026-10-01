@@ -117,9 +117,12 @@ def lammps_system(log: Dict, data: Dict, data_file: Optional[str]) -> Dict:
     tu, pu, lu = TIME_UNIT.get(units, ""), PRESSURE_UNIT.get(units, ""), LENGTH_UNIT.get(units, "")
     elements, masses = type_elements(log, data)
     counts = dict(data.get("type_counts") or {})
-    n_atoms = log.get("n_atoms") or data.get("n_atoms")
+    structures = list(dict.fromkeys(f.rsplit("/", 1)[-1] if "/" not in f else f for f in log.get("data_files") or []))
+    multi = len(structures) > 1
+    # several structures read one after another: describe the first (the data file read)
+    n_atoms = (data.get("n_atoms") or log.get("n_atoms")) if multi else (log.get("n_atoms") or data.get("n_atoms"))
     # `replicate` multiplies the data file's atoms; scale per-type counts to what ran
-    if counts and data.get("n_atoms") and n_atoms and n_atoms != data["n_atoms"] and not log.get("atoms_changed"):
+    if not multi and counts and data.get("n_atoms") and n_atoms and n_atoms != data["n_atoms"] and not log.get("atoms_changed"):
         factor = n_atoms / data["n_atoms"]
         if abs(factor - round(factor)) < 1e-9 and (not log.get("replicate") or log["replicate"] == round(factor)):
             counts = {t: n * int(round(factor)) for t, n in counts.items()}
@@ -189,6 +192,9 @@ def lammps_system(log: Dict, data: Dict, data_file: Optional[str]) -> Dict:
         "P_measured": round(main["P_mean"], 3) if main and main["P_mean"] is not None else None,
         "density_measured": round(main["density_mean"], 4) if main and main["density_mean"] else None,
         "n_stages": len(protocol) or None,
+        "n_structures": len(structures) if multi else None,
+        "structures": (", ".join(structures[:8]) + (f", … ({len(structures)} total)" if len(structures) > 8 else ""))
+        if multi else None,
         "unresolved": ", ".join(log.get("unresolved") or []) or None,
         "lammps_version": log.get("version"),
     }
@@ -212,7 +218,13 @@ def lammps_summary(s: Dict, protocol: List[Dict]) -> str:
     kind = "MD" if s.get("total_steps") else ("Energy minimization" if protocol else "LAMMPS run")
     head = f"{s['ensemble']} MD" if (kind == "MD" and len({r['ensemble'] for r in protocol if r['kind'] == 'run'}) == 1) \
         else ("MD" if kind == "MD" else kind)
-    out = f"{head} of {s['n_atoms']} atoms" if s.get("n_atoms") else head
+    if s.get("n_structures"):
+        out = f"{head} of {s['n_structures']} structures; first"
+        if s.get("data_file"):
+            out += f" ({s['data_file'].split(' (')[0].rsplit('/', 1)[-1]})"
+        out += f": {s['n_atoms']} atoms" if s.get("n_atoms") else ""
+    else:
+        out = f"{head} of {s['n_atoms']} atoms" if s.get("n_atoms") else head
     if s.get("composition"):
         out += f" ({s['composition']})"
     if s.get("box"):

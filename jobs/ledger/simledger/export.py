@@ -88,6 +88,9 @@ def render_card(conn, run_key: str) -> str:
         "n_atoms", "formula", "cores", "nodes", "job_name", "job_id", "start_time", "end_time",
         "wall_time_s", "n_subruns", "path", "last_changed", "missing"))
     system = json.loads(r["system"]) if r["system"] else {}
+    if system.get("structure_origin_run") and not conn.execute(
+            "SELECT 1 FROM runs WHERE run_key=?", (system["structure_origin_run"],)).fetchone():
+        system["structure_origin_unscanned"] = True
     for k in ("ensemble", "calc_type_text", "functional", "T_target", "P_target", "box", "density",
               "composition", "simulated_time"):
         if system.get(k) is not None:
@@ -204,7 +207,12 @@ LAMMPS_ROWS = [
     ("Potential", lambda s: s.get("pair_style") and (s["pair_style"] + (f" ({s['potential_files']})"
                                                                          if s.get("potential_files") else ""))),
     ("Starting structure", lambda s: s.get("data_file")),
-    ("Structure origin", lambda s: s.get("structure_origin") and f"{s['structure_origin']} (link target, not readable)"),
+    ("Structures read", lambda s: s.get("structures") and f"{s['n_structures']}: {s['structures']} (described: the first)"),
+    ("Structure origin", lambda s: s.get("structure_origin") and (
+        s["structure_origin"] + (
+            f" — from run {s['structure_origin_run']} (not in this ledger)" if s.get("structure_origin_unscanned") else
+            f" — from run [{s['structure_origin_run']}](../{s['structure_origin_run']}.md)"
+            if s.get("structure_origin_run") else ""))),
     ("Initial velocities", lambda s: s.get("velocity_T") is not None and f"{s['velocity_T']:g} K"),
     ("Timestep", lambda s: s.get("timestep") and f"{s['timestep']:g} {s.get('time_unit', '')}"),
     ("Length", lambda s: s.get("total_steps") and

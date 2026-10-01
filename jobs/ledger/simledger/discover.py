@@ -184,7 +184,7 @@ def calc_dirs(files: List[FileEntry]) -> Dict[str, List[FileEntry]]:
         if any(part in NON_CALC_DIRS for part in d.split("/") if part):
             continue
         names = {f.relpath.rsplit("/", 1)[-1] for f in fs}
-        if names & CALC_MARKERS:
+        if names & CALC_MARKERS or any(f.category == "lammps_log" for f in fs):
             calcs[d] = fs
     return calcs
 

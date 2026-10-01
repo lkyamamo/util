@@ -15,7 +15,7 @@ from . import PARSER_VERSION, describe, inbox, store
 from .classify import code_from_categories
 from .config import Config
 from .discover import (AnalysisDir, FileEntry, Project, RunDir, calc_dirs, find_analysis,
-                       find_projects, find_runs, group_frames, subrun_label, walk_files)
+                       find_projects, find_runs, group_frames, locate, subrun_label, walk_files)
 from .parsers import iter_lines, read_head, read_tail
 from .parsers import lammps, readme, scheduler, vasp
 
@@ -123,9 +123,39 @@ def _data_file(name: str, dirs: List[Optional[str]], by_path: Dict[str, FileEntr
     return None, broken_target
 
 
+def _remap(target: str, tree: Optional[Path]) -> Optional[Path]:
+    """Where a link target recorded before a move now lives under the scanned tree.
+
+    /scratch1/lkyamamo/<project>/runs/0177/run/final.data -> <tree>/<project>/runs/0177/run/final.data:
+    leading components are dropped until the remainder exists under tree."""
+    if tree is None:
+        return None
+    parts = [p for p in target.split("/") if p]
+    for i in range(len(parts) - 1):
+        cand = tree.joinpath(*parts[i:])
+        if os.path.lexists(cand):
+            return cand
+    return None
+
+
+def follow_moved_link(target: str, tree: Optional[Path], hops: int = 5) -> Tuple[Optional[Path], str]:
+    """(readable file, deepest target) following a chain of links that may point at moved paths."""
+    for _ in range(hops):
+        cand = _remap(target, tree) if not os.path.isfile(target) else Path(target)
+        if cand is None:
+            return None, target
+        if cand.is_file():
+            return cand, str(cand)
+        if cand.is_symlink():
+            target = os.readlink(cand)
+            continue
+        return None, target
+    return None, target
+
+
 def _lammps_description(root: Path, calc: str, logs: List[str], in_path: Optional[str],
                         in_dirs: List[Optional[str]], by_path: Dict[str, FileEntry], cfg: Config,
-                        warnings: Warnings) -> Dict:
+                        warnings: Warnings, tree: Optional[Path] = None) -> Dict:
     """System/protocol from the log (what actually ran); data file for per-element
     counts and masses; the input script only when there is no usable log."""
     log_info: Dict = {}
@@ -152,16 +182,25 @@ def _lammps_description(root: Path, calc: str, logs: List[str], in_path: Optiona
         origin = origin or target
         if data_rel:
             break
-    if not data_rel:   # starting structure unreadable: the written end state has the same atoms
+    data_path: Optional[Path] = root / data_rel if data_rel else None
+    if not data_rel and origin:   # broken link: the file may have moved with the data
+        found, origin = follow_moved_link(origin, tree)
+        if found:
+            data_path, data_rel = found, str(found)
+            data_note = "followed a broken link to its moved location"
+    if not data_path:   # starting structure unreadable: the written end state has the same atoms
         for name in log_info.get("write_data") or []:
             data_rel, _ = _data_file(name, [calc], by_path)
             if data_rel:
+                data_path = root / data_rel
                 data_note = "end state; starting data file unavailable"
                 break
-    if data_rel:
-        f = by_path[data_rel]
-        count = f.size <= cfg.max_data_bytes
-        data = lammps.parse_data_file(iter_lines(root / data_rel, cfg.max_data_bytes if count else cfg.head_bytes),
+    if data_path:
+        try:
+            count = data_path.stat().st_size <= cfg.max_data_bytes
+        except OSError:
+            count = False
+        data = lammps.parse_data_file(iter_lines(data_path, cfg.max_data_bytes if count else cfg.head_bytes),
                                       log_info.get("atom_style"), count_types=count)
     desc = describe.lammps_system(log_info, data, data_rel)
     desc["system"]["description_source"] = source
@@ -169,11 +208,15 @@ def _lammps_description(root: Path, calc: str, logs: List[str], in_path: Optiona
         desc["system"]["data_file"] = f"{data_rel} ({data_note})"
     if origin:
         desc["system"]["structure_origin"] = origin
+        loc = locate(origin, cfg)
+        here = locate(str(root), cfg)
+        if loc and not (here and (loc["project"], loc["run_id"]) == (here["project"], here["run_id"])):
+            desc["system"]["structure_origin_run"] = f"{loc['project']}/{loc['run_id']}"
     return desc
 
 
 def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config,
-               warnings: Warnings, driver: bool = False) -> Dict:
+               warnings: Warnings, driver: bool = False, tree: Optional[Path] = None) -> Dict:
     """Status, params and results for one calc dir. Paths are relative to the run dir.
 
     A driver is the top of a run whose calculations live in sub-runs (e.g. a
@@ -242,7 +285,7 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
         info["fts"].append(text[:20000])
     logs = _lammps_logs(by_path, calc)
     if logs or in_path:
-        info.update(_lammps_description(root, calc, logs, in_path, in_dirs, by_path, cfg, warnings))
+        info.update(_lammps_description(root, calc, logs, in_path, in_dirs, by_path, cfg, warnings, tree))
     if logs:
         log = logs[-1]   # a resumed run's newest log decides its status
         lg = lammps.parse_log(read_head(root / logs[0], cfg.head_bytes), read_tail(root / log, cfg.tail_bytes))
@@ -398,9 +441,9 @@ def aggregate_status(statuses: List[str], unit: str = "calcs") -> Tuple[str, str
 
 
 def parse_frames(root: Path, parent: str, frames: List[str], by_path, cfg: Config,
-                 warnings: Warnings) -> Dict:
+                 warnings: Warnings, tree: Optional[Path] = None) -> Dict:
     """One sub-run for numbered frame dirs (NEB images / path frames)."""
-    infos = [parse_calc(root, f, by_path, cfg, warnings) for f in frames]
+    infos = [parse_calc(root, f, by_path, cfg, warnings, tree=tree) for f in frames]
     info = dict(infos[0], relpath=parent)
     info["status"], info["status_evidence"] = aggregate_status([i["status"] for i in infos], "frames")
     energies = [i["results"].get("energy_sigma0") for i in infos]
@@ -422,17 +465,17 @@ def parse_frames(root: Path, parent: str, frames: List[str], by_path, cfg: Confi
     return info
 
 
-def parse_run(run: RunDir, cfg: Config, warnings: Warnings) -> Dict:
+def parse_run(run: RunDir, cfg: Config, warnings: Warnings, tree: Optional[Path] = None) -> Dict:
     by_path = {f.relpath: f for f in run.files}
     calcs = calc_dirs(run.files)
     singles, frame_groups = group_frames(calcs)
     n_units = len(singles) + len(frame_groups)
     subruns = []
     for c in singles:
-        info = parse_calc(run.path, c, by_path, cfg, warnings, driver=(c == "" and n_units > 1))
+        info = parse_calc(run.path, c, by_path, cfg, warnings, driver=(c == "" and n_units > 1), tree=tree)
         subruns.append(info)
     for parent, frames in sorted(frame_groups.items()):
-        subruns.append(parse_frames(run.path, parent, frames, by_path, cfg, warnings))
+        subruns.append(parse_frames(run.path, parent, frames, by_path, cfg, warnings, tree=tree))
     for s in subruns:
         s["label"] = (subrun_label(s["relpath"]) or "") if s["relpath"] else "(top)"
     if not subruns and not any(f.relpath.startswith("input_files/") or "/input_files/" in f.relpath
@@ -714,7 +757,7 @@ def scan(cfg: Config, root: Path, full: bool = False, log=print) -> Dict:
                 counts["unchanged"] += 1
                 continue
             run_warns: Warnings = []
-            parsed = parse_run(run, cfg, run_warns)
+            parsed = parse_run(run, cfg, run_warns, tree=root)
             write_run(conn, run, parsed, fp, prev["first_seen"] if prev else None)
             conn.executemany("INSERT INTO run_warnings VALUES (?,?,?)", [(run.run_key, p, m) for p, m in run_warns])
             warnings.extend(run_warns)

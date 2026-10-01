@@ -120,6 +120,7 @@ atom_style      atomic
 read_data       start.data
   orthogonal box = (0 0 0) to (10 10 20)
   5 atoms
+  read_data CPU = 0.0012 secs
 mass 1 15.9994  # O
 mass 2 1.00784  # H
 pair_style      usc
@@ -254,6 +255,22 @@ def build_tree(root: Path) -> None:
     w(r / "run" / "final.data", DATA)
     os.symlink("/scratch1/lkyamamo/20260825_locked/runs/0253/input_files/start.data", r / "run" / "start.data")
 
+    # 0254: killed before write_data; start.data links to 0247's final.data at its pre-move path
+    w(p / "runs" / "0247" / "run" / "final.data", DATA)
+    r = p / "runs" / "0254"
+    (r / "input_files").mkdir(parents=True)
+    os.symlink("/scratch1/lkyamamo/20260825_locked/runs/0247/run/final.data", r / "input_files" / "start.data")
+    w(r / "run" / "log.lammps", ECHO_LOG.split("Loop time")[0] + "read_restart restart.3\n", old)
+
+    # 0255: one log per structure (log_000.lammps ...), several data files read in turn
+    r = p / "runs" / "0255"
+    w(r / "input_files" / "Ortho.data", DATA)
+    w(r / "input_files" / "Meta.data", DATA.replace("5 atoms", "6 atoms") + "6 1 1 1 1\n")
+    for i, name in enumerate(("Ortho", "Meta")):
+        w(r / "run" / f"log_{i:03d}.lammps",
+          f"LAMMPS (7 Aug 2019)\nread_data ${{struc}}.data\nread_data {name}.data\n  {5 + i} atoms\n"
+          "minimize 1e-8 1e-8 1000 10000\nLoop time of 1.0 on 1 procs for 10 steps with 5 atoms\nTotal wall time: 0:00:01\n", old)
+
     # second project: a temperature sweep, and an id reused from the first project
     q = root / "finalized-modifications"
     r = q / "runs" / "0239"
@@ -377,7 +394,8 @@ class ScanTests(unittest.TestCase):
         conn = res["conn"]
         runs = self.runs(conn)
         self.assertEqual(set(runs), {"20260825_locked/0247", "20260825_locked/0250", "20260825_locked/0256",
-                                     "20260825_locked/0251", "20260825_locked/0253", "20260825_locked/0272",
+                                     "20260825_locked/0251", "20260825_locked/0253", "20260825_locked/0254",
+                                     "20260825_locked/0255", "20260825_locked/0272",
                                      "20260825_locked/0282",
                                      "20260825_locked/0286", "finalized-modifications/0239",
                                      "finalized-modifications/0247"})
@@ -416,6 +434,7 @@ class ScanTests(unittest.TestCase):
         self.assertEqual((s["n_atoms"], s["composition"], s["box"], s["T_target"], s["P_target"]),
                          (5, "O 2, H 3", "10 × 10 × 20 Å", 288.15, 1.0))
         self.assertEqual(s["description_source"], "log")
+        self.assertIsNone(s["n_structures"])
         self.assertEqual(s["simulated_time"], 0.4)            # 1600 steps x 0.00025 ps
         self.assertEqual(s["ensemble"], "NPT")                # longest stage
         self.assertAlmostEqual(s["density"], (2 * 15.9994 + 3 * 1.00784) * 1.66053907 / 2000, 4)
@@ -441,6 +460,23 @@ class ScanTests(unittest.TestCase):
         # the sweep run summarises its sub-runs
         sweep = conn.execute("SELECT summary FROM runs WHERE run_key='finalized-modifications/0239'").fetchone()[0]
         self.assertTrue(sweep.startswith("2 sub-runs over T = 288.15–300 K"), sweep)
+
+    def test_moved_links_and_multiple_structures(self):
+        import json
+        conn = scan(self.cfg, self.root)["conn"]
+        s = json.loads(conn.execute("SELECT system FROM runs WHERE run_key='20260825_locked/0254'").fetchone()[0])
+        self.assertEqual(s["composition"], "O 2, H 3")
+        self.assertTrue(s["data_file"].endswith("20260825_locked/runs/0247/run/final.data "
+                                                "(followed a broken link to its moved location)"), s["data_file"])
+        self.assertEqual(s["structure_origin_run"], "20260825_locked/0247")
+        self.assertIsNone(s["n_structures"])                    # a read_restart is not a second structure
+        r = conn.execute("SELECT status, summary, system FROM runs WHERE run_key='20260825_locked/0255'").fetchone()
+        s = json.loads(r["system"])
+        self.assertEqual(r["status"], "completed")              # log_NNN.lammps make it a calculation
+        self.assertEqual((s["n_structures"], s["n_atoms"], s["composition"]), (2, 5, "O 2, H 3"))
+        self.assertIn("2 structures; first (Ortho.data): 5 atoms", r["summary"])
+        card = self.cli_show("0254")
+        self.assertIn("from run [20260825_locked/0247](../20260825_locked/0247.md)", card)
 
     def cli_show(self, run):
         self.cli("scan", str(self.root))
