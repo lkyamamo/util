@@ -148,6 +148,7 @@ if [ "$START_CHUNK" -ne 1 ]; then
 fi
 echo "LAMMPS log: $LOG_NAME"
 
+LAMMPS_STATUS=0
 srun --mpi=pmix_v5 -n "$NTASKS" "$LMP_BIN" \
   -log "$LOG_NAME" \
   -var TARGET_TEMP  "$TARGET_TEMP" \
@@ -157,7 +158,18 @@ srun --mpi=pmix_v5 -n "$NTASKS" "$LMP_BIN" \
   -var CHARGE_H     "$CHARGE_H" \
   -var START_CHUNK  "$START_CHUNK" \
   -var RESTART_FILE "$RESTART_FILE" \
-  -in "$INPUT_FILE"
+  -in "$INPUT_FILE" || LAMMPS_STATUS=$?
+
+############################
+# Ledger: record job id, exit code and script for `simledger scan`.
+# Never fails the job.
+############################
+
+python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$SCRIPT_DIR" --exit-code "$LAMMPS_STATUS" --field temperature="$TARGET_TEMP" \
+  || echo "WARNING: ledger hook failed" >&2
+if [ "$LAMMPS_STATUS" -ne 0 ]; then
+  exit "$LAMMPS_STATUS"
+fi
 
 echo "Job ${SLURM_JOB_ID:-<interactive>} finished at $(date)"
 echo "Next: sbatch 1.calc_submit.slurm"

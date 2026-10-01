@@ -130,6 +130,6 @@ date
 # Ledger
 ############################
 
-python3 /home1/lkyamamo/util/jobs/ledger/ledger.py add-analysis --dir "$INPUT_DIR" msd \
+python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$INPUT_DIR" --type msd \
     --output "${OUT_DIR}/msd.dat" --field temperature_C="${T}" \
-    || echo "WARNING: ledger add-analysis failed" >&2
+    || echo "WARNING: ledger hook failed" >&2

@@ -46,16 +46,17 @@ module load intel-oneapi-mkl/2022.1.0
 echo "Running in $(pwd)"
 
 srun --mpi=pmix_v3 -n $SLURM_NTASKS $vsp
+VASP_STATUS=$?
 date
 echo “simulation finished **************************************”
 echo
 
 ############################
-# Ledger
+# Ledger: record job id, exit code and script for `simledger scan`.
+# Never fails the job.
 ############################
 
-python3 /home1/lkyamamo/util/jobs/ledger/ledger.py record "$RUN_DIR" \
-  --slurm-script "$0" --status completed --run-type job \
-  || echo "WARNING: ledger record failed" >&2
+python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$VASP_STATUS" \
+  || echo "WARNING: ledger hook failed" >&2
 
 exit 0

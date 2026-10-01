@@ -42,6 +42,6 @@ fi
 # Ledger
 ############################
 
-python3 /home1/lkyamamo/util/jobs/ledger/ledger.py add-analysis --dir "$DUMP_DIR" voxel_shock_density \
+python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$DUMP_DIR" --type voxel_shock_density \
     --output "$FINAL_H5" \
-    || echo "WARNING: ledger add-analysis failed" >&2
+    || echo "WARNING: ledger hook failed" >&2

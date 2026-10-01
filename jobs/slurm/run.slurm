@@ -14,12 +14,13 @@ module load openmpi
 RUN_DIR=$SLURM_SUBMIT_DIR
 
 srun --mpi=pmix_v2 -n 64 /home1/lkyamamo/executables/lammps/lmp_mpi_2019 -in ./test.lammps
+LAMMPS_STATUS=$?
 
 ############################
-# Ledger
+# Ledger: record job id, exit code and script for `simledger scan`.
+# Never fails the job.
 ############################
 
-python3 /home1/lkyamamo/util/jobs/ledger/ledger.py record "$RUN_DIR" \
-  --slurm-script "$0" --status completed --run-type job \
-  || echo "WARNING: ledger record failed" >&2
+python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$LAMMPS_STATUS" \
+  || echo "WARNING: ledger hook failed" >&2
 

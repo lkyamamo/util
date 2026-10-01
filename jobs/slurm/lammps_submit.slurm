@@ -78,6 +78,15 @@ srun --mpi=pmix_v5 -n $SLURM_NTASKS $lmp \
   "${lmp_vars[@]+"${lmp_vars[@]}"}" \
   -in in.input
 LAMMPS_STATUS=$?
+
+############################
+# Ledger: record job id, exit code and script for `simledger scan`.
+# Never fails the job.
+############################
+
+python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$LAMMPS_STATUS" \
+  || echo "WARNING: ledger hook failed" >&2
+
 date
 echo “simulation finished **************************************”
 echo
@@ -119,13 +128,5 @@ else
     --outdir "$POST_DIR" || echo "WARNING: thermodynamics analysis failed"
   date
 fi
-
-############################
-# Ledger
-############################
-
-python3 /home1/lkyamamo/util/jobs/ledger/ledger.py record "$RUN_DIR" \
-  --slurm-script "$0" --status completed --run-type job \
-  || echo "WARNING: ledger record failed" >&2
 
 exit 0

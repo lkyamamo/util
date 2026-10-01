@@ -78,11 +78,11 @@ date
 echo "bubble creation finished **************************************"
 
 ############################
-# Ledger
+# Ledger: record job id, exit code and script for `simledger scan`.
+# Never fails the job.
 ############################
 
-python3 /home1/lkyamamo/util/jobs/ledger/ledger.py record "$SCRIPT_DIR" \
-  --slurm-script "$0" --status completed --run-type setup \
-  || echo "WARNING: ledger record failed" >&2
+python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$SCRIPT_DIR" --exit-code "0" --note "create_bubble setup" \
+  || echo "WARNING: ledger hook failed" >&2
 
 exit 0
