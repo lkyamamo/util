@@ -108,6 +108,6 @@ echo "Job ${SLURM_JOB_ID} finished at $(date)"
 ############################
 
 SOURCE_DIR="$(cd "$DUMP_DIR" && pwd)"
-python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$SOURCE_DIR" --type dielectric_constant \
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$SOURCE_DIR" --type dielectric_constant \
     --output "$OUTPUT_DIR" \
     || echo "WARNING: ledger hook failed" >&2

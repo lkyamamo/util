@@ -172,10 +172,10 @@ The next scan reads the events in and matches them to runs through `<project>/ru
 This still works after the data moves, for example from `/scratch1` to `/scratch2`.
 
 ```bash
-python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$LAMMPS_STATUS" \
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$LAMMPS_STATUS" \
   || echo "WARNING: ledger hook failed" >&2
 
-python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$INPUT_DIR" --type msd \
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook analysis --dir "$INPUT_DIR" --type msd \
     --output "${OUT_DIR}/msd.dat" --field temperature_C="${T}" \
   || echo "WARNING: ledger hook failed" >&2
 ```
@@ -184,10 +184,12 @@ The scripts in `jobs/slurm/`, `analysis/` and `simulation/lammps/` already call 
 
 ## Nightly scan
 
-`crontab -e` on a login node:
+`crontab -e` on a login node. Python is given by its full path here and in every hook line:
+cron's PATH, and a job after `module purge`, only find the system Python 3.6, which is too old
+for simledger.
 
 ```
-30 2 * * * python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger scan /scratch2/lkyamamo >> /home1/lkyamamo/ledger/scan.log 2>&1
+30 2 * * * /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger scan /scratch2/lkyamamo >> /home1/lkyamamo/ledger/scan.log 2>&1
 ```
 
 A full first scan of `/scratch2/lkyamamo` (103 runs) takes about 6 minutes. Incremental rescans

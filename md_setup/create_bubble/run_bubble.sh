@@ -82,7 +82,7 @@ echo "bubble creation finished **************************************"
 # Never fails the job.
 ############################
 
-python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$SCRIPT_DIR" --exit-code "0" --note "create_bubble setup" \
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$SCRIPT_DIR" --exit-code "0" --note "create_bubble setup" \
   || echo "WARNING: ledger hook failed" >&2
 
 exit 0

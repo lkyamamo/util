@@ -57,7 +57,7 @@ echo
 # Never fails the job.
 ############################
 
-python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$VASP_STATUS" \
+/apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lkyamamo/util/jobs/ledger/bin/simledger hook run --dir "$RUN_DIR" --exit-code "$VASP_STATUS" \
   || echo "WARNING: ledger hook failed" >&2
 
 exit 0
