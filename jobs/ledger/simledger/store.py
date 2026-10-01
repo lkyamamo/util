@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -77,6 +77,18 @@ CREATE TABLE IF NOT EXISTS events (
     event_id TEXT PRIMARY KEY, kind TEXT, created TEXT, ingested TEXT, data TEXT,
     project TEXT, run_id TEXT, subrun TEXT, run_key TEXT);
 CREATE INDEX IF NOT EXISTS events_run ON events(run_key);
+
+-- SLURM job ids found for runs/sub-runs/analysis dirs (pipeline logs, *_<jobid>.out, hooks).
+CREATE TABLE IF NOT EXISTS jobs (
+    run_key TEXT, subrun TEXT, analysis_key TEXT, job_id TEXT, role TEXT, source TEXT, detail TEXT);
+CREATE INDEX IF NOT EXISTS jobs_run ON jobs(run_key);
+CREATE INDEX IF NOT EXISTS jobs_id ON jobs(job_id);
+
+-- Cached `sacct` answers (re-queried until the job reaches a final state).
+CREATE TABLE IF NOT EXISTS sacct (
+    job_id TEXT PRIMARY KEY, job_name TEXT, state TEXT, state_detail TEXT, elapsed_s INTEGER,
+    start TEXT, "end" TEXT, nodes INTEGER, ncpus INTEGER, exit_code TEXT, partition TEXT,
+    nodelist TEXT, timelimit TEXT, max_rss_kb REAL, queried TEXT);
 
 CREATE TABLE IF NOT EXISTS user_notes (
     note_id INTEGER PRIMARY KEY AUTOINCREMENT, run_key TEXT, note TEXT, tags TEXT, created TEXT);
@@ -155,6 +167,7 @@ def _text(v) -> Optional[str]:
 def clear_run(conn: sqlite3.Connection, run_key: str) -> None:
     for table in ("subruns", "params", "results", "files", "run_warnings"):
         conn.execute(f"DELETE FROM {table} WHERE run_key = ?", (run_key,))
+    conn.execute("DELETE FROM jobs WHERE run_key = ? AND source != 'hook'", (run_key,))
     if has_fts(conn):
         conn.execute("DELETE FROM fts WHERE run_key = ? AND kind != 'note'", (run_key,))
 

@@ -159,23 +159,7 @@ def render_card(conn, run_key: str) -> str:
             out.append(f"\n_{len(rows) - 300} more rows in the database._")
         out.append("")
 
-    if events:
-        out.append("## Jobs (from SLURM hooks)")
-        out.append("")
-        rows = []
-        for e in events:
-            d = json.loads(e["data"])
-            sl = d.get("slurm") or {}
-            rows.append([e["created"], e["kind"], e["subrun"] or "", sl.get("SLURM_JOB_ID"),
-                         d.get("exit_code"), sl.get("SLURM_JOB_NODELIST"),
-                         d.get("analysis_type") or d.get("note") or ""])
-        out.append(_table(["time", "kind", "sub-run", "job", "exit", "nodes", "detail"], rows))
-        last_script = next((json.loads(e["data"]).get("script_text") for e in reversed(events)
-                            if json.loads(e["data"]).get("script_text")), None)
-        if last_script:
-            out += ["", "<details><summary>Last submitted script</summary>", "", "```bash",
-                    last_script.rstrip(), "```", "", "</details>"]
-        out.append("")
+    out += _jobs_section(conn, run_key, events, [a["analysis_key"] for a in analyses])
 
     if analyses:
         out.append("## Analysis")
@@ -216,6 +200,7 @@ LAMMPS_ROWS = [
     ("Units / atom style", lambda s: " / ".join(x for x in (s.get("units"), s.get("atom_style")) if x) or None),
     ("Potential", lambda s: s.get("pair_style") and (s["pair_style"] + (f" ({s['potential_files']})"
                                                                          if s.get("potential_files") else ""))),
+    ("Potential source", lambda s: s.get("potential_source")),
     ("Starting structure", lambda s: s.get("data_file")),
     ("Structures read", lambda s: s.get("structures") and f"{s['n_structures']}: {s['structures']} (described: the first)"),
     ("Structure origin", lambda s: s.get("structure_origin") and (
@@ -304,7 +289,7 @@ NOISY = {"lammps_version", "vasp_version", "procs", "cores", "performance", "wal
 def _short_source(src: Optional[str]) -> str:
     if not src or src == "calc":
         return "calc"
-    return src.replace("analysis:", "analysis ").replace("file:", "file ")
+    return src.replace("analysis:", "analysis ").replace("file:", "file ").replace("log:", "log ")
 
 
 def _pivot_section(results, labels: List[str]) -> List[str]:
@@ -326,6 +311,42 @@ def _pivot_section(results, labels: List[str]) -> List[str]:
             if any(lab in by_key[k] for k in keys[:8])]
     headers = ["sub-run"] + [k + (f" ({units[k]})" if k in units else "") for k in keys[:8]]
     return ["## Results by sub-run", "", _table(headers, rows), ""]
+
+
+def _jobs_section(conn, run_key: str, events, analysis_keys: List[str]) -> List[str]:
+    """Every SLURM job tied to the run (pipeline logs, *_<jobid>.out, hooks) and its linked
+    analyses, with sacct's view of each when available."""
+    q = ("SELECT j.*, s.state_detail, s.start, s.elapsed_s, s.nodes, s.ncpus, s.max_rss_kb, s.exit_code, "
+         "s.job_name, s.timelimit FROM jobs j LEFT JOIN sacct s USING (job_id) ")
+    rows = conn.execute(q + "WHERE j.run_key=? ORDER BY CAST(j.job_id AS INTEGER)", (run_key,)).fetchall()
+    if analysis_keys:
+        rows += conn.execute(q + f"WHERE j.run_key IS NULL AND j.analysis_key IN ({','.join('?' * len(analysis_keys))}) "
+                             "ORDER BY CAST(j.job_id AS INTEGER)", analysis_keys).fetchall()
+    seen, table = set(), []
+    for r in rows:
+        k = (r["job_id"], r["role"])
+        if k in seen:
+            continue
+        seen.add(k)
+        where = r["subrun"] or (r["analysis_key"].split("/", 1)[1] if r["analysis_key"] else "")
+        size = f"{r['nodes']}×{r['ncpus'] // max(r['nodes'], 1)}" if r["nodes"] and r["ncpus"] else ""
+        table.append([r["job_id"], r["role"], where, r["state_detail"] or "", (r["start"] or "")[:16],
+                      human_time(r["elapsed_s"]), size,
+                      human_bytes((r["max_rss_kb"] or 0) * 1024) if r["max_rss_kb"] else "",
+                      r["exit_code"] or "", r["job_name"] or "", _short_source(r["source"])])
+    if not table and not events:
+        return []
+    out = ["## Jobs", ""]
+    if table:
+        out.append(_table(["job", "role", "sub-run / analysis", "state", "start", "elapsed", "nodes×cpus",
+                           "max RSS", "exit", "name", "found in"], table))
+    last_script = next((json.loads(e["data"]).get("script_text") for e in reversed(events)
+                        if json.loads(e["data"]).get("script_text")), None)
+    if last_script:
+        out += ["", "<details><summary>Last submitted script (from the job hook)</summary>", "", "```bash",
+                last_script.rstrip(), "```", "", "</details>"]
+    out.append("")
+    return out
 
 
 def _params_section(params) -> List[str]:

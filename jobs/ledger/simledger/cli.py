@@ -58,14 +58,16 @@ def cmd_scan(args, cfg) -> int:
     if args.dry_run:
         survey(cfg, Path(args.root))
         return 0
-    result = scan(cfg, Path(args.root), full=args.full, log=lambda m: print(m, file=sys.stderr))
+    result = scan(cfg, Path(args.root), full=args.full, log=lambda m: print(m, file=sys.stderr),
+                  use_sacct=not args.no_sacct)
     conn = result["conn"]
     if not args.no_export:
         export.export_all(conn, cfg, result)
     c = result["counts"]
     print(f"scan {result['scan_id']}: {c['projects']} projects, {c['runs']} runs "
           f"({c['new']} new, {c['changed']} changed, {c['unchanged']} unchanged, {c['missing']} missing), "
-          f"{c['analysis']} analysis dirs, {c['events']} hook events, {c['warnings']} warnings")
+          f"{c['analysis']} analysis dirs, {c['events']} hook events, {c.get('sacct', 0)} jobs from sacct, "
+          f"{c['warnings']} warnings")
     print(f"ledger: {cfg.db_path}\ncards:  {cfg.cards}" + ("" if args.no_export else f"  (report: {cfg.cards / 'last_scan.md'})"))
     return 0
 
@@ -194,6 +196,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--full", action="store_true", help="Reparse every run, not just changed ones.")
     s.add_argument("--dry-run", action="store_true", help="Survey only; write nothing.")
     s.add_argument("--no-export", action="store_true", help="Update the DB but not the Markdown cards.")
+    s.add_argument("--no-sacct", action="store_true", help="Do not query sacct for job states.")
     s.set_defaults(func=cmd_scan)
 
     s = sub.add_parser("survey", help="Describe a tree's layout; no parsing, no DB writes.")

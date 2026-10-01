@@ -58,7 +58,7 @@ SLURM = """#!/bin/bash
 #SBATCH --job-name=SiOH-Immersion
 module load gcc/13.3.0
 export lmp="/home1/lkyamamo/executables/lammps/lmp_mpi_shock_2019"
-srun --mpi=pmix -n $SLURM_NTASKS $lmp -in in.input
+srun --mpi=pmix -n $SLURM_NTASKS $lmp -var SEED 42 -var T "$TEMP" -in in.input
 """
 
 STREAM = """starting
@@ -266,6 +266,7 @@ def build_tree(root: Path) -> None:
     w(r / "input_files" / "start.data", DATA)
     w(r / "run" / "log.lammps", ECHO_LOG, old)
     os.symlink("/scratch1/gone/start.data", r / "run" / "start.data")   # broken: falls back to input_files/
+    os.symlink("/scratch1/lkyamamo/20260825_locked/potentials/20260806_OH_v14.usc", r / "input_files" / "OH.usc")
 
     r = p / "runs" / "0251"
     w(r / "input_files" / "start.data", DATA)
@@ -315,6 +316,16 @@ def build_tree(root: Path) -> None:
     w(q / "analysis" / "0239_T15C_msd" / "msd.py",
       '"""\nmsd.py — Mean Square Displacement from LAMMPS dump trajectories.\n\nDetails.\n"""\nimport sys\n')
     w(q / "analysis" / "0239_Bulk_Modulus" / "eos_summary.csv", EOS)
+    w(q / "analysis" / "0239_T15C_msd" / "logs" / "calc_5548325.out", "done\n")
+    w(p / "runs" / "vasp_0272" / "run" / "slurm-7000001.out", "running\n")
+    w(r / "submit_temperature_sweep.conf",
+      '# comment\nSTARTING_STRUCTURE="/scratch1/lkyamamo/20260825_locked/runs/0247/run/final.data"\n'
+      'POTENTIAL_FILE="/scratch1/lkyamamo/finalized-modifications/potentials/20260806_OH_v14.usc"\nNODES="1"\n')
+    w(r / "submit_temperature_sweep.log",
+      "=== submit_temperature_sweep.sh started 2026-08-20T04:55:13-0700 — sweep id: 0239 ===\n"
+      "--- Dielectric, T = 15 C (288.15 K) ---\n  production job id: 5539320\n  dielectric-calc job id: 5539321\n"
+      "--- Dielectric, T = 26.85 C (300.0 K) ---\n  production job id: 5539322\n"
+      "  dielectric aggregation job id: 5539342\n")
     w(r / "dielectric_vs_temperature.csv",
       "temperature_C,temperature_K,eps_x,eps_y,eps_z,eps_total\n15.0,288.15,95.9,82.0,85.3,87.76\n"
       "26.85,300.0,79.7,78.8,75.3,77.92\n")
@@ -548,6 +559,49 @@ class ScanTests(unittest.TestCase):
         self.assertIn("Mean Square Displacement", card)
         readme = (self.cfg.cards / "finalized-modifications" / "README.md").read_text()
         self.assertIn("eps_total 77.92–87.76 (2 values)", readme)
+
+    def test_slurm_jobs_and_pipeline(self):
+        import json
+        fake = {"5539320": {"job_id": "5539320", "state": "COMPLETED", "state_detail": "COMPLETED",
+                            "elapsed_s": 48173, "nodes": 1, "ncpus": 64, "max_rss_kb": 2621440.0, "exit_code": "0:0"},
+                "7000001": {"job_id": "7000001", "state": "TIMEOUT", "state_detail": "TIMEOUT",
+                            "elapsed_s": 3600, "nodes": 4, "ncpus": 256, "exit_code": "0:0"}}
+        from simledger import sacct as sacct_mod
+        with mock.patch.object(sacct_mod, "available", return_value=True), \
+                mock.patch.object(sacct_mod, "query", return_value=fake) as q:
+            conn = scan(self.cfg, self.root)["conn"]
+            asked = set(q.call_args[0][0])
+        self.assertTrue({"5539320", "5539321", "5539322", "5548325", "7000001"} <= asked)
+        jobs = {(r["job_id"], r["subrun"], r["role"]) for r in conn.execute(
+            "SELECT * FROM jobs WHERE run_key='finalized-modifications/0239'")}
+        self.assertEqual(jobs, {("5539320", "T15C", "production"), ("5539321", "T15C", "dielectric-calc"),
+                                ("5539322", "T30C", "production"), ("5539342", "", "dielectric aggregation")})
+        a = conn.execute("SELECT * FROM jobs WHERE analysis_key='finalized-modifications/0239_T15C_msd'").fetchone()
+        self.assertEqual((a["job_id"], a["role"]), ("5548325", "calc"))
+        # sacct's TIMEOUT decides a run whose OUTCAR just stops
+        r = conn.execute("SELECT status, status_evidence FROM runs WHERE run_key='20260825_locked/0272'").fetchone()
+        self.assertEqual((r["status"], r["status_evidence"]), ("failed", "sacct: job 7000001 TIMEOUT"))
+        # conf + -var + link origins
+        p = dict(conn.execute("SELECT key, value_text FROM params WHERE run_key='finalized-modifications/0239' "
+                              "AND source='conf:submit_temperature_sweep.conf'").fetchall())
+        self.assertEqual(p["NODES"], "1")
+        pipe = dict(conn.execute("SELECT key, value_text FROM params WHERE run_key='finalized-modifications/0239' "
+                                 "AND source='pipeline'").fetchall())
+        self.assertEqual((pipe["script"], pipe["id"]), ("submit_temperature_sweep.sh", "0239"))
+        s = json.loads(conn.execute("SELECT system FROM runs WHERE run_key='finalized-modifications/0239'").fetchone()[0])
+        self.assertEqual(s["structure_origin_run"], "20260825_locked/0247")
+        self.assertTrue(s["potential_source"].endswith("20260806_OH_v14.usc"))
+        lv = dict(conn.execute("SELECT key, value_text FROM params WHERE run_key='20260825_locked/0247' "
+                               "AND source='lmp_var'").fetchall())
+        self.assertEqual(lv, {"SEED": "42"})
+        s = json.loads(conn.execute("SELECT system FROM runs WHERE run_key='20260825_locked/0250'").fetchone()[0])
+        self.assertEqual(s["potential_source"], "/scratch1/lkyamamo/20260825_locked/potentials/20260806_OH_v14.usc")
+        self.cli("export")
+        card = self.cli("show", "0239")
+        self.assertIn("## Jobs", card)
+        self.assertIn("| 5539320 | production | T15C | COMPLETED |", card)
+        self.assertIn("2.5 GB", card)
+        self.assertIn("| 5548325 | calc | 0239_T15C_msd |", card)
 
     def cli_show(self, run):
         self.cli("scan", str(self.root))

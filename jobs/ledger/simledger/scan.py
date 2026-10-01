@@ -7,11 +7,12 @@ import itertools
 import json
 import os
 import re
+import sqlite3
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from . import PARSER_VERSION, describe, inbox, results as rx, store
+from . import PARSER_VERSION, describe, inbox, results as rx, sacct, store
 from .classify import code_from_categories
 from .config import Config
 from .discover import (AnalysisDir, FileEntry, Project, RunDir, calc_dirs, find_analysis,
@@ -81,16 +82,20 @@ def _lammps_input(by_path, dirs) -> Optional[str]:
     return None
 
 
-def _job_script(by_path, dirs) -> Optional[str]:
-    for d in dirs:
+def _job_scripts(by_path, dirs) -> List[str]:
+    """Every *.slurm/*.pbs/*.sbatch in dirs, nearest dir first (duplicates by name dropped)."""
+    out: List[str] = []
+    seen = set()
+    for d in dict.fromkeys(dirs):
         if d is None:
             continue
-        cands = sorted(p for p, f in by_path.items()
-                       if _dir(p) == d and f.category == "job_script" and not f.broken
-                       and _name(f).endswith((".slurm", ".pbs", ".sbatch")))
-        if cands:
-            return cands[0]
-    return None
+        for p in sorted(p for p, f in by_path.items()
+                        if _dir(p) == d and f.category == "job_script" and not f.broken
+                        and _name(f).endswith((".slurm", ".pbs", ".sbatch"))):
+            if _name(by_path[p]) not in seen:
+                seen.add(_name(by_path[p]))
+                out.append(p)
+    return out
 
 
 def _lammps_logs(by_path: Dict[str, FileEntry], calc: str) -> List[str]:
@@ -104,23 +109,38 @@ def _lammps_logs(by_path: Dict[str, FileEntry], calc: str) -> List[str]:
     return sorted(logs, key=order)
 
 
-def _data_file(name: str, dirs: List[Optional[str]], by_path: Dict[str, FileEntry]) -> Tuple[Optional[str], Optional[str]]:
-    """(readable relpath, target of a broken link with that name) for a read_data/write_data file.
-
-    The target records where a starting structure came from (often another run)."""
+def _candidates(name: str, dirs: List[Optional[str]], by_path: Dict[str, FileEntry]) -> List[FileEntry]:
+    """Inventory entries a command's file name can refer to, nearest dir first, input_files/ last."""
     base = name.rsplit("/", 1)[-1]
-    broken_target = None
+    out = []
     for d in dirs + ["input_files"]:
         if d is None:
             continue
         for cand in (_join(d, name), _join(d, base)):
             f = by_path.get(os.path.normpath(cand).replace(os.sep, "/"))
-            if f and not f.broken:
-                return f.relpath, broken_target
-            if f and f.broken:
-                # keep the last one: run/x -> input_files/x -> <real origin>, so input_files/ wins
-                broken_target = f.symlink
+            if f and f not in out:
+                out.append(f)
+    return out
+
+
+def _data_file(name: str, dirs: List[Optional[str]], by_path: Dict[str, FileEntry]) -> Tuple[Optional[str], Optional[str]]:
+    """(readable relpath, target of a broken link with that name) for a read_data/write_data file.
+
+    The target records where a starting structure came from (often another run)."""
+    broken_target = None
+    for f in _candidates(name, dirs, by_path):
+        if not f.broken:
+            return f.relpath, broken_target
+        # keep the last one: run/x -> input_files/x -> <real origin>, so input_files/ wins
+        broken_target = f.symlink
     return None, broken_target
+
+
+def _link_origin(name: str, dirs: List[Optional[str]], by_path: Dict[str, FileEntry]) -> Optional[str]:
+    """Where a linked-in file (e.g. OH.usc -> potentials/20260802_OH_B_mod_v11.usc) really comes from:
+    the last link in the chain run/x -> input_files/x -> <source>."""
+    targets = [f.symlink for f in _candidates(name, dirs, by_path) if f.symlink]
+    return targets[-1] if targets else None
 
 
 def _remap(target: str, tree: Optional[Path]) -> Optional[Path]:
@@ -204,6 +224,13 @@ def _lammps_description(root: Path, calc: str, logs: List[str], in_path: Optiona
                                       log_info.get("atom_style"), count_types=count)
     desc = describe.lammps_system(log_info, data, data_rel)
     desc["system"]["description_source"] = source
+    pot_sources = []
+    for pot in (desc["system"].get("potential_files") or "").split(", "):
+        target = _link_origin(pot, [calc] + in_dirs, by_path) if pot else None
+        if target:
+            pot_sources.append(target)
+    if pot_sources:
+        desc["system"]["potential_source"] = ", ".join(pot_sources)
     if data_note:
         desc["system"]["data_file"] = f"{data_rel} ({data_note})"
     if origin:
@@ -236,17 +263,27 @@ def parse_calc(root: Path, calc: str, by_path: Dict[str, FileEntry], cfg: Config
     now = time.time()
 
     # --- scheduler -------------------------------------------------------
-    script = _job_script(by_path, [calc, _dir(calc), ""])
-    if script:
-        text = read_head(root / script, cfg.max_text_bytes)
-        sched = scheduler.parse_script(text)
-        params["slurm"] = dict(sched["directives"])
-        if sched["modules"]:
-            params["slurm"]["modules"] = " ".join(sched["modules"])
-        for k, v in sched["executables"].items():
-            params["slurm"][f"exe:{k}"] = v
-        info["script"] = script
-        info["job_name"] = sched["directives"].get("job-name")
+    scripts = _job_scripts(by_path, [calc, _dir(calc), ""])
+    if scripts:
+        launches: List[str] = []
+        for i, script in enumerate(scripts):
+            sched = scheduler.parse_script(read_head(root / script, cfg.max_text_bytes))
+            launches += sched["launch"]
+            if i == 0:   # the calc dir's own script describes this calc
+                params["slurm"] = dict(sched["directives"])
+                if sched["modules"]:
+                    params["slurm"]["modules"] = " ".join(sched["modules"])
+                for k, v in sched["executables"].items():
+                    params["slurm"][f"exe:{k}"] = v
+                if sched["launch"]:
+                    params["slurm"]["launch"] = sched["launch"][0][:300]
+                info["script"] = script
+                info["job_name"] = sched["directives"].get("job-name")
+        if len(scripts) > 1:
+            params["slurm"]["scripts"] = ", ".join(scripts)
+        lv = scheduler.launch_vars(launches)
+        if lv:
+            params["lmp_var"] = lv
     stdout_failures: List[str] = []
     if "STREAM_OUTPUT" in names:
         p = root / _join(calc, "STREAM_OUTPUT")
@@ -524,6 +561,57 @@ def run_file_results(run: RunDir, subruns: List[Dict], warnings: Warnings, limit
     return found, texts
 
 
+NON_SIM_ROLES = ("calc", "aggregat", "analysis", "distribution", "collect", "plot")
+
+
+def run_pipeline(run: RunDir, subruns: List[Dict], cfg: Config) -> Dict:
+    """Pipeline settings (.conf), pipeline logs and every job id the run's files mention.
+
+    Jobs are mapped to sub-runs by the temperature of their log section, by a
+    `cascade` role, or by the directory of a *_<jobid>.out file."""
+    subs = [(s["label"], s["relpath"], (s.get("system") or {}).get("T_target")) for s in subruns]
+    main = _main_label(subruns)
+    params: Dict[str, Dict] = {}
+    jobs: List[Tuple[str, str, str, str, Optional[str]]] = []   # (subrun, job_id, role, source, detail)
+    texts: List[str] = []
+    for f in run.files:
+        if f.broken:
+            continue
+        depth, name, path = f.relpath.count("/"), _name(f), run.path / f.relpath
+        if name.endswith(".conf") and depth <= 1 and f.size <= 1024 * 1024:
+            conf = scheduler.parse_conf(read_head(path, 1024 * 1024))
+            if conf:
+                params[f"conf:{f.relpath}"] = conf
+        elif f.category == "log" and depth <= 1 and f.size <= cfg.max_log_bytes:
+            pl = scheduler.parse_pipeline_log(iter_lines(path, cfg.max_log_bytes))
+            if pl["script"]:
+                params.setdefault("pipeline", {}).update(
+                    {"script": pl["script"], "started": pl["started"], "id": pl["sweep_id"]})
+            if pl["settings"]:
+                params.setdefault("pipeline", {}).update(pl["settings"])
+            for j in pl["jobs"]:
+                if "aggregat" in j["role"]:   # combines every temperature: belongs to the whole run
+                    label = ""
+                elif j["T"] is not None:
+                    label, _ = target_subrun(rx.Value("", None, T=j["T"]), None, subs, main)
+                elif j["role"] == "cascade":
+                    label = next((s[0] for s in subs if s[0] == "cascade"), "")
+                    label = "" if label == main else label
+                else:
+                    label = ""
+                jobs.append((label, j["job_id"], j["role"], f"log:{f.relpath}", j["section"]))
+        jid = scheduler.job_id_from_filename(name)
+        if jid:
+            role = re.sub(r"[_.-]?\d{6,9}\.(out|err|log)$", "", name) or "slurm"
+            label, _ = target_subrun(rx.Value("", None), _dir(f.relpath), subs, main)
+            jobs.append((label, jid, role, f"file:{f.relpath}", None))
+    for conf in params.values():
+        for k in ("INPUT_SCRIPT", "STARTING_STRUCTURE", "POTENTIAL_FILE"):
+            if conf.get(k):
+                texts.append(conf[k])
+    return {"params": params, "jobs": jobs, "texts": texts}
+
+
 def parse_run(run: RunDir, cfg: Config, warnings: Warnings, tree: Optional[Path] = None) -> Dict:
     by_path = {f.relpath: f for f in run.files}
     calcs = calc_dirs(run.files)
@@ -590,13 +678,28 @@ def parse_run(run: RunDir, cfg: Config, warnings: Warnings, tree: Optional[Path]
         "n_files": len(run.files), "total_bytes": sum(f.size for f in run.files),
         "readme": readme_text.strip() or None,
         "summary": summary,
-        "system": json.dumps(ref.get("system")) if ref.get("system") else None,
     }
     file_results, result_texts = run_file_results(run, subruns, warnings)
+    pipe = run_pipeline(run, subruns, cfg)
+    result_texts += pipe["texts"]
+    # the pipeline conf names the starting structure and potential version, even when links are gone
+    sysd = ref.get("system")
+    for conf in pipe["params"].values():
+        if sysd is None:
+            break
+        if conf.get("STARTING_STRUCTURE") and not sysd.get("structure_origin"):
+            sysd["structure_origin"] = conf["STARTING_STRUCTURE"]
+            loc = locate(conf["STARTING_STRUCTURE"], cfg)
+            if loc and (loc["project"], loc["run_id"]) != (run.project, run.run_id):
+                sysd["structure_origin_run"] = f"{loc['project']}/{loc['run_id']}"
+        if conf.get("POTENTIAL_FILE") and not sysd.get("potential_source"):
+            sysd["potential_source"] = conf["POTENTIAL_FILE"]
     fts = " ".join(filter(None, [run.label, run.group_path, run.project, readme_text, summary, *result_texts,
                                  row["job_name"], f"broken_symlinks={broken}" if broken else None]))
     fts += " " + " ".join(t for s in subruns for t in s["fts"])
-    return {"row": row, "subruns": subruns, "fts": fts, "file_results": file_results}
+    row["system"] = json.dumps(ref.get("system")) if ref.get("system") else None
+    return {"row": row, "subruns": subruns, "fts": fts, "file_results": file_results,
+            "pipeline_params": pipe["params"], "jobs": pipe["jobs"]}
 
 
 def _int(v) -> Optional[int]:
@@ -624,6 +727,11 @@ def write_run(conn, run: RunDir, parsed: Dict, fp: str, first_seen: Optional[str
         for source, items in s["params"].items():
             store.add_params(conn, run.run_key, sub, source, items)
         store.add_results(conn, run.run_key, sub, s["results"], s["units"])
+    for source, items in parsed.get("pipeline_params", {}).items():
+        store.add_params(conn, run.run_key, "", source, items)
+    conn.executemany("INSERT INTO jobs (run_key, subrun, analysis_key, job_id, role, source, detail) "
+                     "VALUES (?,?,NULL,?,?,?,?)",
+                     [(run.run_key, sub, jid, role, src, det) for sub, jid, role, src, det in parsed.get("jobs", [])])
     for label, v, source, note in parsed.get("file_results", []):
         store.add_results(conn, run.run_key, label, {v.key: v.value}, {v.key: v.unit}, source, {v.key: note})
     conn.executemany("INSERT INTO files VALUES (?,?,?,?,?,?,?)",
@@ -663,11 +771,17 @@ def describe_analysis(conn, key: str, a: AnalysisDir, cfg: Config, warnings: War
     The description is each top-level script's docstring summary; job scripts
     and small command files (e.g. silanol-run.txt) add searchable text."""
     conn.execute("DELETE FROM analysis_results WHERE analysis_key=?", (key,))
+    conn.execute("DELETE FROM jobs WHERE analysis_key=? AND source != 'hook'", (key,))
     descs, texts = [], []
     for f in a.files[:2000]:
         if f.broken:
             continue
         name, depth, path = _name(f), f.relpath.count("/"), a.path / f.relpath
+        jid = scheduler.job_id_from_filename(name)
+        if jid:
+            role = re.sub(r"[_.-]?\d{6,9}\.(out|err|log)$", "", name) or "slurm"
+            conn.execute("INSERT INTO jobs (run_key, subrun, analysis_key, job_id, role, source) "
+                         "VALUES (NULL, NULL, ?, ?, ?, ?)", (key, jid, role, f"file:{f.relpath}"))
         if name.endswith(".py") and depth <= 1 and f.size <= cfg.max_text_bytes:
             d = rx.script_description(read_head(path, 16384))
             if d:
@@ -781,6 +895,7 @@ def apply_events(conn) -> None:
     """Re-derive everything that comes from hook events (idempotent)."""
     inbox.link_events(conn)
     conn.execute("DELETE FROM params WHERE source IN ('user', 'hook')")
+    conn.execute("DELETE FROM jobs WHERE source = 'hook'")
     conn.execute("DELETE FROM analysis_runs WHERE source = 'event'")
     for ev in conn.execute("SELECT * FROM events WHERE run_key IS NOT NULL ORDER BY created"):
         data = json.loads(ev["data"])
@@ -794,6 +909,9 @@ def apply_events(conn) -> None:
                 "partition": slurm.get("SLURM_JOB_PARTITION"), "exit_code": data.get("exit_code")})
             if slurm.get("SLURM_JOB_ID"):
                 conn.execute("UPDATE runs SET job_id=? WHERE run_key=?", (slurm["SLURM_JOB_ID"], rk))
+                conn.execute("INSERT INTO jobs (run_key, subrun, analysis_key, job_id, role, source, detail) "
+                             "VALUES (?,?,NULL,?,?,'hook',?)",
+                             (rk, sub, slurm["SLURM_JOB_ID"], "run", f"exit {data.get('exit_code')}"))
             code = data.get("exit_code")
             if code not in (None, 0, "0"):
                 ev_note = f"hook: job {slurm.get('SLURM_JOB_ID', '?')} exited {code}"
@@ -805,6 +923,73 @@ def apply_events(conn) -> None:
         elif ev["kind"] == "analysis":
             akey = _analysis_key_for(conn, data.get("output")) or f"event:{data.get('analysis_type')}:{ev['event_id']}"
             conn.execute("INSERT INTO analysis_runs VALUES (?,?,?,'event')", (akey, rk, sub or None))
+            if slurm.get("SLURM_JOB_ID"):
+                conn.execute("INSERT INTO jobs (run_key, subrun, analysis_key, job_id, role, source) "
+                             "VALUES (?,?,?,?,?,'hook')",
+                             (rk, sub, akey, slurm["SLURM_JOB_ID"], data.get("analysis_type") or "analysis"))
+
+
+def update_sacct(conn, log=print) -> int:
+    """Ask sacct about job ids not cached yet or not finished; returns how many were updated."""
+    if not sacct.available():
+        return 0
+    cached = {r["job_id"]: r["state"] for r in conn.execute("SELECT job_id, state FROM sacct")}
+    ids = [r[0] for r in conn.execute("SELECT DISTINCT job_id FROM jobs")
+           if sacct.needs_query(cached.get(r[0]))]
+    if not ids:
+        return 0
+    got = sacct.query(ids)
+    for jid, rec in got.items():
+        store.upsert_row(conn, "sacct", ["job_id"], {**{k: rec.get(k) for k in (
+            "job_id", "job_name", "state", "state_detail", "elapsed_s", "start", "end", "nodes", "ncpus",
+            "exit_code", "partition", "nodelist", "timelimit", "max_rss_kb")}, "queried": store.now()})
+    return len(got)
+
+
+SACCT_FAILED = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE"}
+
+
+def apply_job_states(conn) -> None:
+    """Where the files cannot tell (no end marker), let the scheduler's verdict decide.
+
+    Uses the newest simulation job (not analysis jobs) of each run/sub-run."""
+    rows = conn.execute(
+        "SELECT j.run_key, COALESCE(j.subrun, '') sub, j.job_id, j.role, s.state, s.state_detail "
+        "FROM jobs j JOIN sacct s USING (job_id) WHERE j.run_key IS NOT NULL").fetchall()
+    newest: Dict[Tuple[str, str], sqlite3.Row] = {}
+    for r in rows:
+        if any(x in (r["role"] or "") for x in NON_SIM_ROLES):
+            continue
+        k = (r["run_key"], r["sub"])
+        if k not in newest or int(r["job_id"]) > int(newest[k]["job_id"]):
+            newest[k] = r
+    touched = set()
+    for (rk, sub), r in newest.items():
+        run_subs = conn.execute("SELECT label, relpath, status FROM subruns WHERE run_key=?", (rk,)).fetchall()
+        real = [s for s in run_subs if s["label"] != "(top)"]
+        main = next((s for s in run_subs if s["relpath"] == "run"), real[0] if len(real) == 1 else None)
+        target = main if sub == "" else next((s for s in run_subs if s["label"] == sub), None)
+        status = target["status"] if target else conn.execute(
+            "SELECT status FROM runs WHERE run_key=?", (rk,)).fetchone()[0]
+        if status not in ("incomplete", "unknown", "not_started", "running"):
+            continue
+        state = r["state"]
+        new = ("failed" if state in SACCT_FAILED else "running" if state == "RUNNING" else
+               "pending" if state == "PENDING" else None)
+        if new is None or new == status:
+            continue
+        evidence = f"sacct: job {r['job_id']} {r['state_detail']}"
+        if target:
+            conn.execute("UPDATE subruns SET status=?, status_evidence=? WHERE run_key=? AND label=?",
+                         (new, evidence, rk, target["label"]))
+        if not target or target is main or len(real) <= 1:
+            conn.execute("UPDATE runs SET status=?, status_evidence=? WHERE run_key=?", (new, evidence, rk))
+        else:
+            touched.add(rk)
+    for rk in touched:   # re-aggregate multi-sub-run runs
+        sts = [s[0] for s in conn.execute("SELECT status FROM subruns WHERE run_key=? AND label != '(top)'", (rk,))]
+        status, evidence = aggregate_status(sts)
+        conn.execute("UPDATE runs SET status=?, status_evidence=? WHERE run_key=?", (status, evidence, rk))
 
 
 def _analysis_key_for(conn, output: Optional[str]) -> Optional[str]:
@@ -824,7 +1009,7 @@ def _analysis_key_for(conn, output: Optional[str]) -> Optional[str]:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def scan(cfg: Config, root: Path, full: bool = False, log=print) -> Dict:
+def scan(cfg: Config, root: Path, full: bool = False, log=print, use_sacct: bool = True) -> Dict:
     root = root.resolve()
     home = cfg.home.resolve()
     if home == root or root in home.parents:
@@ -927,6 +1112,9 @@ def scan(cfg: Config, root: Path, full: bool = False, log=print) -> Dict:
 
     apply_events(conn)
     materialize_analysis_results(conn)
+    if use_sacct:
+        counts["sacct"] = update_sacct(conn, log)
+    apply_job_states(conn)
     unlinked = conn.execute("SELECT COUNT(*) FROM events WHERE run_key IS NULL").fetchone()[0]
     if unlinked:
         warnings.append(("inbox", f"{unlinked} hook events not matched to any run yet"))

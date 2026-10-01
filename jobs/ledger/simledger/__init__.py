@@ -16,4 +16,4 @@ with ``simledger hook``; the next scan ingests them.
 __version__ = "0.1.0"
 
 # Bump whenever parsing changes in a way that should refresh stored runs.
-PARSER_VERSION = 3
+PARSER_VERSION = 4

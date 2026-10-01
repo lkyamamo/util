@@ -105,6 +105,28 @@ A sweep's card has a **Results by sub-run** table (ε, D, ... per temperature). 
 summary shows each run's headline result, as a range across its sub-runs where there is one.
 Search works on all of these values, e.g. `simledger search "eps_total>80"` or `"D_total>4"`.
 
+## SLURM jobs
+
+For each run and sub-run the ledger reads:
+
+- **Job scripts:** every `*.slurm`/`*.pbs`/`*.sbatch`, nearest first. The calculation's own
+  script supplies the `#SBATCH` settings, modules, the executable, the `srun` line and any
+  literal `-var NAME value` (searchable as `lmp_var.NAME`).
+- **Pipeline `.conf` files** (bash `KEY=value`): stored as `conf:<file>` parameters.
+  `STARTING_STRUCTURE` and `POTENTIAL_FILE` fill in the card's structure and potential origin
+  when the links themselves are gone.
+- **Pipeline logs** (`submit_*.log`): the script, start time and sweep id, plus every
+  `<role> job id: N` and `Submitted batch job N`. Each job is placed in its sub-run by the
+  temperature of its log section (`--- Dielectric, T = 15 C (288.15 K) ---`).
+- **Job ids in file names** (`slurm-N.out`, `calc_N.out`), in run and analysis folders.
+- **Hooks:** the job id and exit code of every hooked job.
+
+`scan` then asks `sacct` (one batched, read-only call) for every job id it hasn't seen finish,
+and caches the answer. The card's **Jobs** table shows each job's role, sub-run, state, start,
+elapsed time, nodes×cpus, peak memory and exit code. Where a calculation's files have no end
+marker, the scheduler's verdict sets its status (e.g. `sacct: job 7000001 TIMEOUT`).
+`--no-sacct` skips the query; off the cluster it is skipped automatically.
+
 ## Expected layout
 
 ```
