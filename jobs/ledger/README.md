@@ -201,8 +201,36 @@ take about 10 seconds.
 `max_walk_depth`, `tail_bytes`, `running_window_s` and the other fields in
 [config.py](simledger/config.py).
 
-## Tests
+## Verification
 
 ```bash
 cd jobs/ledger && python3 -m unittest discover -s tests -v
 ```
+
+`tests/test_simledger.py` is the whole suite: it builds a synthetic tree shaped
+like `/scratch2/lkyamamo` (LAMMPS and VASP runs, sweeps, analysis folders, SLURM
+scripts and pipeline logs) in a temporary directory, scans it, and checks what
+the ledger recorded. Standard library only, like the package. It exercises
+every module through the CLI and `scan`: `cli.py`, `__main__.py`, `config.py`,
+`discover.py`, `classify.py`, `scan.py`, `store.py`, `inbox.py`, `results.py`,
+`describe.py`, `export.py`, `search.py`, `survey.py`, `sacct.py`, `__init__.py`,
+and `parsers/` (`__init__.py`, `lammps.py`, `vasp.py`, `scheduler.py`, `readme.py`).
+
+| Area | Tests | Method |
+|---|---|---|
+| Parsers | `test_lammps_input_and_log`, `test_vasp`, `test_scheduler`, `test_analysis_names` | known answer: hand-written inputs with known parameters |
+| Discovery and status | `test_discovery_and_status`, `test_frames_grouped`, `test_locate_survives_moved_data`, `test_moved_links_and_multiple_structures` | known answer on the synthetic tree |
+| System and results | `test_system_description_from_log`, `test_analysis_results`, `test_analysis_links`, `test_files_symlinks_and_vasp_results`, `test_slurm_jobs_and_pipeline` | known answer, including derived values (bulk moduli, RDF peaks) worked out by hand |
+| Safety | `test_scan_is_read_only` (tree unchanged byte for byte), `test_refuses_home_inside_tree`, `test_potcar_never_stored` | invariant |
+| Incremental state | `test_incremental_rescan` (an unchanged run is not reparsed; a changed one is), `test_hook_events_and_notes`, `test_search_and_cards` | invariant and known answer |
+
+- **Independent implementation:** none in this suite. Plan 2 cross-checks
+  `analysis/thermo/thermodynamics.py` and `parse_oszicar.py` against these parsers.
+- **Regression:** none. The synthetic tree is the fixture, so every expected
+  value is written in the test rather than pinned from a real scan.
+
+### Last verified
+
+<!-- Rewritten by tools/repo_check.py on every run that verifies this folder; never appended. -->
+- Fast: not run yet
+- Slow: none defined

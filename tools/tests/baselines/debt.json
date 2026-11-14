@@ -1,0 +1,1367 @@
+[
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_h--o--h.out",
+  "1.1 MB exceeds the 1 MB limit"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_h--o--h.out",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_h--o--h.out",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_h-o-h.out",
+  "1.1 MB exceeds the 1 MB limit"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_h-o-h.out",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_h-o-h.out",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_o-h--o.out",
+  "1.1 MB exceeds the 1 MB limit"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_o-h--o.out",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/a_o-h--o.out",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/stat_mod.mod",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/distributions/water_kenichi_GrBa/stat/voxels_mod.mod",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/dynamics/src/bkup/corr.cpp",
+  "backup copy; delete it, git history keeps old versions"
+ ],
+ [
+  "artifacts",
+  "analysis/dynamics/src/bkup/msd.cpp",
+  "backup copy; delete it, git history keeps old versions"
+ ],
+ [
+  "artifacts",
+  "analysis/dynamics/src/stat/.Makefile.swp",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/electronic/Participation_numbers-v2/0_dosg-region_bandids",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/electronic/Participation_numbers-v2/1-3steps/1_contribution",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/electronic/Participation_numbers-v2/1-3steps/2_Participation_number",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/electronic/Participation_numbers-v2/1-3steps/3_sort_contribution",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/electronic/params.mod",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/kenichi_codes/msd",
+  "compiled binary; commit the source and build it"
+ ],
+ [
+  "artifacts",
+  "analysis/shock/test_output/h5/output_1000.h5",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/shock/test_output/h5/output_2000.h5",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "artifacts",
+  "analysis/shock/test_output/trajectory.h5",
+  "matches .gitignore (force-added?); generated output stays out of git"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/kenichi_GrNrB/2.xyz_split.sh",
+  "identical to analysis/distributions/water_kenichi_GrBa/2.xyz_split.sh, analysis/dynamics/2.xyz_split.sh; share one copy instead"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/kenichi_GrNrB/stat/voxels.f90",
+  "identical to analysis/distributions/water_kenichi_GrBa/stat/voxels.f90, analysis/dynamics/src/stat/voxels.f90; share one copy instead"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/2.xyz_split.sh",
+  "identical to analysis/distributions/kenichi_GrNrB/2.xyz_split.sh, analysis/dynamics/2.xyz_split.sh; share one copy instead"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/stat/voxels.f90",
+  "identical to analysis/distributions/kenichi_GrNrB/stat/voxels.f90, analysis/dynamics/src/stat/voxels.f90; share one copy instead"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/2.xyz_split.sh",
+  "identical to analysis/distributions/kenichi_GrNrB/2.xyz_split.sh, analysis/distributions/water_kenichi_GrBa/2.xyz_split.sh; share one copy instead"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/src/stat/voxels.f90",
+  "identical to analysis/distributions/kenichi_GrNrB/stat/voxels.f90, analysis/distributions/water_kenichi_GrBa/stat/voxels.f90; share one copy instead"
+ ],
+ [
+  "duplicates",
+  "simulation/lammps/20260617_dielectric_multi_traj/2.dipole_std.py",
+  "identical to simulation/lammps/20260929_dielectric_chunked/3.dipole_std.py; share one copy instead"
+ ],
+ [
+  "duplicates",
+  "simulation/lammps/20260929_dielectric_chunked/3.dipole_std.py",
+  "identical to simulation/lammps/20260617_dielectric_multi_traj/2.dipole_std.py; share one copy instead"
+ ],
+ [
+  "last-verified",
+  "NAS/legacy/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "analysis/distributions/lammps_GrBa_ovito/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "analysis/dynamics/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "jobs/pipeline/plotting/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "md_setup/create_bubble/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "simulation/lammps/20260929_dielectric_chunked/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "simulation/lammps/msd_code/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "last-verified",
+  "visualization/README.md",
+  "needs exactly one '### Last verified' block under ## Verification (found 0)"
+ ],
+ [
+  "readme-verification",
+  "NAS/legacy/README.md",
+  "no ## Verification section (documents NAS/legacy/config.sh)"
+ ],
+ [
+  "readme-verification",
+  "NAS/legacy/README.md",
+  "no ## Verification section (documents NAS/legacy/create_manifest.sh)"
+ ],
+ [
+  "readme-verification",
+  "NAS/legacy/README.md",
+  "no ## Verification section (documents NAS/legacy/process_large_directories.sh)"
+ ],
+ [
+  "readme-verification",
+  "NAS/legacy/README.md",
+  "no ## Verification section (documents NAS/legacy/rsync_list.sh)"
+ ],
+ [
+  "readme-verification",
+  "NAS/legacy/README.md",
+  "no ## Verification section (documents NAS/legacy/upload_directory.sh)"
+ ],
+ [
+  "readme-verification",
+  "NAS/pipeline/nas.sh",
+  "no README documents it; add NAS/pipeline/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/bad_freud.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/distribution_run.sh)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/dsf.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/msd.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/rdf_freud.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/sampling_check.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/vdos.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/20260608_GrNrBaSqw/README.md",
+  "no ## Verification section (documents analysis/distributions/20260608_GrNrBaSqw/vdos_dynmat.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/kenichi_GrNrB/1.robust_lammps_to_input_xyz.py",
+  "no README documents it; add analysis/distributions/kenichi_GrNrB/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/kenichi_GrNrB/2.xyz_split.sh",
+  "no README documents it; add analysis/distributions/kenichi_GrNrB/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/kenichi_GrNrB/3.getGrNrBaSq.sh",
+  "no README documents it; add analysis/distributions/kenichi_GrNrB/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/kenichi_GrNrB/stat/excutable.sh",
+  "no README documents it; add analysis/distributions/kenichi_GrNrB/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/kenichi_GrNrB/stat/main.f90",
+  "no README documents it; add analysis/distributions/kenichi_GrNrB/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/kenichi_GrNrB/stat/stat.f90",
+  "no README documents it; add analysis/distributions/kenichi_GrNrB/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/kenichi_GrNrB/stat/voxels.f90",
+  "no README documents it; add analysis/distributions/kenichi_GrNrB/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/lammps_GrBa_ovito/README.md",
+  "no ## Verification section (documents analysis/distributions/lammps_GrBa_ovito/1.ovito_GrBa.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/lammps_GrBa_ovito/README.md",
+  "no ## Verification section (documents analysis/distributions/lammps_GrBa_ovito/test.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/water_kenichi_GrBa/1.robust_lammps_to_input_xyz.py",
+  "no README documents it; add analysis/distributions/water_kenichi_GrBa/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/water_kenichi_GrBa/2.xyz_split.sh",
+  "no README documents it; add analysis/distributions/water_kenichi_GrBa/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/water_kenichi_GrBa/3.run_full.sh",
+  "no README documents it; add analysis/distributions/water_kenichi_GrBa/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/water_kenichi_GrBa/stat/excutable.sh",
+  "no README documents it; add analysis/distributions/water_kenichi_GrBa/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/water_kenichi_GrBa/stat/main.f90",
+  "no README documents it; add analysis/distributions/water_kenichi_GrBa/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/water_kenichi_GrBa/stat/stat.f90",
+  "no README documents it; add analysis/distributions/water_kenichi_GrBa/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/distributions/water_kenichi_GrBa/stat/voxels.f90",
+  "no README documents it; add analysis/distributions/water_kenichi_GrBa/stat/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/1.robust_lammps_to_input_xyz.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/2.xyz_split.sh)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/lammps_custom_to_input_xyz.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/run.sh)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/bkup/corr.cpp)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/bkup/msd.cpp)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/corr.cpp)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/histogram.cpp)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/msd.cpp)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/nbr.cpp)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/stat/main.f90)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/stat/plot.py)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/stat/stat.f90)"
+ ],
+ [
+  "readme-verification",
+  "analysis/dynamics/README.md",
+  "no ## Verification section (documents analysis/dynamics/src/stat/voxels.f90)"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/Participation_numbers-v2/0_dosg-region_bandids.f90",
+  "no README documents it; add analysis/electronic/Participation_numbers-v2/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/Participation_numbers-v2/1-3steps/1_contribution.f90",
+  "no README documents it; add analysis/electronic/Participation_numbers-v2/1-3steps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/Participation_numbers-v2/1-3steps/2_Participation_number.f90",
+  "no README documents it; add analysis/electronic/Participation_numbers-v2/1-3steps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/Participation_numbers-v2/1-3steps/3_sort_contribution.f90",
+  "no README documents it; add analysis/electronic/Participation_numbers-v2/1-3steps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/Participation_numbers-v2/participation_number_sort.py",
+  "no README documents it; add analysis/electronic/Participation_numbers-v2/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/eig_exocc.f",
+  "no README documents it; add analysis/electronic/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/gcube.f90",
+  "no README documents it; add analysis/electronic/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/pick_config.f",
+  "no README documents it; add analysis/electronic/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/electronic/toPDBcell.f",
+  "no README documents it; add analysis/electronic/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/energetics/plot_min_pe.py",
+  "no README documents it; add analysis/energetics/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/energetics/plot_pe.py",
+  "no README documents it; add analysis/energetics/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/energetics/plot_sp_pe.py",
+  "no README documents it; add analysis/energetics/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/energetics/plot_vasp_de.py",
+  "no README documents it; add analysis/energetics/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/general/box_size.py",
+  "no README documents it; add analysis/general/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/general/box_size_from_data.py",
+  "no README documents it; add analysis/general/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/kenichi_codes/dosg-region3.f90",
+  "no README documents it; add analysis/kenichi_codes/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/kenichi_codes/msd.cpp",
+  "no README documents it; add analysis/kenichi_codes/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/kenichi_codes/test_msd_dos_input.cpp",
+  "no README documents it; add analysis/kenichi_codes/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/kenichi_codes/velocity_autocorrelation.cpp",
+  "no README documents it; add analysis/kenichi_codes/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/main.py",
+  "no README documents it; add analysis/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/structure/count_crossing_bonds.py",
+  "no README documents it; add analysis/structure/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/structure/density.py",
+  "no README documents it; add analysis/structure/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/structure/distance_check.py",
+  "no README documents it; add analysis/structure/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/structure/full_width_half_max.py",
+  "no README documents it; add analysis/structure/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "analysis/structure/silanol.py",
+  "no README documents it; add analysis/structure/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "grading/ai/grader.py",
+  "no README documents it; add grading/ai/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "grading/ai/report_grader.py",
+  "no README documents it; add grading/ai/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "grading/ai/report_reviewer_from_results.py",
+  "no README documents it; add grading/ai/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "grading/ai/reviewer_from_results.py",
+  "no README documents it; add grading/ai/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "grading/instructor_in_loop/evidence_extractor.py",
+  "no README documents it; add grading/instructor_in_loop/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "grading/instructor_in_loop/generate_checklists.py",
+  "no README documents it; add grading/instructor_in_loop/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "grading/instructor_in_loop/prepare_submissions.py",
+  "no README documents it; add grading/instructor_in_loop/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/carc/sinfo2_command.sh",
+  "no README documents it; add jobs/carc/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/lammps_to_analysis/submit_pipeline.sh",
+  "no README documents it; add jobs/pipeline/lammps_to_analysis/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/lammps_to_analysis/submit_pipeline_local.sh",
+  "no README documents it; add jobs/pipeline/lammps_to_analysis/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/lammps_to_temperature_sweep/aggregate_dielectric_vs_temperature.py",
+  "no README documents it; add jobs/pipeline/lammps_to_temperature_sweep/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/lammps_to_temperature_sweep/aggregate_diffusion_vs_temperature.py",
+  "no README documents it; add jobs/pipeline/lammps_to_temperature_sweep/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/lammps_to_temperature_sweep/generate_cascade_input.py",
+  "no README documents it; add jobs/pipeline/lammps_to_temperature_sweep/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.sh",
+  "no README documents it; add jobs/pipeline/lammps_to_temperature_sweep/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/plotting/README.md",
+  "no ## Verification section (documents jobs/pipeline/plotting/plot_distributions.py)"
+ ],
+ [
+  "readme-verification",
+  "jobs/pipeline/plotting/README.md",
+  "no ## Verification section (documents jobs/pipeline/plotting/plot_pipeline.sh)"
+ ],
+ [
+  "readme-verification",
+  "md_setup/create_bubble/README.md",
+  "no ## Verification section (documents md_setup/create_bubble/cleanup_orphan_atoms.py)"
+ ],
+ [
+  "readme-verification",
+  "md_setup/create_bubble/README.md",
+  "no ## Verification section (documents md_setup/create_bubble/generate_lammps_script.py)"
+ ],
+ [
+  "readme-verification",
+  "md_setup/create_bubble/README.md",
+  "no ## Verification section (documents md_setup/create_bubble/lammps_utils.py)"
+ ],
+ [
+  "readme-verification",
+  "md_setup/create_bubble/README.md",
+  "no ## Verification section (documents md_setup/create_bubble/run_bubble.sh)"
+ ],
+ [
+  "readme-verification",
+  "md_setup/fix_broken_bonds/fix_broken_edge_bonds.py",
+  "no README documents it; add md_setup/fix_broken_bonds/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/hand_place/hand_place_atoms.py",
+  "no README documents it; add md_setup/hand_place/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/lammps_data.py",
+  "no README documents it; add md_setup/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/analyze_rings.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/build_ring_cluster.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/collect_survey.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/generate_ring_path.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/plot_ring_paths.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/ring_geometry.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/setup_survey.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/setup_vasp_paths.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/ring_path/water_placement.py",
+  "no README documents it; add md_setup/ring_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/structure_io.py",
+  "no README documents it; add md_setup/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/system_transformations/mirror_lammps.py",
+  "no README documents it; add md_setup/system_transformations/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/system_transformations/rotate_lammps.py",
+  "no README documents it; add md_setup/system_transformations/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/water_path/generate_water_path.py",
+  "no README documents it; add md_setup/water_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "md_setup/water_path/water_geometry.py",
+  "no README documents it; add md_setup/water_path/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "plotting/lammps/csv_combine.py",
+  "no README documents it; add plotting/lammps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "plotting/lammps/thermodynamics.py",
+  "no README documents it; add plotting/lammps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "plotting/vasp/parse_oszicar.py",
+  "no README documents it; add plotting/vasp/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/20260617_dielectric_multi_traj/1.calc_mpi.py",
+  "no README documents it; add simulation/lammps/20260617_dielectric_multi_traj/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/20260617_dielectric_multi_traj/2.dipole_std.py",
+  "no README documents it; add simulation/lammps/20260617_dielectric_multi_traj/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/20260929_dielectric_chunked/README.md",
+  "no ## Verification section (documents simulation/lammps/20260929_dielectric_chunked/2.calc_mpi.py)"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/20260929_dielectric_chunked/README.md",
+  "no ## Verification section (documents simulation/lammps/20260929_dielectric_chunked/3.dipole_std.py)"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/input_description.py",
+  "no README documents it; add simulation/lammps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/lammps_archive.sh",
+  "no README documents it; add simulation/lammps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/lammps_src_mod/two_body_force_code.cpp",
+  "no README documents it; add simulation/lammps/lammps_src_mod/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/lammps_src_mod/two_body_potential_code.cpp",
+  "no README documents it; add simulation/lammps/lammps_src_mod/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/msd_code/README.md",
+  "no ## Verification section (documents simulation/lammps/msd_code/lammps_custom_to_msd_input_xyz.py)"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/msd_code/README.md",
+  "no ## Verification section (documents simulation/lammps/msd_code/lammps_to_msd_input_xyz.py)"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/plot_template.py",
+  "no README documents it; add simulation/lammps/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/lammps/structure_comparison/struct_compare.py",
+  "no README documents it; add simulation/lammps/structure_comparison/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/vasp/max_cutoff.py",
+  "no README documents it; add simulation/vasp/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/vasp/nose_mass.py",
+  "no README documents it; add simulation/vasp/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "simulation/vasp/selective_dynamics.py",
+  "no README documents it; add simulation/vasp/README.md with a ## Verification section"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/lammps_bbox_subset/formats/__init__.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/lammps_bbox_subset/formats/base.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/lammps_bbox_subset/formats/lammps_custom.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/lammps_bbox_subset/formats/lammps_xyz.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/lammps_bbox_subset/frame_filter.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/lammps_bbox_subset/lammps_bbox_subset.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/main.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/ovito_render_rotation.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/ovito_rotation_config.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/ovito_visual_pipeline.py)"
+ ],
+ [
+  "readme-verification",
+  "visualization/README.md",
+  "no ## Verification section (documents visualization/reaction_path_gifs.py)"
+ ],
+ [
+  "run-by-test",
+  "analysis/bonds/calibrate_cutoffs.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/20260608_GrNrBaSqw/bad_freud.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/20260608_GrNrBaSqw/dsf.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/20260608_GrNrBaSqw/msd.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/20260608_GrNrBaSqw/rdf_freud.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/20260608_GrNrBaSqw/sampling_check.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/20260608_GrNrBaSqw/vdos.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/20260608_GrNrBaSqw/vdos_dynmat.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/kenichi_GrNrB/1.robust_lammps_to_input_xyz.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/lammps_GrBa_ovito/1.ovito_GrBa.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/lammps_GrBa_ovito/test.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/distributions/water_kenichi_GrBa/1.robust_lammps_to_input_xyz.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/dynamics/1.robust_lammps_to_input_xyz.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/dynamics/lammps_custom_to_input_xyz.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/dynamics/src/stat/plot.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/electronic/Participation_numbers-v2/participation_number_sort.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/energetics/plot_min_pe.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/energetics/plot_pe.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/energetics/plot_sp_pe.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/energetics/plot_vasp_de.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/general/box_size.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/general/box_size_from_data.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/main.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/shock/plot_trajectory.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/shock/shock_vis_pyvista.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/structure/count_crossing_bonds.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/structure/density.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/structure/distance_check.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/structure/full_width_half_max.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "run-by-test",
+  "analysis/structure/silanol.py",
+  "no test runs this script; add one that runs or imports it"
+ ],
+ [
+  "user-paths",
+  "analysis/distributions/20260608_GrNrBaSqw/distribution_run.sh",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): source /home1/lkyamamo/venv/struc_analysis/bin/activate"
+ ],
+ [
+  "user-paths",
+  "analysis/distributions/20260608_GrNrBaSqw/distribution_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): source /home1/lkyamamo/venv/struc_analysis/bin/activate        # env with dynasor, icc_rt, freud, nu"
+ ],
+ [
+  "user-paths",
+  "analysis/dynamics/msd_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "analysis/dynamics/msd_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): DYNAMICS_DIR=\"/home1/lkyamamo/util/analysis/dynamics\""
+ ],
+ [
+  "user-paths",
+  "analysis/dynamics/msd_submit.slurm",
+  "hardcoded /scratch1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): INPUT_DIR=\"/scratch1/lkyamamo/bubble_collapse/runs/bulk/water/6x6x6/2.diffusion/0104/run\""
+ ],
+ [
+  "user-paths",
+  "analysis/shock/etc/shock_vis_hand.ipynb",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): \"h5_file = '/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bubble-collapse/anal"
+ ],
+ [
+  "user-paths",
+  "analysis/shock/merge_h5.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "analysis/shock/shock_vis_pyvista.py",
+  "hardcoded /scratch1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): FILEPATH  = '/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/voxel_0147/trajec"
+ ],
+ [
+  "user-paths",
+  "analysis/structure/full_width_half_max.py",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): filepath_h_o_h = '/Users/loganyamamoto/Desktop/Research/project_writeup/Vashishta Potential/figure_d"
+ ],
+ [
+  "user-paths",
+  "analysis/structure/full_width_half_max.py",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): filepath_h_o_h2 = '/Users/loganyamamoto/Desktop/Research/project_writeup/Vashishta Potential/figure_"
+ ],
+ [
+  "user-paths",
+  "analysis/structure/full_width_half_max.py",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): filepath_o_h_o = '/Users/loganyamamoto/Desktop/Research/project_writeup/Vashishta Potential/figure_d"
+ ],
+ [
+  "user-paths",
+  "jobs/ledger/simledger/scan.py",
+  "hardcoded /scratch1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /scratch1/lkyamamo/<project>/runs/0177/run/final.data -> <tree>/<project>/runs/0177/run/final.data:"
+ ],
+ [
+  "user-paths",
+  "jobs/pipeline/lammps_to_analysis/submit_pipeline.sh",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /home1/lkyamamo/executables/lammps/lmp_mpi_phonon_2019,"
+ ],
+ [
+  "user-paths",
+  "jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.sh",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /home1/lkyamamo/executables/lammps/lmp_mpi_shock_2019)."
+ ],
+ [
+  "user-paths",
+  "jobs/pipeline/lammps_to_temperature_sweep/submit_temperature_sweep.sh",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /home1/lkyamamo/util, so a copied script finds the pipeline files with"
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/lammps_dielectric_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/lammps_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/lammps_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): THERMO_SCRIPT=\"/home1/lkyamamo/util/plotting/lammps/thermodynamics.py\""
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/lammps_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): VENV_PATH=\"/home1/lkyamamo/venv/struc_analysis\""
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/run.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/run.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): srun --mpi=pmix_v2 -n 64 /home1/lkyamamo/executables/lammps/lmp_mpi_2019 -in ./test.lammps"
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/vasp_643std_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/vasp_643std_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): export vsp=\"/home1/lkyamamo/executables/bubble_collapse_executables/vasp_std\""
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/vasp_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "jobs/slurm/vasp_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): export vsp=\"/home1/lkyamamo/executables/bubble_collapse_executables/vasp_std\""
+ ],
+ [
+  "user-paths",
+  "md_setup/create_bubble/run_bubble.sh",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "md_setup/create_bubble/run_bubble.sh",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): VENV_DIR=\"/home1/lkyamamo/util/md_setup/.venv\""
+ ],
+ [
+  "user-paths",
+  "md_setup/create_bubble/run_bubble.sh",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): export lmp=\"/home1/lkyamamo/executables/lammps/lmp_mpi_2019\""
+ ],
+ [
+  "user-paths",
+  "md_setup/fix_broken_bonds/fix_broken_edge_bonds.ipynb",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): \"Exported file: /Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bubble-collapse/"
+ ],
+ [
+  "user-paths",
+  "md_setup/fix_broken_bonds/fix_broken_edge_bonds.ipynb",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): \"Saved modified structure to /Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bub"
+ ],
+ [
+  "user-paths",
+  "md_setup/fix_broken_bonds/fix_broken_edge_bonds.ipynb",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): \"file_path = '/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/finalized-bubble-collapse/st"
+ ],
+ [
+  "user-paths",
+  "md_setup/fix_broken_bonds/fix_broken_edge_bonds.py",
+  "hardcoded /scratch1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): FILE_PATH = \"/scratch1/lkyamamo/finalized-bubble-collapse/structures/small_interface/0023.data\""
+ ],
+ [
+  "user-paths",
+  "md_setup/ring_path/setup_survey.py",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): export lmp=\"/home1/lkyamamo/executables/lammps/lmp_mpi_2019\""
+ ],
+ [
+  "user-paths",
+  "simulation/lammps/20260617_dielectric_multi_traj/0.submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "simulation/lammps/20260617_dielectric_multi_traj/0.submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): VENV_PATH=\"/home1/lkyamamo/venv/struc_analysis\""
+ ],
+ [
+  "user-paths",
+  "simulation/lammps/20260929_dielectric_chunked/0.production_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "simulation/lammps/20260929_dielectric_chunked/0.production_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): LMP_BIN=\"/home1/lkyamamo/executables/lammps/lmp_mpi_shock_2019\""
+ ],
+ [
+  "user-paths",
+  "simulation/lammps/20260929_dielectric_chunked/0.production_submit.slurm",
+  "hardcoded /scratch1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): POTENTIAL_FILE=\"/scratch1/lkyamamo/finalized-modifications/potentials/20260729_OH_B_theta_mod_v3.usc"
+ ],
+ [
+  "user-paths",
+  "simulation/lammps/20260929_dielectric_chunked/1.calc_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): /apps/spack/2406/apps/linux-rocky8-x86_64_v3/gcc-13.3.0/python-3.11.9-x74mtjf/bin/python3 /home1/lky"
+ ],
+ [
+  "user-paths",
+  "simulation/lammps/20260929_dielectric_chunked/1.calc_submit.slurm",
+  "hardcoded /home1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): VENV_PATH=\"/home1/lkyamamo/venv/struc_analysis\""
+ ],
+ [
+  "user-paths",
+  "visualization/lammps_bbox_subset/bbox_subset.slurm",
+  "hardcoded /scratch1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): INPUT=\"/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis/SiOH.cust"
+ ],
+ [
+  "user-paths",
+  "visualization/lammps_bbox_subset/bbox_subset.slurm",
+  "hardcoded /scratch1/lkyamamo; read it from a .conf/.config or flag (or mark the line 'allow-path'): OUT_DIR=\"/scratch1/lkyamamo/finalized-bubble-collapse/analysis/small_interface/0108_analysis\""
+ ],
+ [
+  "user-paths",
+  "visualization/ovito_rotation_config.py",
+  "hardcoded /Users/loganyamamoto; read it from a .conf/.config or flag (or mark the line 'allow-path'): \"/Users/loganyamamoto/Desktop/Research/grants/geo_sciences/bubble_collapse/data/\""
+ ],
+ [
+  "deps",
+  "grading/instructor_in_loop/generate_checklists.py",
+  "imports yaml, not declared in grading/pyproject.toml (uv add pyyaml)"
+ ],
+ [
+  "deps",
+  "md_setup/fix_broken_bonds/fix_broken_edge_bonds.py",
+  "imports ovito, not declared in md_setup/pyproject.toml (uv add ovito)"
+ ],
+ [
+  "deps",
+  "md_setup/ring_path/plot_ring_paths.py",
+  "imports matplotlib, not declared in md_setup/pyproject.toml (uv add matplotlib)"
+ ],
+ [
+  "deps",
+  "visualization/lammps_bbox_subset/formats/base.py",
+  "imports numpy, not declared in visualization/pyproject.toml (uv add numpy)"
+ ],
+ [
+  "deps",
+  "visualization/lammps_bbox_subset/formats/lammps_custom.py",
+  "imports numpy, not declared in visualization/pyproject.toml (uv add numpy)"
+ ],
+ [
+  "deps",
+  "visualization/lammps_bbox_subset/formats/lammps_xyz.py",
+  "imports numpy, not declared in visualization/pyproject.toml (uv add numpy)"
+ ],
+ [
+  "deps",
+  "visualization/reaction_path_gifs.py",
+  "imports PIL, not declared in visualization/pyproject.toml (uv add pillow)"
+ ],
+ [
+  "deps",
+  "visualization/reaction_path_gifs.py",
+  "imports numpy, not declared in visualization/pyproject.toml (uv add numpy)"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/kenichi_GrNrB/1.robust_lammps_to_input_xyz.py",
+  "same name as analysis/distributions/water_kenichi_GrBa/1.robust_lammps_to_input_xyz.py, analysis/dynamics/1.robust_lammps_to_input_xyz.py; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/kenichi_GrNrB/3.GrNrBaSq.slurm",
+  "same name as analysis/distributions/water_kenichi_GrBa/h--o--h/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/h-o-h/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/o-h--o/3.GrNrBaSq.slurm; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/kenichi_GrNrB/stat/excutable.sh",
+  "same name as analysis/distributions/water_kenichi_GrBa/stat/excutable.sh; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/kenichi_GrNrB/stat/stat.f90",
+  "same name as analysis/distributions/water_kenichi_GrBa/stat/stat.f90, analysis/dynamics/src/stat/stat.f90; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/1.robust_lammps_to_input_xyz.py",
+  "same name as analysis/distributions/kenichi_GrNrB/1.robust_lammps_to_input_xyz.py, analysis/dynamics/1.robust_lammps_to_input_xyz.py; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/h--o--h/3.GrNrBaSq.slurm",
+  "same name as analysis/distributions/kenichi_GrNrB/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/h-o-h/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/o-h--o/3.GrNrBaSq.slurm; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/h-o-h/3.GrNrBaSq.slurm",
+  "same name as analysis/distributions/kenichi_GrNrB/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/h--o--h/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/o-h--o/3.GrNrBaSq.slurm; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/o-h--o/3.GrNrBaSq.slurm",
+  "same name as analysis/distributions/kenichi_GrNrB/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/h--o--h/3.GrNrBaSq.slurm, analysis/distributions/water_kenichi_GrBa/h-o-h/3.GrNrBaSq.slurm; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/stat/excutable.sh",
+  "same name as analysis/distributions/kenichi_GrNrB/stat/excutable.sh; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/distributions/water_kenichi_GrBa/stat/stat.f90",
+  "same name as analysis/distributions/kenichi_GrNrB/stat/stat.f90, analysis/dynamics/src/stat/stat.f90; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/1.robust_lammps_to_input_xyz.py",
+  "same name as analysis/distributions/kenichi_GrNrB/1.robust_lammps_to_input_xyz.py, analysis/distributions/water_kenichi_GrBa/1.robust_lammps_to_input_xyz.py; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/src/bkup/corr.cpp",
+  "same name as analysis/dynamics/src/corr.cpp; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/src/bkup/msd.cpp",
+  "same name as analysis/dynamics/src/msd.cpp, analysis/kenichi_codes/msd.cpp; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/src/corr.cpp",
+  "same name as analysis/dynamics/src/bkup/corr.cpp; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/src/msd.cpp",
+  "same name as analysis/dynamics/src/bkup/msd.cpp, analysis/kenichi_codes/msd.cpp; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/dynamics/src/stat/stat.f90",
+  "same name as analysis/distributions/kenichi_GrNrB/stat/stat.f90, analysis/distributions/water_kenichi_GrBa/stat/stat.f90; one source or say which is current"
+ ],
+ [
+  "duplicates",
+  "analysis/kenichi_codes/msd.cpp",
+  "same name as analysis/dynamics/src/bkup/msd.cpp, analysis/dynamics/src/msd.cpp; one source or say which is current"
+ ]
+]

@@ -5,10 +5,11 @@ Box: 50 x 60 x 60 Å  (VOXEL_SIZE=10 Å)
 Hydronium rod: y_center=30, z_center=30
 
 Run:
-    python test_pipeline.py
+    pytest shock/etc/test_pipeline.py   (from analysis/)
 
-Produces test_output/ with per-frame h5 files and trajectory.h5,
-then prints PASS/FAIL for each property.
+Writes the dumps, per-frame h5 files and trajectory.h5 to a temporary
+directory, runs voxel_analysis.py and merge_h5.py on them, and checks every
+property.
 
 Strategy: compute raw per-voxel values independently, apply the same
 NaN-aware uniform_filter smoothing the pipeline uses, then compare
@@ -18,20 +19,18 @@ calculation and the smoothing in a single pass.
 
 import math
 import os
-import subprocess
-import sys
-import shutil
 
 import numpy as np
 import h5py
+import pytest
 from scipy.ndimage import uniform_filter
+
+from testkit import load_script, run_script, write_dump as write_lammps_dump
 
 TEST_DIR   = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_DIR = os.path.dirname(TEST_DIR)
-OUT_DIR    = os.path.join(TEST_DIR, 'test_output')
-DUMP_DIR   = os.path.join(OUT_DIR, 'dumps')
-H5_DIR     = os.path.join(OUT_DIR, 'h5')
-TRAJ_H5    = os.path.join(OUT_DIR, 'trajectory.h5')
+VOXEL_SCRIPT = os.path.join(SCRIPT_DIR, 'voxel_analysis.py')
+MERGE_SCRIPT = os.path.join(SCRIPT_DIR, 'merge_h5.py')
 
 Y_CENTER = 30.0
 Z_CENTER = 30.0
@@ -56,20 +55,15 @@ SI_MASS = 28.085
 # -----------------------------------------------------------------------
 # dump generation
 
+COLUMNS = ("id", "type", "x", "y", "z", "vx", "vy", "vz", "fx", "fy", "fz")
+
+
 def write_dump(path, timestep, atoms):
     """atoms: list of (id, type, x, y, z, vx, vy, vz, fx, fy, fz), sorted by x"""
-    with open(path, 'w') as f:
-        f.write("ITEM: TIMESTEP\n")
-        f.write(f"{timestep}\n")
-        f.write("ITEM: NUMBER OF ATOMS\n")
-        f.write(f"{len(atoms)}\n")
-        f.write("ITEM: BOX BOUNDS pp pp pp\n")
-        f.write("0.0 50.0\n")
-        f.write("0.0 60.0\n")
-        f.write("0.0 60.0\n")
-        f.write("ITEM: ATOMS id type x y z vx vy vz fx fy fz\n")
-        for a in atoms:
-            f.write(" ".join(str(v) for v in a) + "\n")
+    table = list(zip(*atoms))
+    frame = {c: table[i] for i, c in enumerate(COLUMNS)}
+    write_lammps_dump(path, [frame], ((0.0, 0.0, 0.0), (50.0, 60.0, 60.0)), COLUMNS,
+                      timesteps=[timestep])
 
 
 # -----------------------------------------------------------------------
@@ -280,225 +274,97 @@ def build_smoothed_grids(raw_vals):
 # -----------------------------------------------------------------------
 # pipeline execution
 
-def run_pipeline():
-    shutil.rmtree(OUT_DIR, ignore_errors=True)
-    os.makedirs(DUMP_DIR)
-    os.makedirs(H5_DIR)
-
-    dump1 = os.path.join(DUMP_DIR, 'dump.1000')
-    dump2 = os.path.join(DUMP_DIR, 'dump.2000')
-    h5_1  = os.path.join(H5_DIR, 'output_1000.h5')
-    h5_2  = os.path.join(H5_DIR, 'output_2000.h5')
-
-    write_dump(dump1, 1000, FRAME1_ATOMS)
-    write_dump(dump2, 2000, FRAME2_ATOMS)
-
-    voxel_script = os.path.join(SCRIPT_DIR, 'voxel_analysis.py')
-    merge_script = os.path.join(SCRIPT_DIR, 'merge_h5.py')
-
-    python = '/Users/loganyamamoto/util/analysis/.venv/bin/python'
-
-    for dump, h5 in [(dump1, h5_1), (dump2, h5_2)]:
-        r = subprocess.run(
-            [python, voxel_script, dump, h5, str(Y_CENTER), str(Z_CENTER), str(BUBBLE_RADIUS)],
-            capture_output=True, text=True
-        )
-        if r.returncode != 0:
-            print(f"ERROR running voxel_analysis on {dump}:\n{r.stderr}")
-            sys.exit(1)
-
-    r = subprocess.run(
-        [python, merge_script, H5_DIR, TRAJ_H5,
-         '--initial-cutoff', '2.0', '--secondary-cutoff', '1.0',
-         '--sphere-y-center', str(Y_CENTER), '--sphere-z-center', str(Z_CENTER)],
-        capture_output=True, text=True
-    )
-    if r.returncode != 0:
-        print(f"ERROR running merge_h5:\n{r.stderr}")
-        sys.exit(1)
-    print(r.stdout.strip())
+@pytest.fixture(scope="module")
+def traj(tmp_path_factory):
+    """Run voxel_analysis on both frames and merge_h5 on the results; yield trajectory.h5."""
+    out = tmp_path_factory.mktemp("shock")
+    h5_dir = out / "h5"
+    h5_dir.mkdir()
+    for step, atoms in [(1000, FRAME1_ATOMS), (2000, FRAME2_ATOMS)]:
+        dump = out / f"dump.{step}"
+        write_dump(dump, step, atoms)
+        run_script(VOXEL_SCRIPT, dump, h5_dir / f"output_{step}.h5",
+                   Y_CENTER, Z_CENTER, BUBBLE_RADIUS)
+    traj_h5 = out / "trajectory.h5"
+    run_script(MERGE_SCRIPT, h5_dir, traj_h5,
+               "--initial-cutoff", "2.0", "--secondary-cutoff", "1.0",
+               "--sphere-y-center", Y_CENTER, "--sphere-z-center", Z_CENTER)
+    with h5py.File(traj_h5, "r") as f:
+        yield f
 
 
 # -----------------------------------------------------------------------
-# verification
+# tests
 
-def chk(label, got, expected, tol=1e-3):
-    if np.isnan(expected):
-        ok = np.isnan(got)
-        got_str = 'NaN' if np.isnan(got) else f'{got:.6f}'
-        print(f"  [{'PASS' if ok else 'FAIL'}] {label}: got={got_str}  expected=NaN")
-    else:
-        ok = abs(float(got) - float(expected)) <= tol
-        print(f"  [{'PASS' if ok else 'FAIL'}] {label}: got={float(got):.6f}  expected={float(expected):.6f}")
-    return ok
+FRAMES = [
+    (frame_raw_values(si_x=5.0, v33_speed=35.0, v43_speed=40.0)),
+    (frame_raw_values(si_x=8.0, v33_speed=35.0, v43_speed=0.0)),
+]
+VOXELS_TO_CHECK = [(0,0,0), (1,2,2), (2,2,2), (3,3,3), (4,3,3)]
 
 
-def verify():
-    passes = fails = 0
+@pytest.mark.parametrize("frame_idx", [0, 1])
+def test_smoothed_voxel_properties(traj, checker, frame_idx):
+    raw = FRAMES[frame_idx]
+    sm = build_smoothed_grids(raw)
+    for vox in VOXELS_TO_CHECK:
+        ix, iy, iz = vox
+        checker.chk(f"{vox} voxel_type", int(traj['voxel_type'][frame_idx, ix, iy, iz]),
+                    raw[vox]['voxel_type'])
+        for prop in sm:
+            if prop in raw[vox]:
+                checker.chk(f"{vox} {prop}", float(traj[prop][frame_idx, ix, iy, iz]),
+                            float(sm[prop][ix, iy, iz]))
 
-    raw1 = frame_raw_values(si_x=5.0,  v33_speed=35.0, v43_speed=40.0)
-    raw2 = frame_raw_values(si_x=8.0,  v33_speed=35.0, v43_speed=0.0)
-    sm1  = build_smoothed_grids(raw1)
-    sm2  = build_smoothed_grids(raw2)
 
-    SMOOTHED_PROPS = list(sm1.keys())
-    VOXELS_TO_CHECK = [(0,0,0), (1,2,2), (2,2,2), (3,3,3), (4,3,3)]
+@pytest.mark.parametrize("frame_idx,si_x", [(0, 5.0), (1, 8.0)])
+def test_frame_scalars(traj, checker, frame_idx, si_x):
+    checker.chk("jet_tip_x", float(traj['jet_tip_x'][frame_idx]), float('nan'))
+    checker.chk("si_surface[0,0]", float(traj['si_surface'][frame_idx, 0, 0]), si_x)
+    checker.chk("hydronium_count[1]", int(traj['hydronium_count'][frame_idx, 1]), 1)
+    # Si at (si_x, 5, 5) is in voxel (0, 0, 0), the only surface voxel.
+    mask = traj['si_surface_mask'][frame_idx]
+    checker.chk("si_surface_mask[0,0,0]", int(mask[0, 0, 0]), 1)
+    checker.chk("si_surface_mask total", int(mask.sum()), 1)
 
-    with h5py.File(TRAJ_H5, 'r') as f:
 
-        for frame_idx, (label, sm, raw) in enumerate([
-                ('Frame 0 (timestep=1000)', sm1, raw1),
-                ('Frame 1 (timestep=2000)', sm2, raw2),
-        ]):
-            print(f"\n=== {label} — smoothed voxel properties ===")
-            for vox in VOXELS_TO_CHECK:
-                ix, iy, iz = vox
-                if vox not in raw:
-                    continue
-                print(f"\n  Voxel {vox}:")
+def test_crater_datasets(traj, checker):
+    assert 'crater' in traj
+    cg = traj['crater']
+    checker.chk("reference_x shape", cg['reference_x'].shape, (2,))
+    checker.chk("depth_map shape", cg['depth_map'].shape, (2, NY, NZ))
+    checker.chk("sphere_center shape", cg['sphere_center'].shape, (2, 3))
+    checker.chk("sphere_radius shape", cg['sphere_radius'].shape, (2,))
+    # One Si bin and cutoff 2.0: no crater, so reference_x is valid and there is no sphere.
+    ref_x = cg['reference_x'][()]
+    checker.chk("reference_x[0]", float(ref_x[0]), 5.0, tol=0.1)
+    checker.chk("reference_x[1]", float(ref_x[1]), 8.0, tol=0.1)
+    sr = cg['sphere_radius'][()]
+    checker.chk("sphere_radius[0]", float(sr[0]), float('nan'))
+    checker.chk("sphere_radius[1]", float(sr[1]), float('nan'))
 
-                # voxel_type (not smoothed)
-                got = int(f['voxel_type'][frame_idx, ix, iy, iz])
-                exp = raw[vox]['voxel_type']
-                ok  = got == exp
-                print(f"  [{'PASS' if ok else 'FAIL'}] voxel_type: got={got}  expected={exp}")
-                passes += ok; fails += not ok
 
-                # smoothed scalar properties
-                for prop in SMOOTHED_PROPS:
-                    if prop not in raw[vox]:
-                        continue
-                    got = float(f[prop][frame_idx, ix, iy, iz])
-                    exp = float(sm[prop][ix, iy, iz])
-                    ok  = chk(prop, got, exp)
-                    passes += ok; fails += not ok
+def test_jet_tip_detection():
+    """Rod restriction, density threshold and smallest-x selection on detect_jet_tip directly.
 
-        # --- frame-level scalars ---
-        print("\n=== Frame 0 scalars ===")
-        ok = chk('jet_tip_x', float(f['jet_tip_x'][0]), np.nan)
-        passes += ok; fails += not ok
-        ok = chk('si_surface[0,0]', float(f['si_surface'][0, 0, 0]), 5.0)
-        passes += ok; fails += not ok
-        hc = int(f['hydronium_count'][0, 1])
-        ok = hc == 1
-        print(f"  [{'PASS' if ok else 'FAIL'}] hydronium_count[1]: got={hc}  expected=1")
-        passes += ok; fails += not ok
-
-        print("\n=== Frame 1 scalars ===")
-        ok = chk('jet_tip_x', float(f['jet_tip_x'][1]), np.nan)
-        passes += ok; fails += not ok
-        ok = chk('si_surface[0,0]', float(f['si_surface'][1, 0, 0]), 8.0)
-        passes += ok; fails += not ok
-        hc = int(f['hydronium_count'][1, 1])
-        ok = hc == 1
-        print(f"  [{'PASS' if ok else 'FAIL'}] hydronium_count[1]: got={hc}  expected=1")
-        passes += ok; fails += not ok
-
-        # --- si_surface_mask ---
-        print("\n=== si_surface_mask ===")
-        # Frame 0: Si at x=5.0, y=5.0, z=5.0 → ix=0, iy=0, iz=0
-        # Frame 1: Si at x=8.0, y=5.0, z=5.0 → ix=0, iy=0, iz=0
-        for fi, si_x in [(0, 5.0), (1, 8.0)]:
-            mask = f['si_surface_mask'][fi]  # (nx, ny, nz)
-            ok = int(mask[0, 0, 0]) == 1
-            print(f"  [{'PASS' if ok else 'FAIL'}] Frame {fi}: si_surface_mask[0,0,0]=={int(mask[0,0,0])} expected 1")
-            passes += ok; fails += not ok
-            total_set = int(mask.sum())
-            ok = total_set == 1
-            print(f"  [{'PASS' if ok else 'FAIL'}] Frame {fi}: total set voxels=={total_set} expected 1")
-            passes += ok; fails += not ok
-
-        # --- crater datasets ---
-        print("\n=== crater datasets ===")
-        ok = 'crater' in f
-        print(f"  [{'PASS' if ok else 'FAIL'}] crater group exists")
-        passes += ok; fails += not ok
-
-        if 'crater' in f:
-            cg = f['crater']
-
-            ok = 'reference_x' in cg and cg['reference_x'].shape == (2,)
-            print(f"  [{'PASS' if ok else 'FAIL'}] crater/reference_x shape (2,)")
-            passes += ok; fails += not ok
-
-            ok = 'depth_map' in cg and cg['depth_map'].shape == (2, NY, NZ)
-            print(f"  [{'PASS' if ok else 'FAIL'}] crater/depth_map shape (2,{NY},{NZ})")
-            passes += ok; fails += not ok
-
-            ok = 'sphere_center' in cg and cg['sphere_center'].shape == (2, 3)
-            print(f"  [{'PASS' if ok else 'FAIL'}] crater/sphere_center shape (2,3)")
-            passes += ok; fails += not ok
-
-            ok = 'sphere_radius' in cg and cg['sphere_radius'].shape == (2,)
-            print(f"  [{'PASS' if ok else 'FAIL'}] crater/sphere_radius shape (2,)")
-            passes += ok; fails += not ok
-
-            # with only 1 Si bin and cutoff=2.0, no crater detected → reference_x valid, no sphere
-            ref_x = cg['reference_x'][()]
-            ok = not np.isnan(ref_x[0]) and not np.isnan(ref_x[1])
-            print(f"  [{'PASS' if ok else 'FAIL'}] reference_x not NaN: {ref_x}")
-            passes += ok; fails += not ok
-
-            ok = float(ref_x[0]) == pytest_approx(5.0, 1e-3) if False else abs(float(ref_x[0]) - 5.0) < 0.1
-            print(f"  [{'PASS' if ok else 'FAIL'}] reference_x[0]≈5.0: got {float(ref_x[0]):.3f}")
-            passes += ok; fails += not ok
-
-            ok = abs(float(ref_x[1]) - 8.0) < 0.1
-            print(f"  [{'PASS' if ok else 'FAIL'}] reference_x[1]≈8.0: got {float(ref_x[1]):.3f}")
-            passes += ok; fails += not ok
-
-            # sphere fit should be NaN (no crater bins with depth > 2.0)
-            sr = cg['sphere_radius'][()]
-            ok = np.isnan(float(sr[0])) and np.isnan(float(sr[1]))
-            print(f"  [{'PASS' if ok else 'FAIL'}] sphere_radius NaN for both frames (no crater): {sr}")
-            passes += ok; fails += not ok
-
-    # --- jet tip detection (focused unit test on detect_jet_tip directly) ---
-    # Single combined scenario testing rod restriction, density threshold,
-    # and smallest-of-multiple-qualifying-candidates selection together:
-    #   ix=0, y,z=(5,5)   [OUTSIDE rod]:  density=1.0 (high) → excluded by rod
-    #   ix=1, y,z=(35,35) [WITHIN rod]:   density=0.05 (low) → excluded by density threshold
-    #   ix=2, y,z=(35,35) [WITHIN rod]:   density=1.0 (high) → valid, smallest qualifying
-    #   ix=3, y,z=(35,35) [WITHIN rod]:   density=1.0 (high) → valid, but larger ix than ix=2
-    # Expected jet tip: ix=2 (15+10=25.0 Å), not ix=0/1 (wrongly excluded
-    # candidates that would otherwise win) and not ix=3 (larger of two valid).
-    print("\n=== jet tip detection (rod + density threshold + smallest-x) ===")
-    sys.path.insert(0, SCRIPT_DIR)
-    import voxel_analysis as va
-
-    nx, ny, nz = 5, 6, 6
-    vs = 10.0
+      ix=0, y,z=(5,5)   outside rod:  density 1.0  -> excluded by the rod
+      ix=1, y,z=(35,35) inside rod:   density 0.05 -> excluded by the density threshold
+      ix=2, y,z=(35,35) inside rod:   density 1.0  -> valid, smallest qualifying
+      ix=3, y,z=(35,35) inside rod:   density 1.0  -> valid, but larger ix
+    Expected tip: ix=2, at (2 + 0.5) * 10 = 25 A.
+    """
+    va = load_script(VOXEL_SCRIPT)
+    nx, ny, nz, vs = 5, 6, 6, 10.0
     attrs = {'nx': nx, 'ny': ny, 'nz': nz, 'voxel_size': vs,
              'xlo': 0.0, 'ylo': 0.0, 'zlo': 0.0}
-
-    density    = np.zeros((nx, ny, nz), dtype=np.float32)
+    density = np.zeros((nx, ny, nz), dtype=np.float32)
     voxel_type = np.zeros((nx, ny, nz), dtype=np.uint8)
-
-    voxel_type[0, 0, 0] = 1; density[0, 0, 0] = 1.0    # outside rod
-    voxel_type[1, 3, 3] = 1; density[1, 3, 3] = 0.05   # in rod, below density threshold
-    voxel_type[2, 3, 3] = 1; density[2, 3, 3] = 1.0    # in rod, valid (expected answer)
-    voxel_type[3, 3, 3] = 1; density[3, 3, 3] = 1.0    # in rod, valid but larger ix
-
-    h5_unit = h5py.File('jet_tip_unit_test.h5', 'w', driver='core', backing_store=False)
-    h5_unit.create_dataset('density', data=density)
-    h5_unit.create_dataset('voxel_type', data=voxel_type)
-
-    tip_x = va.detect_jet_tip(h5_unit, attrs, y_center=30.0, z_center=30.0, bubble_radius=10.0)
-    h5_unit.close()
-
-    expected = (2 + 0.5) * vs
-    ok = abs(float(tip_x) - expected) < 1e-3
-    print(f"  [{'PASS' if ok else 'FAIL'}] jet tip (rod+density+min): got={float(tip_x):.3f}  expected={expected:.3f}")
-    passes += ok; fails += not ok
-
-    print(f"\n{'='*40}")
-    print(f"Results: {passes} PASS  {fails} FAIL")
-    return fails == 0
-
-
-if __name__ == '__main__':
-    print("Running pipeline...")
-    run_pipeline()
-    print(f"Output written to {OUT_DIR}")
-    ok = verify()
-    sys.exit(0 if ok else 1)
+    voxel_type[0, 0, 0] = 1; density[0, 0, 0] = 1.0
+    voxel_type[1, 3, 3] = 1; density[1, 3, 3] = 0.05
+    voxel_type[2, 3, 3] = 1; density[2, 3, 3] = 1.0
+    voxel_type[3, 3, 3] = 1; density[3, 3, 3] = 1.0
+    with h5py.File('jet_tip_unit_test.h5', 'w', driver='core', backing_store=False) as h5:
+        h5.create_dataset('density', data=density)
+        h5.create_dataset('voxel_type', data=voxel_type)
+        tip_x = va.detect_jet_tip(h5, attrs, y_center=30.0, z_center=30.0, bubble_radius=10.0)
+    assert float(tip_x) == pytest.approx((2 + 0.5) * vs, abs=1e-3)

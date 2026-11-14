@@ -1,7 +1,30 @@
 [project]
 name = "analysis"
 version = "0.1.0"
-description = "Add your description here"
+description = "Post-processing of LAMMPS/VASP/QXMD simulation output"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "ase>=3.29",
+    "dynasor>=2.4",
+    "freud-analysis>=3.4",
+    "h5py>=3.16",
+    "matplotlib>=3.11",
+    "numpy>=2.4",
+    "ovito>=3.15",
+    "pandas>=3.0",
+    "psutil>=7.2",
+    "pyvista>=0.48",
+    "scipy>=1.17",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+# importlib mode: test files in different folders may share a name, and many
+# folders are not importable package names. The last -m given wins, so
+# `pytest -m slow` runs only the slow checks.
+addopts = "--import-mode=importlib -m 'not slow'"
+markers = ["slow: convergence and sampling checks, run nightly or with -m slow"]

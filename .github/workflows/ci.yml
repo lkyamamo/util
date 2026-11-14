@@ -1,0 +1,69 @@
+name: CI
+
+# The verification run (tools/repo_check.py --verify) on every push and PR,
+# the same run the pre-push hook makes, so a push with --no-verify is still
+# checked. The slow analysis checks run nightly.
+
+on:
+  push:
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "0 9 * * *"   # 01:00 Pacific
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verification run
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install the analysis environment from analysis/uv.lock
+        run: uv sync --locked --project analysis --python 3.11
+
+      - name: Verification run
+        env:
+          BEFORE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          git config user.name ci && git config user.email ci@localhost
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            BEFORE=$(git merge-base origin/master HEAD)
+          fi
+          python tools/repo_check.py --base "$BEFORE" --verify
+
+  slow:
+    name: Slow checks
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install the analysis environment from analysis/uv.lock
+        run: uv sync --locked --project analysis --python 3.11
+
+      - name: Slow analysis checks
+        working-directory: analysis
+        run: |
+          set +e
+          .venv/bin/python -m pytest -q -p no:anyio -m slow
+          status=$?
+          # 5 means no slow tests are defined yet
+          if [ $status -eq 5 ]; then exit 0; fi
+          exit $status

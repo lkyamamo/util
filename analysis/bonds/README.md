@@ -5,7 +5,7 @@ and writes an annotated trajectory OVITO reads natively.
 
 ```bash
 python bond_events.py --traj dynamics.lammpstrj --dt 2.5
-python test_bond_events.py          # synthetic ground-truth checks
+cd .. && pytest bonds               # synthetic ground-truth checks (from analysis/)
 ```
 
 | File | What it is |
@@ -192,17 +192,30 @@ trajectories. For barrier-crossing detail, `dynamics_dump_frequency` in
 Skip the annotated trajectory with `--no-ovito-dump`; it is the slow half of the
 run and the only part that rewrites the whole trajectory.
 
-## Tests
+## Verification
 
-`test_bond_events.py` builds trajectories whose answer is known by construction,
-runs the real script on them, and compares — the same approach as
-`analysis/shock/etc/test_pipeline.py`. There is no multi-frame water fixture in
-this repo to use instead.
+`test_bond_events.py` tests `bond_events.py` end to end: it builds trajectories
+whose answer is known by construction (dumps written with `analysis/testkit`),
+runs the real script on them, and compares. `calibrate_cutoffs.py` has no tests:
+it is an unused sketch (see its STATUS section).
 
-| Case | Ground truth |
-|---|---|
-| `flicker` | A pair oscillating across `r_break` every few frames: **zero** breaks, one recrossing per cycle. This test is the argument for the hysteresis criterion, made executable — a plain cutoff scores ~10 breaks. |
-| `transfer` | One break classified `transfer`, donor 2→1 (OH⁻), acceptor 2→3 (H₃O⁺), O···O = 2.6 Å, plus every annotation column checked |
-| `dissociation` | H leaves and never returns: one break, classified `dissociation` |
-| `pbc` | The transfer case across a periodic face: results **identical**. Catches the bug class in `voxel_analysis.py:294`, which builds a `cKDTree` with no `boxsize=` and is silently non-periodic. |
-| `eof` | A break whose window runs off the end: reported as `truncated` and counted in `n_pending_at_eof`, not silently dropped |
+| Test | Method | Ground truth checked | Tolerance |
+|---|---|---|---|
+| `test_flicker` | known answer | A pair oscillating across `r_break` every few frames: **zero** breaks, one recrossing per cycle. This is the argument for the hysteresis criterion, made executable: a plain cutoff scores ~10 breaks. | exact counts |
+| `test_transfer` | known answer | One break classified `transfer` at frame 16, form at frame 17, donor 2→1 (OH⁻), acceptor 2→3 (H₃O⁺), O···O = 2.6 Å, O–H···O = 180°, plus every annotation column | frames exact; O···O 1e-3 Å (dump precision 1e-6 Å); angle 0.5° |
+| `test_dissociation` | known answer | H leaves and never returns: one break at frame 12, classified `dissociation`, no acceptor | exact |
+| `test_pbc` | invariant | The transfer case translated across a periodic face gives **identical** results. Catches the bug class in `voxel_analysis.py:294`, a `cKDTree` with no `boxsize=`. | exact; distances 1e-3 Å |
+| `test_eof` | known answer | A break whose window runs off the end is reported `truncated` and counted in `n_pending_at_eof`, not dropped | exact |
+| `test_no_velocities` | invariant | Detection is purely geometric: a dump without `vx vy vz` gives the transfer case's results, and the velocity descriptors are absent rather than zero | exact |
+| `test_no_ovito_dump` | invariant | `--no-ovito-dump` changes nothing but the missing trajectory file: every other output is byte-identical | byte-identical |
+
+- **Independent implementation:** none. No second event detector exists, and
+  OVITO's Create Bonds disagrees by design (see the caveat above).
+- **Regression:** none yet. There is no multi-frame water trajectory in the repo
+  to pin; add one under `analysis/testkit/data/` when a fixture is fetched.
+
+### Last verified
+
+<!-- Rewritten by tools/repo_check.py on every run that verifies this folder; never appended. -->
+- Fast: 2026-11-13 on top of `00e7f05`: `python -m pytest -q -p no:anyio` in `analysis/`: 20 passed (9.0 s)
+- Slow: none defined

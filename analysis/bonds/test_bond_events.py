@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 """
 test_bond_events.py — end-to-end validation of bond_events.py on synthetic
 trajectories with known ground truth.
 
-Run:  python test_bond_events.py
+Run:  pytest bonds/test_bond_events.py   (from analysis/)
 
 Same strategy as analysis/shock/etc/test_pipeline.py: build a LAMMPS dump whose
 answer is known by construction, subprocess the real script, and compare.
@@ -47,13 +46,13 @@ CASES
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import pytest
+
+from testkit import run_script, write_dump as write_lammps_dump
 
 SCRIPT = Path(__file__).resolve().parent / "bond_events.py"
 
@@ -67,29 +66,6 @@ R_BREAK = 1.35
 TAU = 4
 TRANSFER_WINDOW = 20
 
-_failures: List[str] = []
-
-
-def _brief(value, limit: int = 90) -> str:
-    """Shorten long values so a whole-file comparison does not flood the output."""
-    text = repr(value)
-    return text if len(text) <= limit else f"{text[:limit]}... ({len(text)} chars)"
-
-
-def chk(label: str, got, expected, tol: float = 1e-3) -> None:
-    if isinstance(expected, float) or isinstance(got, float):
-        ok = got is not None and abs(float(got) - float(expected)) <= tol
-    else:
-        ok = got == expected
-    status = "PASS" if ok else "FAIL"
-    if ok and isinstance(expected, str) and len(expected) > 90:
-        print(f"  [{status}] {label}")          # equal and long: nothing to show
-    else:
-        print(f"  [{status}] {label}: got {_brief(got)}, expected {_brief(expected)}")
-    if not ok:
-        _failures.append(label)
-
-
 # --------------------------------------------------------------------------
 # Synthetic trajectory construction
 # --------------------------------------------------------------------------
@@ -99,7 +75,6 @@ def write_dump(
     path: Path,
     elements: Sequence[str],
     positions: np.ndarray,     # (n_frames, n_atoms, 3), unwrapped
-    velocities: Optional[np.ndarray] = None,
     with_velocity_columns: bool = True,
 ) -> None:
     """Write a LAMMPS custom dump matching OH-therm.input's column layout.
@@ -108,28 +83,18 @@ def write_dump(
     without them would — not zeros, but no columns at all.
     """
     n_frames, n_atoms, _ = positions.shape
-    ids = np.arange(1, n_atoms + 1)
-    with open(path, "w") as f:
-        for t in range(n_frames):
-            wrapped = (positions[t] - BOX_LO) % BOX_L + BOX_LO
-            f.write(f"ITEM: TIMESTEP\n{t * 10}\n")
-            f.write(f"ITEM: NUMBER OF ATOMS\n{n_atoms}\n")
-            f.write("ITEM: BOX BOUNDS pp pp pp\n")
-            for d in range(3):
-                f.write(f"{BOX_LO[d]:.10e} {BOX_HI[d]:.10e}\n")
-            if with_velocity_columns:
-                f.write("ITEM: ATOMS id element x y z vx vy vz\n")
-            else:
-                f.write("ITEM: ATOMS id element x y z\n")
-            for i in range(n_atoms):
-                row = (
-                    f"{ids[i]} {elements[i]} "
-                    f"{wrapped[i, 0]:.6f} {wrapped[i, 1]:.6f} {wrapped[i, 2]:.6f}"
-                )
-                if with_velocity_columns:
-                    v = velocities[t, i] if velocities is not None else (0.0, 0.0, 0.0)
-                    row += f" {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}"
-                f.write(row + "\n")
+    columns = ["id", "element", "x", "y", "z"]
+    if with_velocity_columns:
+        columns += ["vx", "vy", "vz"]
+    zeros = np.zeros(n_atoms)
+    frames = [
+        {"id": np.arange(1, n_atoms + 1), "element": list(elements),
+         "x": positions[t, :, 0], "y": positions[t, :, 1], "z": positions[t, :, 2],
+         "vx": zeros, "vy": zeros, "vz": zeros}
+        for t in range(n_frames)
+    ]
+    write_lammps_dump(path, frames, (BOX_LO, BOX_HI), columns,
+                      timesteps=[t * 10 for t in range(n_frames)], wrap=True)
 
 
 def flicker_trajectory(n_cycles: int = 10) -> Tuple[List[str], np.ndarray]:
@@ -230,8 +195,8 @@ def run_case(
     outdir = workdir / f"{name}_output"
     write_dump(traj, elements, positions, with_velocity_columns=with_velocity_columns)
 
-    cmd = [
-        sys.executable, str(SCRIPT),
+    run_script(
+        SCRIPT,
         "--traj", str(traj),
         "--output-dir", str(outdir),
         "--dt", "2.5",
@@ -240,12 +205,7 @@ def run_case(
         "--tau-persist", str(TAU),
         "--transfer-window", str(TRANSFER_WINDOW),
         *extra_args,
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(proc.stdout)
-        print(proc.stderr, file=sys.stderr)
-        raise SystemExit(f"bond_events.py failed on case {name!r}")
+    )
 
     summary = json.loads((outdir / "summary.json").read_text())
     events = [json.loads(line) for line in (outdir / "events.jsonl").read_text().splitlines() if line]
@@ -277,129 +237,137 @@ def read_annotated(path: Path) -> List[Dict[str, np.ndarray]]:
     return frames
 
 
+@pytest.fixture(scope="module")
+def transfer_reference(tmp_path_factory) -> dict:
+    """The transfer case's summary, which the pbc and no-velocity cases must reproduce."""
+    elements, pos = transfer_trajectory()
+    summary, _, _ = run_case(tmp_path_factory.mktemp("reference"), "transfer", elements, pos)
+    return summary
+
+
 # --------------------------------------------------------------------------
-# Cases
+# Tests
 # --------------------------------------------------------------------------
 
 
-def case_flicker(workdir: Path) -> None:
-    print("\n1. flicker — vibration across the cutoff must NOT count as breaking")
+def test_flicker(tmp_path: Path, checker) -> None:
+    workdir = tmp_path
     n_cycles = 10
     elements, pos = flicker_trajectory(n_cycles)
     summary, events, _ = run_case(workdir, "flicker", elements, pos)
 
-    chk("breaks", summary["n_breaks"], 0)
-    chk("forms", summary["n_forms"], 0)
-    chk("events written", len(events), 0)
+    checker.chk("breaks", summary["n_breaks"], 0)
+    checker.chk("forms", summary["n_forms"], 0)
+    checker.chk("events written", len(events), 0)
     # Exactly one excursion above r_break per cycle. Recrossings are a
     # diagnostic counter rather than a confirmed event, so unlike a real break
     # they are counted during the burn-in frames too.
-    chk("recrossings", summary["n_recrossings"], n_cycles)
-    print(f"       a plain cutoff would have reported ~{n_cycles} breaks here")
+    checker.chk("recrossings", summary["n_recrossings"], n_cycles)
 
 
-def case_transfer(workdir: Path) -> dict:
-    print("\n2. transfer — H migrating between two O")
+def test_transfer(tmp_path: Path, checker) -> None:
+    workdir = tmp_path
     elements, pos = transfer_trajectory()
     summary, events, outdir = run_case(workdir, "transfer", elements, pos)
 
-    chk("breaks", summary["n_breaks"], 1)
-    chk("forms", summary["n_forms"], 1)
-    chk("classified transfer", summary["classifications"].get("transfer", 0), 1)
+    checker.chk("breaks", summary["n_breaks"], 1)
+    checker.chk("forms", summary["n_forms"], 1)
+    checker.chk("classified transfer", summary["classifications"].get("transfer", 0), 1)
 
     break_event = next(e for e in events if e["kind"] == "break")
-    chk("break frame", break_event["frame"], 16)
-    chk("donor O id", break_event["o_id"], 1)
-    chk("migrating H id", break_event["h_id"], 6)
-    chk("acceptor O id", break_event.get("acceptor_o_id"), 2)
-    chk("donor coord before/after",
+    checker.chk("break frame", break_event["frame"], 16)
+    checker.chk("donor O id", break_event["o_id"], 1)
+    checker.chk("migrating H id", break_event["h_id"], 6)
+    checker.chk("acceptor O id", break_event.get("acceptor_o_id"), 2)
+    checker.chk("donor coord before/after",
         (break_event.get("coord_o_donor_before"), break_event.get("coord_o_donor_after")), (2, 1))
-    chk("acceptor coord before/after",
+    checker.chk("acceptor coord before/after",
         (break_event.get("coord_o_acceptor_before"), break_event.get("coord_o_acceptor_after")), (2, 3))
-    chk("O...O at break", break_event.get("oo_distance_at_break"), 2.6, tol=1e-3)
-    chk("O-H...O angle", break_event.get("ohO_angle_at_break"), 180.0, tol=0.5)
+    checker.chk("O...O at break", break_event.get("oo_distance_at_break"), 2.6, tol=1e-3)
+    checker.chk("O-H...O angle", break_event.get("ohO_angle_at_break"), 180.0, tol=0.5)
 
     form_event = next(e for e in events if e["kind"] == "form")
-    chk("form frame", form_event["frame"], 17)
-    chk("form acceptor", form_event["o_id"], 2)
+    checker.chk("form frame", form_event["frame"], 17)
+    checker.chk("form acceptor", form_event["o_id"], 2)
 
     # Coordination in the annotated trajectory: donor 2->1 (OH-), acceptor 2->3 (H3O+).
     frames = read_annotated(outdir / "bond_events.lammpstrj")
-    chk("annotated frame count", len(frames), 50)
-    chk("donor coord before", frames[15]["Coordination"][0], 2.0)
-    chk("donor coord after", frames[20]["Coordination"][0], 1.0)
-    chk("acceptor coord before", frames[15]["Coordination"][1], 2.0)
-    chk("acceptor coord after", frames[20]["Coordination"][1], 3.0)
-    chk("donor species after", frames[20]["Species"][0], 2.0)     # OH-
-    chk("acceptor species after", frames[20]["Species"][1], 1.0)  # H3O+
-    chk("H inherits H3O+ label", frames[20]["Species"][5], 1.0)
+    checker.chk("annotated frame count", len(frames), 50)
+    checker.chk("donor coord before", frames[15]["Coordination"][0], 2.0)
+    checker.chk("donor coord after", frames[20]["Coordination"][0], 1.0)
+    checker.chk("acceptor coord before", frames[15]["Coordination"][1], 2.0)
+    checker.chk("acceptor coord after", frames[20]["Coordination"][1], 3.0)
+    checker.chk("donor species after", frames[20]["Species"][0], 2.0)     # OH-
+    checker.chk("acceptor species after", frames[20]["Species"][1], 1.0)  # H3O+
+    checker.chk("H inherits H3O+ label", frames[20]["Species"][5], 1.0)
 
     # EventType/EventAge drive the OVITO expressions, so check them directly.
-    chk("EventType at break frame (O)", frames[16]["EventType"][0], 1.0)
-    chk("EventType at break frame (H)", frames[16]["EventType"][5], 2.0)
-    chk("EventType away from events", float(frames[5]["EventType"].max()), 0.0)
-    chk("EventAge before any event", frames[5]["EventAge"][0], -1.0)
-    chk("EventAge at break frame", frames[16]["EventAge"][0], 0.0)
-    chk("EventAge 3 frames later", frames[19]["EventAge"][0], 3.0)
-    chk("PartnerID at break", frames[16]["PartnerID"][0], 6.0)
+    checker.chk("EventType at break frame (O)", frames[16]["EventType"][0], 1.0)
+    checker.chk("EventType at break frame (H)", frames[16]["EventType"][5], 2.0)
+    checker.chk("EventType away from events", float(frames[5]["EventType"].max()), 0.0)
+    checker.chk("EventAge before any event", frames[5]["EventAge"][0], -1.0)
+    checker.chk("EventAge at break frame", frames[16]["EventAge"][0], 0.0)
+    checker.chk("EventAge 3 frames later", frames[19]["EventAge"][0], 3.0)
+    checker.chk("PartnerID at break", frames[16]["PartnerID"][0], 6.0)
 
     # Mechanism is what makes transfers selectable in OVITO: EventType alone
     # cannot tell a Grotthuss hop from a dissociation, since the difference is
     # what the H does over the following frames.
-    chk("Mechanism before the event", frames[5]["Mechanism"][0], 0.0)
-    chk("donor tagged transfer at break", frames[16]["Mechanism"][0], 1.0)
-    chk("H tagged transfer at break", frames[16]["Mechanism"][5], 1.0)
-    chk("acceptor tagged transfer at form", frames[17]["Mechanism"][1], 1.0)
+    checker.chk("Mechanism before the event", frames[5]["Mechanism"][0], 0.0)
+    checker.chk("donor tagged transfer at break", frames[16]["Mechanism"][0], 1.0)
+    checker.chk("H tagged transfer at break", frames[16]["Mechanism"][5], 1.0)
+    checker.chk("acceptor tagged transfer at form", frames[17]["Mechanism"][1], 1.0)
     # Persists after the event, so `Mechanism == 1 && EventAge < 20` works.
-    chk("Mechanism persists", frames[30]["Mechanism"][0], 1.0)
-    chk("spectators untouched", float(frames[30]["Mechanism"][2]), 0.0)
-    return summary
+    checker.chk("Mechanism persists", frames[30]["Mechanism"][0], 1.0)
+    checker.chk("spectators untouched", float(frames[30]["Mechanism"][2]), 0.0)
 
 
-def case_dissociation(workdir: Path) -> None:
-    print("\n3. dissociation — H leaves and never returns")
+def test_dissociation(tmp_path: Path, checker) -> None:
+    workdir = tmp_path
     elements, pos = dissociation_trajectory()
     summary, events, _ = run_case(workdir, "dissociation", elements, pos)
 
-    chk("breaks", summary["n_breaks"], 1)
-    chk("forms", summary["n_forms"], 0)
-    chk("classified dissociation", summary["classifications"].get("dissociation", 0), 1)
+    checker.chk("breaks", summary["n_breaks"], 1)
+    checker.chk("forms", summary["n_forms"], 0)
+    checker.chk("classified dissociation", summary["classifications"].get("dissociation", 0), 1)
     break_event = next(e for e in events if e["kind"] == "break")
-    chk("break frame", break_event["frame"], 12)
-    chk("no acceptor recorded", "acceptor_o_id" in break_event, False)
+    checker.chk("break frame", break_event["frame"], 12)
+    checker.chk("no acceptor recorded", "acceptor_o_id" in break_event, False)
 
 
-def case_pbc(workdir: Path, reference: dict) -> None:
-    print("\n4. pbc — the same event across a periodic face must be identical")
+def test_pbc(tmp_path: Path, checker, transfer_reference) -> None:
+    workdir = tmp_path
+    reference = transfer_reference
     # Translate so the O...O pair straddles x = 0 after wrapping.
     elements, pos = transfer_trajectory(shift=np.array([-11.3, 0.0, 0.0]))
     summary, events, _ = run_case(workdir, "pbc", elements, pos)
 
-    chk("breaks", summary["n_breaks"], reference["n_breaks"])
-    chk("forms", summary["n_forms"], reference["n_forms"])
-    chk("classifications", summary["classifications"], reference["classifications"])
+    checker.chk("breaks", summary["n_breaks"], reference["n_breaks"])
+    checker.chk("forms", summary["n_forms"], reference["n_forms"])
+    checker.chk("classifications", summary["classifications"], reference["classifications"])
     break_event = next(e for e in events if e["kind"] == "break")
-    chk("break frame", break_event["frame"], 16)
-    chk("O...O across boundary", break_event.get("oo_distance_at_break"), 2.6, tol=1e-3)
-    chk("O-H...O angle across boundary", break_event.get("ohO_angle_at_break"), 180.0, tol=0.5)
+    checker.chk("break frame", break_event["frame"], 16)
+    checker.chk("O...O across boundary", break_event.get("oo_distance_at_break"), 2.6, tol=1e-3)
+    checker.chk("O-H...O angle across boundary", break_event.get("ohO_angle_at_break"), 180.0, tol=0.5)
 
 
-def case_eof(workdir: Path) -> None:
-    print("\n5. eof — a break whose classification window runs off the end")
+def test_eof(tmp_path: Path, checker) -> None:
+    workdir = tmp_path
     # The break is timestamped frame 12 and confirms at frame 15; ending at
     # frame 20 leaves the 20-frame classification window incomplete.
     elements, pos = dissociation_trajectory(n_frames=20)
     summary, events, _ = run_case(workdir, "eof", elements, pos)
 
-    chk("breaks", summary["n_breaks"], 1)
-    chk("pending at EOF", summary["n_pending_at_eof"], 1)
-    chk("classified truncated", summary["classifications"].get("truncated", 0), 1)
+    checker.chk("breaks", summary["n_breaks"], 1)
+    checker.chk("pending at EOF", summary["n_pending_at_eof"], 1)
+    checker.chk("classified truncated", summary["classifications"].get("truncated", 0), 1)
     break_event = next(e for e in events if e["kind"] == "break")
-    chk("break frame", break_event["frame"], 12)
+    checker.chk("break frame", break_event["frame"], 12)
 
 
-def case_no_velocities(workdir: Path, reference: dict) -> None:
-    print("\n6. no velocities — a dump without vx vy vz must still work")
+def test_no_velocities(tmp_path: Path, checker, transfer_reference) -> None:
+    workdir = tmp_path
+    reference = transfer_reference
     # dump.lammpstrj carries velocities, but plenty of dumps do not (e.g.
     # analysis/structure/SiOH.0.lammpstrj, or dielectric-therm.input's
     # 'id type x y z'). Detection is purely geometric, so everything except the
@@ -409,34 +377,34 @@ def case_no_velocities(workdir: Path, reference: dict) -> None:
         workdir, "no_velocities", elements, pos, with_velocity_columns=False
     )
 
-    chk("breaks", summary["n_breaks"], reference["n_breaks"])
-    chk("forms", summary["n_forms"], reference["n_forms"])
-    chk("classifications", summary["classifications"], reference["classifications"])
+    checker.chk("breaks", summary["n_breaks"], reference["n_breaks"])
+    checker.chk("forms", summary["n_forms"], reference["n_forms"])
+    checker.chk("classifications", summary["classifications"], reference["classifications"])
 
     break_event = next(e for e in events if e["kind"] == "break")
-    chk("break frame unchanged", break_event["frame"], 16)
-    chk("acceptor unchanged", break_event.get("acceptor_o_id"), 2)
-    chk("O...O unchanged", break_event.get("oo_distance_at_break"), 2.6, tol=1e-3)
-    chk("angle unchanged", break_event.get("ohO_angle_at_break"), 180.0, tol=0.5)
-    chk("donor coord unchanged",
+    checker.chk("break frame unchanged", break_event["frame"], 16)
+    checker.chk("acceptor unchanged", break_event.get("acceptor_o_id"), 2)
+    checker.chk("O...O unchanged", break_event.get("oo_distance_at_break"), 2.6, tol=1e-3)
+    checker.chk("angle unchanged", break_event.get("ohO_angle_at_break"), 180.0, tol=0.5)
+    checker.chk("donor coord unchanged",
         (break_event.get("coord_o_donor_before"), break_event.get("coord_o_donor_after")), (2, 1))
 
     # The velocity-derived descriptors must be absent, not zero — a zero
     # v_radial would silently pollute the summary statistics.
     for key in ("v_radial", "ke_h", "ke_h_over_kT"):
-        chk(f"{key} omitted", key in break_event, False)
+        checker.chk(f"{key} omitted", key in break_event, False)
 
     # The annotated trajectory must drop the velocity columns rather than
     # emit placeholders, so OVITO does not show a bogus zero Velocity property.
     with open(outdir / "bond_events.lammpstrj") as f:
         header = [f.readline() for _ in range(9)][8].split()[2:]
-    chk("annotated columns", header,
+    checker.chk("annotated columns", header,
         ["id", "element", "x", "y", "z",
          "Coordination", "EventType", "EventAge", "PartnerID", "Species", "Mechanism"])
 
 
-def case_no_ovito_dump(workdir: Path) -> None:
-    print("\n7. --no-ovito-dump — must cost only the trajectory file, nothing else")
+def test_no_ovito_dump(tmp_path: Path, checker) -> None:
+    workdir = tmp_path
     # Species populations are replayed from the event list rather than measured
     # from the trajectory, so skipping the expensive pass must not silently
     # drop the species columns or the charge-imbalance sanity check.
@@ -451,40 +419,12 @@ def case_no_ovito_dump(workdir: Path) -> None:
     lite = workdir / "sans_dump_output"
 
     for name in ("events.jsonl", "summary.json", "summary.txt", "events_per_frame.csv"):
-        chk(f"{name} identical", (full / name).read_text(), (lite / name).read_text())
+        checker.chk(f"{name} identical", (full / name).read_text(), (lite / name).read_text())
 
-    chk("trajectory written only by the full run",
+    checker.chk("trajectory written only by the full run",
         ((full / "bond_events.lammpstrj").exists(), (lite / "bond_events.lammpstrj").exists()),
         (True, False))
 
     # The species columns must carry real numbers in both, not blanks.
     row = (lite / "events_per_frame.csv").read_text().splitlines()[20].split(",")
-    chk("species columns populated without the dump", all(c != "" for c in row), True)
-
-
-def main() -> int:
-    if not SCRIPT.exists():
-        raise SystemExit(f"bond_events.py not found next to this test: {SCRIPT}")
-
-    print("bond_events.py — synthetic ground-truth tests")
-    print("=" * 62)
-    with tempfile.TemporaryDirectory(prefix="bond_events_test_") as tmp:
-        workdir = Path(tmp)
-        case_flicker(workdir)
-        transfer_summary = case_transfer(workdir)
-        case_dissociation(workdir)
-        case_pbc(workdir, transfer_summary)
-        case_eof(workdir)
-        case_no_velocities(workdir, transfer_summary)
-        case_no_ovito_dump(workdir)
-
-    print("\n" + "=" * 62)
-    if _failures:
-        print(f"{len(_failures)} FAILED: " + ", ".join(_failures))
-        return 1
-    print("all checks PASSED")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    checker.chk("species columns populated without the dump", all(c != "" for c in row), True)

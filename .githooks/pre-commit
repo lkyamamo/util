@@ -1,0 +1,7 @@
+#!/bin/bash
+# Checks the staged change, runs the suites it touches on the staged tree, and
+# records the passing run in each affected README. See tools/README.md.
+# Bypass once with: git commit --no-verify (CI still checks the push).
+set -euo pipefail
+. "$(dirname "$0")/_python.sh"
+exec "$PY" "$REPO_CHECK"

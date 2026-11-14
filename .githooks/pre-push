@@ -1,0 +1,6 @@
+#!/bin/bash
+# The verification run: every commit being pushed, the pushed range, and every
+# fast suite on the pushed tree. A failure refuses the push. See tools/README.md.
+set -euo pipefail
+. "$(dirname "$0")/_python.sh"
+exec "$PY" "$REPO_CHECK" --push

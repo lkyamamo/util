@@ -1,0 +1,6 @@
+#!/bin/bash
+# A commit that changes code must name an approved plan (Plan: trailer) and
+# change its tests or name one (Verified-by: trailer). See tools/README.md.
+set -euo pipefail
+. "$(dirname "$0")/_python.sh"
+exec "$PY" "$REPO_CHECK" --commit-msg "$1"

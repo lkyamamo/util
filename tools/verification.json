@@ -1,0 +1,38 @@
+{
+  "_comment": "Verification suites. areas: path prefixes the suite covers. tests: globs of its verification files. python: 'stdlib' (the interpreter running repo_check) or 'analysis' (analysis/.venv, or $ANALYSIS_PYTHON). fast/slow: arguments to that interpreter, run in cwd. per_file: a test of a file is a test that names or imports it (otherwise every test in the suite covers every file). doc: README for code in the area with no nearer README.",
+  "suites": [
+    {
+      "name": "repo_check",
+      "areas": ["tools/", ".githooks/"],
+      "tests": ["tools/tests/*"],
+      "python": "stdlib",
+      "cwd": ".",
+      "fast": ["-m", "unittest", "discover", "-s", "tools/tests", "-q"],
+      "slow": null,
+      "per_file": false,
+      "doc": "tools/README.md"
+    },
+    {
+      "name": "simledger",
+      "areas": ["jobs/ledger/"],
+      "tests": ["jobs/ledger/tests/*"],
+      "python": "stdlib",
+      "cwd": "jobs/ledger",
+      "fast": ["-m", "unittest", "discover", "-s", "tests", "-q"],
+      "slow": null,
+      "per_file": false,
+      "doc": "jobs/ledger/README.md"
+    },
+    {
+      "name": "analysis",
+      "areas": ["analysis/"],
+      "tests": ["analysis/*test_*.py", "analysis/testkit/*", "analysis/conftest.py"],
+      "python": "analysis",
+      "cwd": "analysis",
+      "fast": ["-m", "pytest", "-q", "-p", "no:anyio"],
+      "slow": ["-m", "pytest", "-q", "-p", "no:anyio", "-m", "slow"],
+      "per_file": true,
+      "doc": null
+    }
+  ]
+}
