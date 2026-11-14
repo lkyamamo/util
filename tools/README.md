@@ -66,5 +66,5 @@ approval rule fails `test_draft_plan_is_refused`.
 ### Last verified
 
 <!-- Rewritten by tools/repo_check.py on every run that verifies this folder; never appended. -->
-- Fast: 2026-11-13 on top of `00e7f05`: `python -m unittest discover -s tools/tests -q` in `./`: 35 tests OK (39.0 s)
+- Fast: 2026-11-13 on top of `875f945`: `python -m unittest discover -s tools/tests -q` in `./`: 35 tests OK (39.1 s)
 - Slow: none defined

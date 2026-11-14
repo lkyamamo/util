@@ -30,5 +30,5 @@ every test built on a wrong generator inherits the error.
 ### Last verified
 
 <!-- Rewritten by tools/repo_check.py on every run that verifies this folder; never appended. -->
-- Fast: 2026-11-13 on top of `00e7f05`: `python -m pytest -q -p no:anyio` in `analysis/`: 20 passed (9.0 s)
+- Fast: 2026-11-13 on top of `875f945`: `python -m pytest -q -p no:anyio` in `analysis/`: 20 passed (9.1 s)
 - Slow: none defined

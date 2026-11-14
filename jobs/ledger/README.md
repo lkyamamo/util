@@ -232,5 +232,5 @@ and `parsers/` (`__init__.py`, `lammps.py`, `vasp.py`, `scheduler.py`, `readme.p
 ### Last verified
 
 <!-- Rewritten by tools/repo_check.py on every run that verifies this folder; never appended. -->
-- Fast: not run yet
+- Fast: 2026-11-13 on top of `875f945`: `python -m unittest discover -s tests -q` in `jobs/ledger/`: 19 tests OK (1.3 s)
 - Slow: none defined
